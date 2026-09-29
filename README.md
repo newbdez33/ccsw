@@ -5,6 +5,12 @@ Keep several Codex logins on one machine, switch between them without logging in
 watch every account's 5-hour and weekly usage in a live dashboard, let it switch for you
 before you hit a rate limit, and run two accounts side by side in different terminals.
 
+The dashboard (`cswitch`) and the live monitor (`cswitch watch`):
+
+<img src="docs/tui-dashboard.png" width="760" alt="cswitch dashboard: the active account as a card with 5h, 7d and per-model bars and reset times, the other accounts as one-line summaries, and the menu">
+
+<img src="docs/tui-watch.png" width="760" alt="cswitch watch: live 5h, 7d and per-model usage bars for every account with reset times and the active account marked">
+
 `cswitch` is [claude-swap (`cswap`)](https://github.com/realiti4/claude-swap) for Codex:
 the commands, options, JSON output, settings and full-screen dashboard follow `cswap`,
 so `cswap list` becomes `cswitch list`. The Codex-specific mechanics (credential file,
@@ -132,11 +138,9 @@ cswitch          # or: cswitch tui
 cswitch watch    # straight to the live monitor
 ```
 
-<img src="docs/tui-dashboard.png" width="760" alt="cswitch dashboard: the active account as a card with 5h, 7d and per-model bars and reset times, the other accounts as one-line summaries, and the menu">
-
-`cswitch watch` shows every account as a live card:
-
-<img src="docs/tui-watch.png" width="760" alt="cswitch watch: live 5h, 7d and per-model usage bars for every account with reset times and the active account marked">
+The dashboard shows the active account as a card with 5h, 7d and per-model bars, the
+other accounts as one-line summaries, and the menu; `cswitch watch` shows every account
+as a live card. Both are pictured at the top of this page.
 
 ### Other commands
 
