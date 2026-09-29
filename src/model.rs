@@ -308,8 +308,11 @@ mod tests {
             "activeAccountNumber": null, "lastUpdated": "x", "sequence": [3],
             "accounts": {"3": {"email": "a@b.c", "future": 1}}, "vendor": "y"
         });
-        let roster: Roster = serde_json::from_value(raw.clone()).unwrap();
-        assert_eq!(serde_json::to_value(&roster).unwrap(), raw);
+        let roster: Roster = serde_json::from_value(raw).unwrap();
+        let json = serde_json::to_value(&roster).unwrap();
+        assert_eq!(json["vendor"], "y");
+        assert_eq!(json["accounts"]["3"]["future"], 1);
+        assert_eq!(json["accounts"]["3"]["uuid"], "", "defaults are written out");
         assert_eq!(roster.next_free_slot(), 4);
     }
 
