@@ -124,34 +124,41 @@ green on macOS; every command in spec §2 exercised by an integration test with 
 `codex` and the mock usage server; README covers install, first account, switch, list,
 auto, run, config, export/import, TUI.
 
-## Status (2026-09-29)
+## Status (2026-09-29, v0.1.0 released)
 
 Landed, in commit order: skeleton and docs; wave 1 (Task A store + printer, Task B Codex
 mechanics + mock server test, Task C usage store + poll policy); wave 2 (Task D switcher,
 collector, CLI, JSON, transfer; Task T transfer + `config`; Task E auto-switch engine and
 session mode); wave 3 Task G (end-to-end tests, JSON-mode silence, the rotating log file,
-release workflow, CHANGELOG). Task F (TUI) is in progress on the same branch.
+release workflow, CHANGELOG) and Task F (TUI: dashboard, switch, watch and auto screens,
+modals, toasts, dark and light themes; the README screenshots are rendered from a
+snapshot by `examples/tui_screenshot.rs`).
 
-Tests: 275 (`cargo test`): 188 unit tests in the library plus integration binaries
+Released as `v0.1.0` on 2026-09-29 from commit `6cf4c44`: the `Release` workflow built
+the four archives (macOS arm64 / x86_64, Linux x86_64, Windows x86_64) plus
+`SHA256SUMS`, and the repository is public. `ci.yml` is green on ubuntu, macos and
+windows for the tagged commit.
+
+Tests: 327 (`cargo test --all`): 232 unit tests in the library plus integration binaries
 `auto_once` (4), `cli_accounts` (10), `cli_list` (5), `cli_switch` (8), `codex_mock` (7),
 `config_cmd` (12), `e2e_auto` (4), `e2e_usage` (7), `session_run` (11),
-`transfer_roundtrip` (19). The two `e2e_*` binaries drive the built binary against an
-axum mock of the usage and token endpoints (`tests/support/usage_mock.rs`), the fake
-`codex`, and temp `CSWITCH_HOME` / `CODEX_HOME`; they cover real usage rows, the model
-pool row, credits, `(!)`, `http-429`, the 180 s cache, `--strategy best` /
-`next-available` (skips and `candidates-exhausted`), the 401 → refresh → 200 rotation
-into the slot file and the live `auth.json`, `auto --once` exit codes 0/2/3, `--dry-run`,
-`--threshold`, and the state file.
+`transfer_roundtrip` (19), `tui_render` (8). The two `e2e_*` binaries drive the built
+binary against an axum mock of the usage and token endpoints
+(`tests/support/usage_mock.rs`), the fake `codex`, and temp `CSWITCH_HOME` /
+`CODEX_HOME`; they cover real usage rows, the model pool row, credits, `(!)`,
+`http-429`, the 180 s cache, `--strategy best` / `next-available` (skips and
+`candidates-exhausted`), the 401 → refresh → 200 rotation into the slot file and the
+live `auth.json`, `auto --once` exit codes 0/2/3, `--dry-run`, `--threshold`, and the
+state file. `tui_render` renders every screen into a `TestBackend` buffer.
 
 Behavior changes made by Task G: `--json` mode uses `SilentUi` (nothing on stderr for a
 successful command, as in cswap §4.1); `src/logging.rs` installs the `cswitch.log`
 file layer (INFO, 1 MiB × 3, lazy) for every entry point and the stderr layer with
 `--debug`; the `env` verb is now dispatched (it was listed in `help` but never routed).
 
-Known gaps: the TUI (Task F) is not merged yet, so `cswitch tui` / `watch` still print
-`not implemented`; the v0.1 omissions of spec §2 and §9 stand (`menubar`, `unclaimed`,
+Known gaps: the v0.1 omissions of spec §2, §9 and §12 stand (`menubar`, `unclaimed`,
 no-return anti-flap bar, recovery-horizon escape, identity-conflict quarantine,
-`config-warning`, `soonest-reset`); no Windows CI run has been observed yet (the
-matrix in `ci.yml` includes it). Note for test authors: the API's `limit_reached` flag
-makes every window binding (`usage.limited`), so a skip then reads `at 5h/7d limit`;
-the e2e mock leaves the flag unset and lets the window percentages decide.
+`config-warning`, `soonest-reset`; the TUI theme `auto` follows `COLORFGBG` only).
+Note for test authors: the API's `limit_reached` flag makes every window binding
+(`usage.limited`), so a skip then reads `at 5h/7d limit`; the e2e mock leaves the flag
+unset and lets the window percentages decide.
