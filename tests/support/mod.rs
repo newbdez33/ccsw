@@ -33,6 +33,32 @@ esac
 exit 0
 "#;
 
+/// Windows cannot run the shell script; the batch twin answers the same
+/// three shapes (argv log, `--help`, `app-server daemon version|restart`).
+#[cfg(windows)]
+const FAKE_CODEX_CMD: &str = "@echo off\r\n\
+>> \"%CS_FAKE_LOG%\" echo %*\r\n\
+if \"%~1\"==\"--help\" (\r\n\
+  echo Codex CLI\r\n\
+  echo       --no-daemon  Run without the app-server daemon\r\n\
+  exit /b 0\r\n\
+)\r\n\
+if \"%~1\"==\"app-server\" (\r\n\
+  if \"%~2 %~3\"==\"daemon version\" (\r\n\
+    if \"%CS_FAKE_DAEMON%\"==\"running\" (\r\n\
+      echo {\"status\":\"running\"}\r\n\
+      exit /b 0\r\n\
+    )\r\n\
+    echo daemon is not running 1>&2\r\n\
+    exit /b 1\r\n\
+  )\r\n\
+  if \"%~2 %~3\"==\"daemon restart\" (\r\n\
+    echo {\"status\":\"restarted\"}\r\n\
+    exit /b 0\r\n\
+  )\r\n\
+)\r\n\
+exit /b 0\r\n";
+
 pub struct Run {
     pub status: i32,
     pub stdout: String,
@@ -78,6 +104,8 @@ impl Cli {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         }
+        #[cfg(windows)]
+        fs::write(bin_dir.join("codex.cmd"), FAKE_CODEX_CMD).unwrap();
         // A port nothing listens on: every usage/token request is refused at once.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
