@@ -231,6 +231,54 @@ impl NormalizedUsage {
     }
 }
 
+/// What `$CODEX_HOME/auth.json` currently holds, resolved against the roster.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CurrentAccount {
+    /// No live login (file missing or unreadable).
+    NoLogin,
+    /// A login that matches no managed slot.
+    Unmanaged { email: String },
+    /// A managed slot.
+    Managed {
+        slot: u32,
+        email: String,
+        api_key: bool,
+    },
+}
+
+impl CurrentAccount {
+    pub fn slot(&self) -> Option<u32> {
+        match self {
+            Self::Managed { slot, .. } => Some(*slot),
+            _ => None,
+        }
+    }
+
+    pub fn email(&self) -> Option<&str> {
+        match self {
+            Self::NoLogin => None,
+            Self::Unmanaged { email } | Self::Managed { email, .. } => Some(email),
+        }
+    }
+}
+
+/// Result of one switch, in the shape of the `switch --json` payload body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwitchOutcome {
+    pub switched: bool,
+    pub from: Option<AccountRef>,
+    pub to: Option<AccountRef>,
+    /// `rotation` | `best` | `next-available` | `direct`.
+    pub strategy: String,
+    /// `switched` | `already-active` | `activated` | `unmanaged-account` |
+    /// `only-one-account` | `candidates-exhausted` | `no-valid-target` |
+    /// `usage-unavailable` | `already-best`.
+    pub reason: String,
+    pub message: String,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
 /// Human label for a Codex plan wire value; `None` for an unknown or absent plan.
 pub fn plan_label(wire: Option<&str>) -> Option<String> {
     let label = match wire? {
