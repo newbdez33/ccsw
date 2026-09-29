@@ -1,0 +1,10 @@
+cswitch includes designs and logic derived from:
+
+claude-swap — Copyright (c) Onur Cetinkol — MIT License
+  https://github.com/realiti4/claude-swap
+  Command grammar, dashboard design, settings/roster/export conventions.
+
+codex-switch — Copyright (c) xjoker — MIT License
+  https://github.com/xjoker/codex-switch
+  Codex auth.json handling, identity extraction, usage API client, token
+  refresh discipline, app-server daemon restart, launch --no-daemon rule.

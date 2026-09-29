@@ -1,0 +1,47 @@
+[package]
+name = "cswitch"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Multi-account switcher for OpenAI Codex CLI (cswap-compatible interface)"
+license = "MIT"
+repository = "https://github.com/newbdez33/cswitch"
+readme = "README.md"
+keywords = ["codex", "account-switcher", "cli", "tui"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "cswitch"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+sha2 = "0.11"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.10"
+chrono = { version = "0.4", features = ["clock"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "socks", "macos-system-configuration"], default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+fs4 = "1.1"
+tempfile = "3"
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+ratatui = "0.30"
+crossterm = "0.29"
+supports-color = "3"
+owo-colors = "4"
+urlencoding = "2"
+webbrowser = "1"
+rpassword = "7"
+libc = "0.2"
+
+[dev-dependencies]
+axum = "0.8"
