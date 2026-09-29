@@ -132,13 +132,29 @@ impl Cli {
 
     pub fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_cswitch"));
-        let path = format!(
-            "{}:{}",
-            self.bin_dir.display(),
-            std::env::var("PATH").unwrap_or_default()
-        );
-        cmd.env_clear()
-            .env("PATH", path)
+        // The platform separator matters: a ':'-joined PATH is unusable on
+        // Windows and the fake codex would silently never be found.
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            std::iter::once(self.bin_dir.clone()).chain(std::env::split_paths(&inherited)),
+        )
+        .unwrap();
+        cmd.env_clear();
+        // cmd.exe and the temp directory need these to run batch files.
+        for name in [
+            "SystemRoot",
+            "COMSPEC",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                cmd.env(name, value);
+            }
+        }
+        cmd.env("PATH", path)
             .env("HOME", self.root.path())
             .env("CSWITCH_HOME", &self.cswitch_home)
             .env("CODEX_HOME", &self.codex_home)
