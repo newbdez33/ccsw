@@ -95,7 +95,7 @@ impl FileLock {
             .map_err(|err| io_error(CswitchError::Lock, path, &err))?;
         let started = Instant::now();
         loop {
-            match file.try_lock_exclusive() {
+            match <File as FileExt>::try_lock(&file) {
                 Ok(()) => break,
                 Err(TryLockError::WouldBlock) => {}
                 Err(TryLockError::Error(err)) => {
@@ -135,7 +135,7 @@ impl FileLock {
 
 impl Drop for FileLock {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        let _ = <File as FileExt>::unlock(&self.file);
     }
 }
 

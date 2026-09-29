@@ -9,6 +9,7 @@ pub mod errors;
 pub mod fsutil;
 pub mod model;
 pub mod paths;
+pub mod usage_math;
 
 pub mod jsonout;
 pub mod printer;
