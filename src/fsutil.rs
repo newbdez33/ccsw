@@ -22,6 +22,9 @@ pub fn atomic_write(path: &Path, contents: &[u8], private_parent: bool) -> io::R
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
+    // Windows keeps the inherited ACL; the flag only has a POSIX meaning.
+    #[cfg(not(unix))]
+    let _ = private_parent;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
     {
