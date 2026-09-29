@@ -90,8 +90,8 @@ fn switch_json_payload_and_rotation() {
     let cli = two_accounts();
     let run = cli.run(&["switch", "--json"]);
     assert_eq!(run.status, 0, "{}", run.stderr);
-    // Human notices go to stderr in JSON mode; stdout is the one document.
-    assert_eq!(run.stderr, "Switched to Account-1 (alice@example.com)\n");
+    // JSON mode: stdout is the one document and nothing reaches stderr.
+    assert_eq!(run.stderr, "");
     let payload = run.json();
     assert_eq!(payload["schemaVersion"], 1);
     assert_eq!(payload["switched"], true);

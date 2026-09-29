@@ -3,6 +3,8 @@
 //! refuse connections so every fetch fails fast.
 #![allow(dead_code)]
 
+pub mod usage_mock;
+
 use std::fs;
 use std::io::Write;
 use std::net::TcpListener;
@@ -56,6 +58,9 @@ pub struct Cli {
     pub log: PathBuf,
     pub dead_url: String,
     pub daemon_running: bool,
+    /// `CSWITCH_USAGE_URL` / `CSWITCH_TOKEN_URL` overrides; `None` refuses connections.
+    pub usage_url: Option<String>,
+    pub token_url: Option<String>,
 }
 
 impl Cli {
@@ -85,7 +90,16 @@ impl Cli {
             bin_dir,
             dead_url: format!("http://127.0.0.1:{port}"),
             daemon_running: false,
+            usage_url: None,
+            token_url: None,
         }
+    }
+
+    /// Point usage and token requests at a running mock.
+    pub fn with_mock(mut self, mock: &usage_mock::UsageMock) -> Self {
+        self.usage_url = Some(mock.usage_url.clone());
+        self.token_url = Some(mock.token_url.clone());
+        self
     }
 
     pub fn command(&self) -> Command {
@@ -100,8 +114,18 @@ impl Cli {
             .env("HOME", self.root.path())
             .env("CSWITCH_HOME", &self.cswitch_home)
             .env("CODEX_HOME", &self.codex_home)
-            .env("CSWITCH_USAGE_URL", format!("{}/usage", self.dead_url))
-            .env("CSWITCH_TOKEN_URL", format!("{}/token", self.dead_url))
+            .env(
+                "CSWITCH_USAGE_URL",
+                self.usage_url
+                    .clone()
+                    .unwrap_or_else(|| format!("{}/usage", self.dead_url)),
+            )
+            .env(
+                "CSWITCH_TOKEN_URL",
+                self.token_url
+                    .clone()
+                    .unwrap_or_else(|| format!("{}/token", self.dead_url)),
+            )
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
@@ -206,6 +230,22 @@ impl Cli {
         assert_eq!(run.status, 0, "add failed: {}{}", run.stdout, run.stderr);
         run
     }
+
+    /// `add` a ChatGPT login whose opaque access token picks the mock's reply.
+    pub fn add_scripted(&self, email: &str, account_id: &str, access: &str) -> Run {
+        let refresh = usage_mock::live_refresh_token(email, account_id);
+        self.write_live(&chatgpt_auth_with_tokens(
+            email, account_id, access, &refresh,
+        ));
+        let run = self.run(&["add"]);
+        assert_eq!(run.status, 0, "add failed: {}{}", run.stdout, run.stderr);
+        run
+    }
+
+    /// The backup store's log file.
+    pub fn log_path(&self) -> PathBuf {
+        self.cswitch_home.join("cswitch.log")
+    }
 }
 
 pub fn read_json(path: &Path) -> Value {
@@ -251,6 +291,27 @@ pub fn chatgpt_auth_at(email: &str, account_id: &str, refresh: &str, last_refres
             "account_id": account_id
         },
         "last_refresh": last_refresh
+    })
+}
+
+/// A ChatGPT login with an explicit (opaque) access token: the identity still
+/// comes from the id_token, so the mock can key its replies on the bearer.
+pub fn chatgpt_auth_with_tokens(
+    email: &str,
+    account_id: &str,
+    access: &str,
+    refresh: &str,
+) -> Value {
+    json!({
+        "OPENAI_API_KEY": null,
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "id_token": jwt(email, account_id),
+            "access_token": access,
+            "refresh_token": refresh,
+            "account_id": account_id
+        },
+        "last_refresh": "2026-09-29T10:00:00Z"
     })
 }
 

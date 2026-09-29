@@ -118,12 +118,10 @@ fn parse<T: Parser>(prog: &str, argv: Vec<String>) -> std::result::Result<T, i32
     })
 }
 
+/// The log file in the backup root, plus the stderr mirror with `--debug`.
 fn enable_debug(debug: bool) {
-    if debug {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter("debug")
-            .with_writer(std::io::stderr)
-            .try_init();
+    if let Ok(paths) = crate::paths::Paths::from_env() {
+        crate::logging::init(&paths, debug);
     }
 }
 

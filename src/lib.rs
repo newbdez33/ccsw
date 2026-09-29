@@ -12,6 +12,7 @@ pub mod paths;
 pub mod usage_math;
 
 pub mod jsonout;
+pub mod logging;
 pub mod printer;
 
 pub mod codex;

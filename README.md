@@ -17,7 +17,10 @@ identity, usage API, token refresh, app-server daemon) come from
 
 ## Install
 
-Requires Rust 1.88 or newer until binaries are published:
+Download the archive for your platform from the
+[releases page](https://github.com/newbdez33/cswitch/releases) (macOS arm64 / x86_64,
+Linux x86_64, Windows x86_64), unpack it, and put `cswitch` on your `PATH`. Or build it
+with Rust 1.88 or newer:
 
 ```bash
 cargo install --git https://github.com/newbdez33/cswitch --locked
@@ -75,9 +78,25 @@ the selected account; a turn that was in progress is interrupted. `codex exec` a
 ### See every account's usage
 
 ```bash
-cswitch list        # 5h / 7d / per-model pools with reset times
-cswitch status      # the active account
-cswitch list --json # for scripts
+cswitch list                # 5h / 7d / per-model pools with reset times
+cswitch status              # the active account
+cswitch list --token-status # add stored-token expiry diagnostics
+```
+
+Usage is fetched on demand (the active account plus one other account per command) and
+cached for three minutes, so run `cswitch list` again to fill in the remaining rows.
+
+### JSON output for scripting
+
+`--json` works with `list`, `status` and `switch`; stdout carries exactly one JSON
+document (`schemaVersion: 1`) and nothing is printed to stderr. A handled error becomes
+`{"schemaVersion": 1, "error": {"type": "...", "message": "..."}}` with exit 1.
+
+```bash
+cswitch list --json                     # accounts[] with usage.fiveHour / sevenDay / scoped[] / credits
+cswitch status --json                   # the active account, or {"active": null}
+cswitch switch --strategy best --json   # {"switched": true, "from": ..., "to": ..., "reason": "switched"}
+cswitch auto --once --json              # one compact JSON event per line
 ```
 
 ### Automatic switching
@@ -99,6 +118,7 @@ cswitch run 2                   # start Codex as account 2 in this terminal only
 cswitch run work -- resume      # everything after -- goes to codex
 cswitch map 2 ~/work/client     # bare `cswitch run` in that tree uses account 2
 eval "$(cswitch env 2)"         # pin this shell to account 2 without starting Codex
+eval "$(cswitch env --unset)"   # unpin it again (--shell fish|pwsh for other shells)
 ```
 
 Session mode gives the account a private `CODEX_HOME` under `~/.cswitch/sessions/`,
@@ -119,21 +139,23 @@ cswitch remove 2
 cswitch disable 2 / cswitch enable 2     # hold out of / return to auto-rotation
 cswitch alias 2 dev / cswitch alias 2 --unset / cswitch alias
 cswitch move 2 1 / cswitch swap 1 2
-cswitch config [get|set|unset KEY [VALUE]|path]
+cswitch config [list|get KEY|set KEY VALUE|unset KEY|path]
 cswitch export backup.cswitch [--account 2] / cswitch import backup.cswitch [--force]
 cswitch purge
 ```
 
-The `cswap` flag spellings (`cswitch --list`, `cswitch --switch-to 2`, …) keep working.
+Every verb accepts `--help`; `cswitch help` lists them all. The `cswap` flag spellings
+(`cswitch --list`, `cswitch --switch-to 2`, …) keep working.
 
 ## Data locations
 
 Everything cswitch stores lives in `~/.cswitch` (override with `CSWITCH_HOME`):
 the account roster (`sequence.json`), credential snapshots (`credentials/`),
 `settings.json`, directory mappings, the usage cache, auto-switch state, session
-profiles and a rotating log. The live Codex login is `$CODEX_HOME/auth.json`
-(default `~/.codex/auth.json`); `cswitch` backs it up as `auth.json.bak.<timestamp>`
-(three kept) before every switch.
+profiles and a rotating log (`cswitch.log`, 1 MiB, three backups; `--debug` mirrors it
+to stderr). The live Codex login is `$CODEX_HOME/auth.json` (default
+`~/.codex/auth.json`); `cswitch` backs it up as `auth.json.bak.<timestamp>` (three
+kept) before every switch.
 
 ## Development
 
@@ -143,6 +165,12 @@ cargo test --all
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+The integration tests run the built binary against a fake `codex` and a local mock of
+the usage and token endpoints (`CSWITCH_USAGE_URL`, `CSWITCH_TOKEN_URL`); nothing
+touches the network or your real `~/.codex`. Tagging `v*` builds release archives for
+macOS, Linux and Windows (`.github/workflows/release.yml`). Changes are listed in
+`CHANGELOG.md`.
 
 Design: `docs/specs/2026-09-29-cswitch-design.md`. Plan: `docs/plans/`. The research
 notes that pin the `cswap` contract and the Codex mechanics are in `docs/research/`.

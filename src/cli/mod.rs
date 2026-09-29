@@ -20,8 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::errors::{CswitchError, Result};
 use crate::jsonout;
+use crate::logging;
+use crate::paths::Paths;
 use crate::printer;
-use crate::switcher::{StderrUi, Switcher};
+use crate::switcher::{SilentUi, Switcher};
 
 use legacy::{Command, PROG, USAGE_LINE};
 use tui::TuiStart;
@@ -40,6 +42,7 @@ pub fn run_with(argv: Vec<String>) -> i32 {
         let rest = argv[1..].to_vec();
         match first.as_str() {
             "run" => return session::run_cmd(rest),
+            "env" => return session::env_cmd(rest),
             "auto" => return auto::run(rest),
             "config" => return config::run(rest),
             "map" => return session::map_cmd(rest),
@@ -113,15 +116,16 @@ pub fn run_with(argv: Vec<String>) -> i32 {
     })
 }
 
-/// Shared prologue of every command that touches the store: debug logging,
-/// root guard, Ctrl-C note, the switcher, and the error → exit-status mapping.
+/// Shared prologue of every command that touches the store: logging, root
+/// guard, Ctrl-C note, the switcher, and the error → exit-status mapping.
 pub(crate) fn with_switcher(
     debug: bool,
     json: bool,
     body: impl FnOnce(&mut Switcher) -> Result<i32>,
 ) -> i32 {
-    if debug {
-        init_debug_logging();
+    // A failing `Paths::from_env` is reported by `Switcher::from_env` below.
+    if let Ok(paths) = Paths::from_env() {
+        logging::init(&paths, debug);
     }
     if let Some(status) = root_guard() {
         return status;
@@ -129,8 +133,9 @@ pub(crate) fn with_switcher(
     JSON_MODE.store(json, Ordering::Relaxed);
     install_sigint_note();
     let result = Switcher::from_env().and_then(|mut switcher| {
+        // JSON mode: stdout is the one document and stderr stays empty.
         if json {
-            switcher.ui = Box::new(StderrUi);
+            switcher.ui = Box::new(SilentUi);
         }
         body(&mut switcher)
     });
@@ -201,16 +206,6 @@ impl VerbArgs {
     pub fn has(&self, flag: &str) -> bool {
         self.flags.iter().any(|f| f == flag)
     }
-}
-
-fn init_debug_logging() {
-    let _ = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_max_level(tracing::Level::DEBUG)
-        .with_ansi(false)
-        .without_time()
-        .with_target(false)
-        .try_init();
 }
 
 /// Refuse to run as root outside a container (exit 1).
