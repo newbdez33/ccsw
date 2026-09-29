@@ -132,6 +132,12 @@ cswitch          # or: cswitch tui
 cswitch watch    # straight to the live monitor
 ```
 
+<img src="docs/tui-dashboard.png" width="760" alt="cswitch dashboard: the active account as a card with 5h, 7d and per-model bars and reset times, the other accounts as one-line summaries, and the menu">
+
+`cswitch watch` shows every account as a live card:
+
+<img src="docs/tui-watch.png" width="760" alt="cswitch watch: live 5h, 7d and per-model usage bars for every account with reset times and the active account marked">
+
 ### Other commands
 
 ```bash
