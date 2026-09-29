@@ -312,7 +312,10 @@ mod tests {
         let json = serde_json::to_value(&roster).unwrap();
         assert_eq!(json["vendor"], "y");
         assert_eq!(json["accounts"]["3"]["future"], 1);
-        assert_eq!(json["accounts"]["3"]["uuid"], "", "defaults are written out");
+        assert_eq!(
+            json["accounts"]["3"]["uuid"], "",
+            "defaults are written out"
+        );
         assert_eq!(roster.next_free_slot(), 4);
     }
 
