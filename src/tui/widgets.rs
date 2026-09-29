@@ -525,8 +525,9 @@ mod tests {
             "dim at age > 300 s"
         );
 
-        // Narrow: the clock is dropped per row when it does not fit.
-        let narrow = account_card(&acc, 50, None, now, p);
+        // Narrow: the clock is dropped per row when it does not fit. Width 48
+        // rejects even the short same-day clock form, whatever the local zone.
+        let narrow = account_card(&acc, 48, None, now, p);
         assert_eq!(
             text(&narrow[1]),
             "    5h    ━━━━━━━━━───  76%  resets 2h 47m"
