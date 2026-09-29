@@ -133,6 +133,14 @@ impl FileLock {
     }
 }
 
+impl std::fmt::Debug for FileLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileLock")
+            .field("path", &self.path)
+            .finish()
+    }
+}
+
 impl Drop for FileLock {
     fn drop(&mut self) {
         let _ = <File as FileExt>::unlock(&self.file);
