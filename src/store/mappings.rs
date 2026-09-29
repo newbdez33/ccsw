@@ -212,7 +212,8 @@ mod tests {
                 base.join("real/sub")
             );
         }
-        let home = dirs::home_dir().unwrap();
+        // Windows lowercases the whole key, so compare against the normalized home.
+        let home = MappingStore::normalize_path(&dirs::home_dir().unwrap());
         assert!(MappingStore::normalize_path(Path::new("~/x")).starts_with(&home));
         let relative = MappingStore::normalize_path(Path::new("rel"));
         assert!(relative.is_absolute());
