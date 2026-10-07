@@ -19,6 +19,7 @@ pub enum MenuId {
     RemoveMenu,
     ThemeMenu,
     Quit,
+    AddNew,
     AddLogin,
     AddToken,
     Remove(u32),
@@ -163,6 +164,7 @@ impl DashboardScreen {
                 self.push(MenuLevel {
                     title: "add account".to_string(),
                     entries: with_back(vec![
+                        entry("Add new account", MenuId::AddNew),
                         entry("From current Codex login", MenuId::AddLogin),
                         entry("From an API key…", MenuId::AddToken),
                     ]),
@@ -215,6 +217,7 @@ impl DashboardScreen {
                 });
                 Vec::new()
             }
+            MenuId::AddNew => vec![Effect::Action(Action::AddNew)],
             MenuId::AddLogin => vec![Effect::OpenModal(Modal::Confirm(
                 ConfirmModal::add_current(),
             ))],
@@ -396,14 +399,22 @@ mod tests {
         let labels: Vec<&str> = dash.entries().iter().map(|e| e.label.as_str()).collect();
         assert_eq!(
             labels,
-            ["From current Codex login", "From an API key…", "← back"]
+            [
+                "Add new account",
+                "From current Codex login",
+                "From an API key…",
+                "← back"
+            ]
         );
         let effects = dash.handle_key(key(KeyCode::Enter), Some(&snap), ThemeName::Dark);
-        assert!(matches!(effects[0], Effect::OpenModal(Modal::Confirm(_))));
+        assert_eq!(effects, vec![Effect::Action(Action::AddNew)]);
         dash.cursor = 1;
         let effects = dash.handle_key(key(KeyCode::Enter), Some(&snap), ThemeName::Dark);
-        assert!(matches!(effects[0], Effect::OpenModal(Modal::AddToken(_))));
+        assert!(matches!(effects[0], Effect::OpenModal(Modal::Confirm(_))));
         dash.cursor = 2;
+        let effects = dash.handle_key(key(KeyCode::Enter), Some(&snap), ThemeName::Dark);
+        assert!(matches!(effects[0], Effect::OpenModal(Modal::AddToken(_))));
+        dash.cursor = 3;
         dash.handle_key(key(KeyCode::Enter), Some(&snap), ThemeName::Dark);
         assert_eq!(dash.breadcrumb(), "menu", "← back pops");
         dash.cursor = 5;

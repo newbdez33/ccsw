@@ -39,7 +39,11 @@ Codex must keep its credentials in `auth.json` (the default). If your
 
 ### Add your first account
 
-Log into Codex as usual (`codex login`), then snapshot that login:
+Run `cswitch`, then select **Add account… → Add new account**. Codex opens your
+browser for sign-in. After sign-in, cswitch saves and activates the account.
+The Codex CLI must be on your `PATH`. Press `Esc` to cancel.
+
+If you are already signed into Codex, you can snapshot that login instead:
 
 ```bash
 cswitch add
@@ -47,15 +51,15 @@ cswitch add
 
 ### Add more accounts
 
-Log in with the next account and run `cswitch add` again. Do **not** run
-`codex logout` first: it can revoke the refresh token that `cswitch` just saved. Just run
-`codex login` for the next account, then `cswitch add`.
+Select **Add account… → Add new account** again and sign in with the next account.
+The login runs in a temporary Codex home, so it does not revoke the previous login.
+Signing into a managed account again updates its stored credentials in place.
 
-```bash
-codex login
-cswitch add
-cswitch add --alias work        # give it a short name
-```
+Do **not** run `codex logout` first: it can revoke a saved refresh token. Recent
+Codex versions can also clear the previous login when you run `codex login`
+directly. Use the dashboard to add another account.
+
+Use `cswitch alias 2 work` to give a saved account a short name.
 
 An API key can be registered without touching the current login:
 

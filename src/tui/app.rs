@@ -21,7 +21,9 @@ use crate::switcher::{Line as UiLine, ListSnapshot};
 
 use super::auto::AutoScreen;
 use super::dashboard::DashboardScreen;
-use super::modals::{ConfirmModal, Modal, ModalOutcome, OutputModal, PendingAction, TokenForm};
+use super::modals::{
+    ConfirmModal, LoginModal, Modal, ModalOutcome, OutputModal, PendingAction, TokenForm,
+};
 use super::snapshot::AccountsSnapshot;
 use super::switch::SwitchScreen;
 use super::theme::{Palette, ThemeName};
@@ -39,6 +41,7 @@ pub enum Action {
     SwitchBest,
     SetDisabled { number: u32, disabled: bool },
     Remove(u32),
+    AddNew,
     AddCurrent,
     AddToken(TokenForm),
 }
@@ -54,6 +57,7 @@ impl Action {
             } => format!("Disable account {number}"),
             Self::SetDisabled { number, .. } => format!("Enable account {number}"),
             Self::Remove(n) => format!("Remove account {n}"),
+            Self::AddNew => "Add new account".to_string(),
             Self::AddCurrent => "Add current login".to_string(),
             Self::AddToken(_) => "Add account from API key".to_string(),
         }
@@ -61,7 +65,7 @@ impl Action {
 
     /// Add results open an output modal; everything else toasts.
     pub fn show_output(&self) -> bool {
-        matches!(self, Self::AddCurrent | Self::AddToken(_))
+        matches!(self, Self::AddNew | Self::AddCurrent | Self::AddToken(_))
     }
 }
 
@@ -88,6 +92,7 @@ pub enum Effect {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Quit,
+    CancelLogin,
     Refresh {
         full: bool,
     },
@@ -155,6 +160,7 @@ pub enum Inbound {
         result: Result<Option<ListSnapshot>, String>,
     },
     ActionDone(ActionResult),
+    LoginUrl(String),
     Engine(Event),
     EngineStopped(String),
 }
@@ -446,6 +452,13 @@ impl App {
             return None;
         }
         self.busy = true;
+        if action == Action::AddNew {
+            self.modal = Some(Modal::Login(LoginModal {
+                url: None,
+                cancelling: false,
+                scroll: 0,
+            }));
+        }
         Some(Command::Action(action))
     }
 
@@ -556,6 +569,13 @@ impl App {
     // -- keys -----------------------------------------------------------------
 
     pub fn handle_key(&mut self, key: KeyEvent, now: f64) -> Vec<Command> {
+        if matches!(self.modal, Some(Modal::Login(_)))
+            && key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.quit = true;
+            return vec![Command::Quit];
+        }
         if let Some(modal) = &mut self.modal {
             return match modal.handle_key(key) {
                 ModalOutcome::Open => Vec::new(),
@@ -570,6 +590,12 @@ impl App {
                 ModalOutcome::Submitted(form) => {
                     self.modal = None;
                     self.submit_token_form(form, now)
+                }
+                ModalOutcome::CancelLogin => {
+                    if let Some(Modal::Login(login)) = &mut self.modal {
+                        login.cancelling = true;
+                    }
+                    vec![Command::CancelLogin]
                 }
             };
         }
@@ -664,6 +690,12 @@ impl App {
                 Vec::new()
             }
             Inbound::ActionDone(result) => self.action_done(result, now),
+            Inbound::LoginUrl(url) => {
+                if let Some(Modal::Login(login)) = &mut self.modal {
+                    login.url = Some(url);
+                }
+                Vec::new()
+            }
             Inbound::Engine(event) => {
                 let stamp = clock_stamp(now);
                 if let Some(Screen::Auto(auto)) = self.screens.last_mut() {
@@ -742,7 +774,7 @@ impl App {
         Paragraph::new(footer_line(&chips, &p))
             .style(Style::new().bg(p.surface))
             .render(footer, buf);
-        if let Some(modal) = &self.modal {
+        if let Some(modal) = &mut self.modal {
             super::modals::render_modal(buf, area, modal, &p);
         }
         render_toasts(buf, body, &self.toasts, &p);
@@ -1048,6 +1080,7 @@ mod tests {
         app.handle_key(key(KeyCode::Char('j')), 1000.0);
         app.handle_key(key(KeyCode::Enter), 1000.0);
         assert_eq!(app.dashboard().breadcrumb(), "menu › add account");
+        app.handle_key(key(KeyCode::Char('j')), 1000.0);
         app.handle_key(key(KeyCode::Char('j')), 1000.0);
         app.handle_key(key(KeyCode::Enter), 1000.0);
         assert!(matches!(app.modal(), Some(Modal::AddToken(_))));

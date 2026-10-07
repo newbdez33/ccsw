@@ -364,7 +364,12 @@ amber ≥ 70 / red ≥ 90, dim when age > 300 s), key bindings, menus, modals, t
 two-lane 3 s refresh follow `docs/research/cswap-tui.md` with these mappings:
 
 - rows `5h`, `7d`, model pools by name, `credits` (no `$$`);
-- add menu: `From current Codex login` / `From an API key…`; the token modal asks for an
+- add menu: `Add new account` / `From current Codex login` / `From an API key…`.
+  `Add new account` starts browser login through `codex login` in a temporary
+  `CODEX_HOME`, copies the user's Codex config, and forces file credentials. The
+  dashboard shows the login URL and supports cancellation and a ten-minute timeout.
+  A successful login saves and activates the account; an existing identity is updated
+  in place. The token modal asks for an
   OpenAI API key;
 - sentinel labels per §8.3 and `API key (no quota)`;
 - confirm texts say `Codex` / `cswitch auto`;
@@ -423,8 +428,9 @@ overrides). Quality gate: `cargo fmt --check`, `cargo clippy --all-targets -- -D
 1. Repository `newbdez33/cswitch` is created **private**; flip to public when ready.
 2. Store location `~/.cswitch` on all platforms (`CSWITCH_HOME` override), not cswap's
    XDG split.
-3. `add-token` registers API keys only; ChatGPT logins are captured with `add` after
-   `codex login`. A browser/device login flow inside cswitch is a later addition.
+3. `add-token` registers API keys only; `add` captures an existing ChatGPT login.
+   The dashboard also supports browser sign-in through the installed Codex CLI.
+   Device-code login is not exposed in the dashboard.
 4. The TUI theme `auto` does not probe the terminal in v0.1.
 5. `--json` keeps cswap's field names (`organizationUuid` = Codex account id) so existing
    scripts keep working; Codex-specific fields are additive.

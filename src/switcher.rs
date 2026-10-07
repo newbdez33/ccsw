@@ -500,6 +500,53 @@ impl Switcher {
             CswitchError::config("No active Codex account found. Please log in first.")
         })?;
         let _lock = self.store.lock()?;
+        self.add_auth(&live, requested, alias)
+    }
+
+    /// Save and activate a completed browser login under one store lock.
+    pub fn add_browser_account(&mut self, auth: &AuthJson) -> Result<AddOutcome> {
+        crate::codex::login::validate_login(auth)?;
+        self.store.paths.validate_credential_store()?;
+        let live_path = self.store.paths.live_auth_file();
+        let lock = self.store.lock()?;
+        let roster = roster::read_or_empty(&self.store.paths)?;
+        // Preserve rotations from the departing account. For the same account,
+        // newly issued tokens win even when the old timestamp is ahead.
+        if let Some(live) = AuthJson::read(&live_path)?
+            && live.identity() != auth.identity()
+            && let Some(slot) = self.slot_of_live(&roster, &live)
+        {
+            let stored = credentials::read(&self.store, slot)?.map(AuthJson::from_value);
+            if stored.is_none_or(|stored| live.is_newer_than(&stored)) {
+                credentials::write(&self.store, slot, &live.0)?;
+            }
+        }
+        let before = snapshot_live_auth(&live_path);
+        let outcome = self.add_auth(auth, None, None)?;
+        backup_live(&live_path)?;
+        auth.write(&live_path)?;
+        let roster = self.roster()?;
+        drop(lock);
+        if let AddOutcome::Added { slot } | AddOutcome::Updated { slot } = outcome {
+            let restart = restart_daemon_if_live_auth_changed(&before, &live_path);
+            if let Some(followup) = restart.message(&format!("Account-{slot}")) {
+                self.say(Line::plain(followup));
+            }
+            if let Some(record) = roster.record(slot) {
+                self.replan_active(slot, record);
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// The caller holds the store lock.
+    fn add_auth(
+        &mut self,
+        live: &AuthJson,
+        requested: Option<u32>,
+        alias: Option<String>,
+    ) -> Result<AddOutcome> {
+        let live_path = self.store.paths.live_auth_file();
         let mut roster = roster::init_if_absent(&self.store.paths)?;
         let (record, existing, from_api_key) = match live.kind() {
             AuthKind::ChatGpt => {
@@ -519,7 +566,7 @@ impl Switcher {
                 (record, existing, false)
             }
             AuthKind::ApiKey => {
-                let existing = self.slot_of_live(&roster, &live);
+                let existing = self.slot_of_live(&roster, live);
                 let slot = existing
                     .or(requested)
                     .unwrap_or_else(|| roster.next_free_slot());

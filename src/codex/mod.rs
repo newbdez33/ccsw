@@ -3,6 +3,7 @@
 pub mod app_server;
 pub mod auth;
 pub mod jwt;
+pub mod login;
 pub mod oauth;
 pub mod usage;
 

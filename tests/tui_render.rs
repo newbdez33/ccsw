@@ -12,7 +12,7 @@ use cswitch::cli::tui::TuiStart;
 use cswitch::model::{NormalizedUsage, ScopedWindow, WindowUsage, format_iso};
 use cswitch::store::AutoSwitchSettings;
 use cswitch::store::usage_store::{UsageEntry, UsageSentinel};
-use cswitch::tui::app::{Action, App, Command, ScreenKind};
+use cswitch::tui::app::{Action, ActionResult, App, Command, Inbound, ScreenKind};
 use cswitch::tui::snapshot::{AccountSnapshot, AccountsSnapshot};
 use cswitch::tui::theme::{DARK, ThemeName};
 
@@ -285,9 +285,10 @@ fn dashboard_menu_navigation_and_breadcrumb() {
     let rows = screen_rows(&render(&mut app, 100, 30, NOW));
     let (y, _) = find_row(&rows, "menu › add account");
     assert_eq!(rows[y], "   menu › add account");
-    assert_eq!(rows[y + 2], " ▌ From current Codex login");
-    assert_eq!(rows[y + 3], "   From an API key…");
-    assert_eq!(rows[y + 4], "   ← back");
+    assert_eq!(rows[y + 2], " ▌ Add new account");
+    assert_eq!(rows[y + 3], "   From current Codex login");
+    assert_eq!(rows[y + 4], "   From an API key…");
+    assert_eq!(rows[y + 5], "   ← back");
     app.handle_key(key(KeyCode::Esc), NOW);
     let rows = screen_rows(&render(&mut app, 100, 30, NOW));
     let (y, _) = find_row(&rows, "   menu");
@@ -309,6 +310,83 @@ fn dashboard_loading_and_empty_states() {
     let rows_empty = screen_rows(&render(&mut app, 100, 20, NOW));
     assert_eq!(rows_empty[1], "   No managed accounts yet.");
     assert!(rows_empty[2].contains("from your current Codex login, or from an API key"));
+}
+
+#[test]
+fn browser_login_starts_immediately_and_can_be_cancelled() {
+    let mut app = app_with(TuiStart::Dashboard);
+    for _ in 0..3 {
+        app.handle_key(key(KeyCode::Down), NOW);
+    }
+    app.handle_key(key(KeyCode::Enter), NOW);
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter), NOW),
+        vec![Command::Action(Action::AddNew)]
+    );
+    assert!(app.busy());
+    let rows = screen_rows(&render(&mut app, 100, 30, NOW));
+    find_row(&rows, "Opening your browser…");
+    app.receive(
+        Inbound::LoginUrl("https://auth.openai.com/oauth/authorize?state=test".into()),
+        NOW,
+    );
+    let rows = screen_rows(&render(&mut app, 100, 30, NOW));
+    find_row(&rows, "Complete sign-in in your browser.");
+    find_row(&rows, "https://auth.openai.com/oauth/authorize?state=test");
+    app.receive(
+        Inbound::LoginUrl(format!(
+            "https://auth.openai.com/oauth/authorize?state={}&end=visible",
+            "x".repeat(1200)
+        )),
+        NOW,
+    );
+    let rows = screen_rows(&render(&mut app, 80, 20, NOW));
+    assert!(rows.iter().all(|row| !row.contains("end=visible")));
+    for _ in 0..40 {
+        app.handle_key(key(KeyCode::Down), NOW);
+        render(&mut app, 80, 20, NOW);
+    }
+    let rows = screen_rows(&render(&mut app, 80, 20, NOW));
+    let visible_url: String = rows
+        .iter()
+        .filter_map(|row| row.split('│').nth(1))
+        .map(str::trim)
+        .collect();
+    assert!(visible_url.contains("end=visible"));
+    assert!(app.handle_key(key(KeyCode::Enter), NOW).is_empty());
+    assert_eq!(
+        app.handle_key(key(KeyCode::Esc), NOW),
+        vec![Command::CancelLogin]
+    );
+    assert!(app.busy(), "wait for worker cleanup before another login");
+    let rows = screen_rows(&render(&mut app, 100, 30, NOW));
+    find_row(&rows, "Cancelling login…");
+    assert_eq!(
+        app.receive(
+            Inbound::ActionDone(ActionResult {
+                action: Action::AddNew,
+                ok: true,
+                lines: vec![cswitch::switcher::Line::plain("Login cancelled.")],
+                switch: None,
+            }),
+            NOW
+        ),
+        vec![Command::Refresh { full: false }]
+    );
+    assert!(!app.busy());
+    app.handle_key(key(KeyCode::Esc), NOW);
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter), NOW),
+        vec![Command::Action(Action::AddNew)]
+    );
+    assert_eq!(
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            NOW
+        ),
+        vec![Command::Quit]
+    );
+    assert!(app.quit_requested());
 }
 
 #[test]

@@ -43,6 +43,7 @@ enum Msg {
         result: std::result::Result<Option<crate::switcher::ListSnapshot>, String>,
     },
     Action(ActionResult),
+    LoginUrl(String),
     Engine {
         id: u64,
         event: Event,
@@ -64,6 +65,20 @@ impl Drop for EngineHandle {
     }
 }
 
+struct LoginHandle {
+    cancel: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for LoginHandle {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 pub struct Runtime {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
@@ -74,6 +89,7 @@ pub struct Runtime {
     last_tick: Option<f64>,
     engine: Option<EngineHandle>,
     engine_seq: u64,
+    login: Option<LoginHandle>,
 }
 
 /// Unix seconds with sub-second precision.
@@ -94,6 +110,7 @@ impl Runtime {
             last_tick: None,
             engine: None,
             engine_seq: 0,
+            login: None,
         }
     }
 
@@ -158,9 +175,27 @@ impl Runtime {
 
     fn run_action(&mut self, action: Action) {
         let tx = self.tx.clone();
-        thread::spawn(move || {
-            let _ = tx.send(Msg::Action(perform(action)));
+        let is_login = action == Action::AddNew;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let thread = thread::spawn(move || {
+            let result = perform(action, &worker_cancel, |url| {
+                let _ = tx.send(Msg::LoginUrl(url));
+            });
+            let _ = tx.send(Msg::Action(result));
         });
+        if is_login {
+            self.login = Some(LoginHandle {
+                cancel,
+                thread: Some(thread),
+            });
+        }
+    }
+
+    fn cancel_login(&self) {
+        if let Some(login) = &self.login {
+            login.cancel.store(true, Ordering::SeqCst);
+        }
     }
 
     fn stop_engine(&mut self) {
@@ -204,7 +239,7 @@ impl Runtime {
     pub fn execute(&mut self, commands: Vec<Command>, app: &mut App, now: f64) {
         for command in commands {
             match command {
-                Command::Quit => {}
+                Command::Quit | Command::CancelLogin => self.cancel_login(),
                 Command::Refresh { .. } => self.request_refresh(app.store_only(), now),
                 Command::Action(action) => self.run_action(action),
                 Command::OpenAuto => {
@@ -246,7 +281,13 @@ impl Runtime {
                         result,
                     });
                 }
-                Ok(Msg::Action(result)) => inbound.push(Inbound::ActionDone(result)),
+                Ok(Msg::Action(result)) => {
+                    if result.action == Action::AddNew {
+                        self.login = None;
+                    }
+                    inbound.push(Inbound::ActionDone(result));
+                }
+                Ok(Msg::LoginUrl(url)) => inbound.push(Inbound::LoginUrl(url)),
                 Ok(Msg::Engine { id, event }) => {
                     if self.engine.as_ref().is_some_and(|e| e.id == id) {
                         inbound.push(Inbound::Engine(event));
@@ -266,12 +307,21 @@ impl Runtime {
 }
 
 /// Run one action against a fresh switcher whose prompts auto-confirm.
-fn perform(action: Action) -> ActionResult {
+fn perform(action: Action, cancel: &AtomicBool, on_url: impl FnMut(String)) -> ActionResult {
     let lines = Arc::new(Mutex::new(Vec::new()));
     let outcome: Result<Option<SwitchOutcome>> = (|| {
         let mut switcher = Switcher::from_env()?;
         switcher.ui = Box::new(CollectingUi(lines.clone()));
         match &action {
+            Action::AddNew => {
+                match crate::codex::login::browser_login(&switcher.store.paths, cancel, on_url)? {
+                    Some(auth) => {
+                        switcher.add_browser_account(&auth)?;
+                    }
+                    None => switcher.ui.say(UiLine::plain("Login cancelled.")),
+                }
+                Ok(None)
+            }
             Action::SwitchTo(number) => Ok(switcher
                 .switch_to(&number.to_string(), false, false)?
                 .map(|report| report.outcome)),

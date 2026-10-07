@@ -3,10 +3,14 @@
 All notable changes to `cswitch` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## v0.2.0 — 2026-10-07
 
 ### Added
 
+- Add **Add new account** to the dashboard's add-account menu. It opens browser
+  sign-in through the Codex CLI, then saves and activates the account.
+- Isolate browser login in a temporary Codex home to preserve saved credentials.
+  Show the login URL as a fallback and support cancellation and a ten-minute timeout.
 - The TUI shows the account's rate-limit reset cards as a bold green `♠ <n>` at the
   end of the account's header line: on the full card (dashboard, switch, watch and
   auto screens) after the active marker and age, on the dashboard minis after the

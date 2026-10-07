@@ -1,4 +1,4 @@
-//! Confirm, add-token and output modals (research notes `cswap-tui.md` §8).
+//! Confirmation, browser login, add-token and output modals.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
@@ -271,10 +271,18 @@ impl OutputModal {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct LoginModal {
+    pub url: Option<String>,
+    pub cancelling: bool,
+    pub scroll: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     Confirm(ConfirmModal),
     AddToken(AddTokenModal),
     Output(OutputModal),
+    Login(LoginModal),
 }
 
 /// What a key did to the modal.
@@ -284,11 +292,24 @@ pub enum ModalOutcome {
     Closed,
     Confirmed(PendingAction),
     Submitted(TokenForm),
+    CancelLogin,
 }
 
 impl Modal {
     pub fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
         match self {
+            Modal::Login(login) => match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    login.scroll = login.scroll.saturating_add(1);
+                    ModalOutcome::Open
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    login.scroll = login.scroll.saturating_sub(1);
+                    ModalOutcome::Open
+                }
+                KeyCode::Esc | KeyCode::Char('q') if !login.cancelling => ModalOutcome::CancelLogin,
+                _ => ModalOutcome::Open,
+            },
             Modal::Confirm(confirm) => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     ModalOutcome::Confirmed(confirm.action.clone())
@@ -393,6 +414,36 @@ fn wrapped(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
 pub fn modal_lines(modal: &Modal, width: usize, p: &Palette) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match modal {
+        Modal::Login(login) => {
+            lines.push(Line::from(Span::styled("Add new account", p.bold_accent())));
+            lines.push(Line::default());
+            if login.cancelling {
+                lines.push(Line::from("Cancelling login…"));
+            } else {
+                lines.extend(wrapped(
+                    if login.url.is_some() {
+                        "Complete sign-in in your browser. The account will be saved and activated."
+                    } else {
+                        "Opening your browser…"
+                    },
+                    width,
+                    p.fg_style(),
+                ));
+                lines.push(Line::from(Span::styled(
+                    "↑ ↓ scroll  ·  esc cancel",
+                    p.muted_style(),
+                )));
+                if let Some(url) = &login.url {
+                    lines.push(Line::default());
+                    lines.extend(wrapped(
+                        "If the browser did not open, use this URL:",
+                        width,
+                        p.muted_style(),
+                    ));
+                    lines.extend(wrapped(url, width, p.fg_style()));
+                }
+            }
+        }
         Modal::Confirm(confirm) => {
             lines.push(Line::from(Span::styled(
                 confirm.title.clone(),
@@ -507,10 +558,10 @@ pub fn modal_lines(modal: &Modal, width: usize, p: &Palette) -> Vec<Line<'static
 }
 
 /// Draw the modal centered over `area` after dimming what lies beneath.
-pub fn render_modal(buf: &mut Buffer, area: Rect, modal: &Modal, p: &Palette) {
+pub fn render_modal(buf: &mut Buffer, area: Rect, modal: &mut Modal, p: &Palette) {
     buf.set_style(area, Style::new().add_modifier(Modifier::DIM));
     let box_width = match modal {
-        Modal::Output(_) => 90u16,
+        Modal::Output(_) | Modal::Login(_) => 90u16,
         _ => 64u16,
     }
     .min(area.width * 9 / 10)
@@ -519,12 +570,23 @@ pub fn render_modal(buf: &mut Buffer, area: Rect, modal: &Modal, p: &Palette) {
     let lines = modal_lines(modal, inner_width, p);
     let max_height = (area.height * 4 / 5).max(5);
     let box_height = (lines.len() as u16 + 4).min(max_height);
+    let scroll = if let Modal::Login(login) = modal {
+        login.scroll = login.scroll.min(
+            lines
+                .len()
+                .saturating_sub(box_height.saturating_sub(4) as usize),
+        );
+        login.scroll as u16
+    } else {
+        0
+    };
     let rect = area.centered(
         Constraint::Length(box_width),
         Constraint::Length(box_height),
     );
     Clear.render(rect, buf);
     Paragraph::new(lines)
+        .scroll((scroll, 0))
         .wrap(Wrap { trim: false })
         .style(Style::new().fg(p.fg).bg(p.surface))
         .block(
