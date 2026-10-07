@@ -74,6 +74,7 @@ fn fixture() -> AccountsSnapshot {
             Some(NormalizedUsage {
                 five_hour: Some(window(12.0, 4 * 3600 + 2 * 60)),
                 seven_day: Some(window(40.0, 4 * 86_400 + 21 * 3600)),
+                reset_credits: Some(1),
                 ..NormalizedUsage::default()
             }),
         ),
@@ -92,6 +93,7 @@ fn fixture() -> AccountsSnapshot {
                     pct: 100.0,
                     resets_at: Some(format_iso(NOW as i64 + 5 * 86_400 + 3 * 3600)),
                 }],
+                reset_credits: Some(2),
                 ..NormalizedUsage::default()
             }),
         ),
@@ -190,10 +192,18 @@ fn dashboard_active_card_minis_menu_and_footer() {
     let (header_y, header) = find_row(&rows, "john.doe@gmail.com");
     assert_eq!(
         header,
-        "    2  john.doe@gmail.com  [Personal]   ● active   · 6m ago"
+        "    2  john.doe@gmail.com  [Personal]   ● active   · 6m ago   ♠ 2"
     );
     let dot = col(header, '●');
     assert_eq!(fg(&buf, dot, header_y), DARK.accent);
+    let cards = col(header, '♠');
+    assert_eq!(fg(&buf, cards, header_y), DARK.ok, "reset cards are green");
+    assert!(
+        buf[(cards, header_y as u16)]
+            .modifier
+            .contains(Modifier::BOLD),
+        "reset cards are bold"
+    );
 
     let (five_y, five) = find_row(&rows, "5h    ");
     assert!(
@@ -226,14 +236,17 @@ fn dashboard_active_card_minis_menu_and_footer() {
     assert_eq!(rows[header_y - 1], "", "blank line before the active card");
     assert_eq!(rows[fable_y + 1], "", "blank line after the active card");
     let (alice_y, alice) = find_row(&rows, "alice@corp.io");
-    assert_eq!(alice, "    1  alice@corp.io  [Acme]   5h 12% · 7d 40%");
+    assert_eq!(
+        alice,
+        "    1  alice@corp.io  [Acme]   5h 12% · 7d 40% · ♠ 1"
+    );
     assert_eq!(alice_y, header_y - 2);
     let pct = alice.find("12%").unwrap() as u16;
     assert_eq!(fg(&buf, pct, alice_y), DARK.ok);
     let (work_y, work) = find_row(&rows, "john.doe@company.com");
     assert_eq!(
-        work,
-        "    3  john.doe@company.com  [Work]  (disabled)   5h 96% · 7d 40%"
+        work, "    3  john.doe@company.com  [Work]  (disabled)   5h 96% · 7d 40%",
+        "no icon when the count is unknown"
     );
     assert_eq!(work_y, fable_y + 2);
     let ninety_six = work.find("96%").unwrap() as u16;

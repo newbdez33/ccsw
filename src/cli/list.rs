@@ -384,6 +384,7 @@ mod tests {
             }),
             limited: false,
             plan_type: None,
+            reset_credits: None,
         });
         e.fetched_at = Some(now as f64 - 10.0);
         e.age_s = Some(10.0);

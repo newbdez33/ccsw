@@ -404,6 +404,7 @@ pub fn parse_usage(body: &Value) -> std::result::Result<NormalizedUsage, String>
             .get("plan_type")
             .and_then(Value::as_str)
             .map(str::to_string),
+        reset_credits: parse_reset_credits(body),
     };
     if usage.is_empty() {
         return Err("usage response missing recognized quota fields".to_string());
@@ -467,6 +468,40 @@ fn scoped_window(item: &Value) -> Option<ScopedWindow> {
     })
 }
 
+/// `rate_limit_reset_credits` (or camelCase): the server's `available_count`,
+/// else the number of `credits[]` entries that are usable Codex resets (an
+/// `id`, `status` available or absent, `reset_type` codex or absent).
+fn parse_reset_credits(body: &Value) -> Option<u32> {
+    let reset = body
+        .get("rate_limit_reset_credits")
+        .or_else(|| body.get("rateLimitResetCredits"))?
+        .as_object()?;
+    if let Some(count) = reset
+        .get("available_count")
+        .or_else(|| reset.get("availableCount"))
+        .and_then(Value::as_u64)
+    {
+        return Some(count.min(u32::MAX as u64) as u32);
+    }
+    let text = |item: &Value, snake: &str, camel: &str| -> Option<String> {
+        item.get(snake)
+            .or_else(|| item.get(camel))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let available = reset
+        .get("credits")?
+        .as_array()?
+        .iter()
+        .filter(|item| text(item, "id", "id").is_some_and(|id| !id.trim().is_empty()))
+        .filter(|item| {
+            text(item, "reset_type", "resetType").is_none_or(|kind| kind == "codex_rate_limits")
+        })
+        .filter(|item| text(item, "status", "status").is_none_or(|status| status == "available"))
+        .count();
+    Some(available as u32)
+}
+
 /// `has_credits` defaults to true (older API); when false the balance is
 /// hidden so an included-usage plan does not show `$0.00`. `balance` may be
 /// a number or a numeric string.
@@ -510,6 +545,13 @@ mod tests {
             "rate_limit_reached_type": null,
             "spend_control": {"reached": false, "individual_limit": {"remaining_percent": 68}},
             "credits": {"has_credits": false, "unlimited": false, "balance": "0"},
+            "rate_limit_reset_credits": {
+                "available_count": 2,
+                "credits": [
+                    {"id": "cred_1", "reset_type": "codex_rate_limits", "status": "available"},
+                    {"id": "cred_2", "reset_type": "codex_rate_limits", "status": "consumed"}
+                ]
+            },
             "code_review_rate_limit": null,
             "additional_rate_limits": [
                 {
@@ -568,6 +610,53 @@ mod tests {
         );
         assert_eq!(usage.scoped[0].resets_at, Some(format_iso(1784430414)));
         assert_eq!(usage.scoped[2].resets_at, None);
+        assert_eq!(usage.reset_credits, Some(2));
+    }
+
+    #[test]
+    fn reset_credits_variants() {
+        let with = |reset_credits: Value| {
+            let mut body = json!({"rate_limit": {"primary_window": {"used_percent": 1}}});
+            body["rate_limit_reset_credits"] = reset_credits;
+            parse_usage(&body).unwrap().reset_credits
+        };
+        assert_eq!(
+            parse_usage(&json!({"rate_limit": {"primary_window": {"used_percent": 1}}}))
+                .unwrap()
+                .reset_credits,
+            None,
+            "absent field"
+        );
+        assert_eq!(with(json!(null)), None);
+        assert_eq!(with(json!({"available_count": 0})), Some(0));
+        assert_eq!(
+            with(json!({"available_count": 1, "credits": [
+                {"id": "a", "status": "available"}, {"id": "b", "status": "available"}
+            ]})),
+            Some(1),
+            "the server's count wins over the list"
+        );
+        assert_eq!(
+            with(json!({"credits": [
+                {"id": "a", "reset_type": "codex_rate_limits", "status": "available"},
+                {"id": "b", "reset_type": "codex_rate_limits", "status": "consumed"},
+                {"id": "c"},
+                {"id": "d", "reset_type": "other_product"},
+                {"status": "available"}
+            ]})),
+            Some(2),
+            "without a count: available codex entries with an id"
+        );
+        let camel = parse_usage(&json!({
+            "rate_limit": {"primary_window": {"used_percent": 1}},
+            "rateLimitResetCredits": {"availableCount": 3}
+        }))
+        .unwrap();
+        assert_eq!(camel.reset_credits, Some(3));
+        assert!(
+            parse_usage(&json!({"rate_limit_reset_credits": {"available_count": 2}})).is_err(),
+            "reset credits alone are not a usage measurement"
+        );
     }
 
     #[test]

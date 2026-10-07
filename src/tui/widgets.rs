@@ -7,10 +7,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 
-use crate::store::usage_store::UsageSentinel;
+use crate::store::usage_store::{UsageEntry, UsageSentinel};
 
 use super::data::{
-    age_note, credits_text, display_rows, is_stale, last_seen_note, reset_text, sentinel_label,
+    age_note, credits_text, display_rows, is_stale, last_seen_note, reset_cards_text, reset_text,
+    sentinel_label,
 };
 use super::snapshot::{AccountSnapshot, AccountsSnapshot};
 use super::theme::Palette;
@@ -119,6 +120,9 @@ pub fn account_card(
     if let Some(note) = age_note(acc.usage.age_s) {
         header.push_span(Span::styled(format!("   {note}"), p.muted_style()));
     }
+    if let Some(cards) = reset_cards_text(reset_credits(&acc.usage)) {
+        header.push_span(Span::styled(format!("   {cards}"), p.bold_ok()));
+    }
     let mut lines = vec![header];
     let usage = &acc.usage;
     if let Some(sentinel) = usage.sentinel {
@@ -193,6 +197,10 @@ pub fn account_card(
     lines
 }
 
+fn reset_credits(usage: &UsageEntry) -> Option<u32> {
+    usage.last_good.as_ref().and_then(|last| last.reset_credits)
+}
+
 /// The one-line form used for inactive accounts on the dashboard:
 /// ` 2  work@acme.dev  [personal]   5h 92% · 7d 63% (ahead) · Fable (!)`.
 pub fn mini_line(acc: &AccountSnapshot, now: f64, p: &Palette) -> Line<'static> {
@@ -249,6 +257,9 @@ pub fn mini_line(acc: &AccountSnapshot, now: f64, p: &Palette) -> Line<'static> 
             part.push(Span::styled(" (ahead)", p.warn_style()));
         }
         parts.push(part);
+    }
+    if let Some(cards) = reset_cards_text(reset_credits(usage)) {
+        parts.push(vec![Span::styled(cards, p.bold_ok())]);
     }
     if parts.is_empty() {
         line.push_span(Span::styled("usage unknown", p.muted_style()));
@@ -505,10 +516,11 @@ mod tests {
             }],
             ..NormalizedUsage::default()
         });
+        acc.usage.last_good.as_mut().unwrap().reset_credits = Some(2);
         let lines = account_card(&acc, 100, Some(90.0), now, p);
         assert_eq!(
             text(&lines[0]),
-            " 2  john.doe@gmail.com  [Personal]   ● active   · 6m ago"
+            " 2  john.doe@gmail.com  [Personal]   ● active   · 6m ago   ♠ 2"
         );
         assert_eq!(lines.len(), 3, "no 7d row without a weekly window");
         let five = text(&lines[1]);
@@ -576,6 +588,22 @@ mod tests {
         });
         let lines = account_card(&credits, 100, None, now, p);
         assert_eq!(text(&lines[2]), "    credits $12.50");
+        credits.usage.last_good.as_mut().unwrap().reset_credits = Some(2);
+        let lines = account_card(&credits, 100, None, now, p);
+        assert_eq!(
+            text(&lines[0]),
+            " 7  c@y.z  [personal]   ♠ 2",
+            "reset cards close the header line"
+        );
+        let cards = lines[0].spans.last().unwrap();
+        assert_eq!(cards.style.fg, Some(p.ok), "green");
+        assert!(cards.style.add_modifier.contains(Modifier::BOLD), "bold");
+        assert_eq!(text(&lines[2]), "    credits $12.50");
+        credits.usage.last_good.as_mut().unwrap().credits = None;
+        credits.usage.last_good.as_mut().unwrap().reset_credits = Some(0);
+        let lines = account_card(&credits, 100, None, now, p);
+        assert_eq!(text(&lines[0]), " 7  c@y.z  [personal]", "zero is hidden");
+        assert_eq!(lines.len(), 2, "no notes line without credits");
     }
 
     #[test]
@@ -598,12 +626,21 @@ mod tests {
                 pct: 100.0,
                 resets_at: None,
             }],
+            reset_credits: Some(2),
             ..NormalizedUsage::default()
         });
         let line = mini_line(&acc, now, p);
         assert_eq!(
             text(&line),
-            " 2  work@acme.dev  [personal]   5h 92% · 7d 63% (ahead) · Fable (!)"
+            " 2  work@acme.dev  [personal]   5h 92% · 7d 63% (ahead) · Fable (!) · ♠ 2"
+        );
+        let cards = line.spans.last().unwrap();
+        assert_eq!(cards.style.fg, Some(p.ok), "green");
+        assert!(cards.style.add_modifier.contains(Modifier::BOLD), "bold");
+        acc.usage.last_good.as_mut().unwrap().reset_credits = Some(0);
+        assert!(
+            text(&mini_line(&acc, now, p)).ends_with("Fable (!)"),
+            "zero is hidden"
         );
         acc.disabled = true;
         acc.usage.sentinel = Some(UsageSentinel::ReloginNeeded);

@@ -283,6 +283,7 @@ mod tests {
             }),
             limited: false,
             plan_type: Some("pro".into()),
+            reset_credits: None,
         }
     }
 

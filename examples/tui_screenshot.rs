@@ -77,6 +77,7 @@ fn fixture() -> AccountsSnapshot {
             NormalizedUsage {
                 five_hour: Some(window(12.0, 4 * 3600 + 2 * 60)),
                 seven_day: Some(window(40.0, 4 * 86_400 + 21 * 3600)),
+                reset_credits: Some(1),
                 ..NormalizedUsage::default()
             },
         ),
@@ -96,6 +97,7 @@ fn fixture() -> AccountsSnapshot {
                     pct: 31.0,
                     resets_at: Some(format_iso(NOW as i64 + 5 * 86_400 + 3 * 3600)),
                 }],
+                reset_credits: Some(2),
                 ..NormalizedUsage::default()
             },
         ),

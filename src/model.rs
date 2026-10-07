@@ -219,6 +219,9 @@ pub struct NormalizedUsage {
     pub limited: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_type: Option<String>,
+    /// Rate-limit reset credits ("reset cards") the account can still spend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<u32>,
 }
 
 impl NormalizedUsage {

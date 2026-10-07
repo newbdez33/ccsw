@@ -3,6 +3,18 @@
 All notable changes to `cswitch` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- The TUI shows the account's rate-limit reset cards as a bold green `♠ <n>` at the
+  end of the account's header line: on the full card (dashboard, switch, watch and
+  auto screens) after the active marker and age, on the dashboard minis after the
+  usage summary; nothing is shown at zero. The count comes from the usage API's
+  `rate_limit_reset_credits.available_count` (or, without a count, the number of
+  available Codex entries in its `credits[]`) and is cached as `reset_credits` in
+  `cache/usage.json`. `list` and `--json` do not carry it yet.
+
 ## v0.1.0 — 2026-09-29
 
 First release: the `cswap` (claude-swap 0.25.0) interface re-targeted at the OpenAI
