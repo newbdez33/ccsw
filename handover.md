@@ -8,7 +8,7 @@
 - Claude 自动切换第二阶段已通过 PR #3 合并并发布 `v0.5.0`。
 - Claude session 第三阶段已通过 PR #4 合并并发布 `v0.6.0`。
 - export/import 第四阶段已实现，版本设为 `v0.7.0`；按 PR → CI → squash merge → 标签发布流程交付。
-- 当前工作区为 `hraesvelg`；本阶段分支为 `newbdez33/hraesvelg`。
+- 当前工作区为 `hraesvelg`；本阶段分支为 `newbdez33/phase4-implementation`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换
