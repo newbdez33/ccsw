@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use axum::extract::State;
+use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -69,6 +69,8 @@ pub struct Recorded {
     pub path: String,
     pub bearer: Option<String>,
     pub refresh_token: Option<String>,
+    /// The `User-Agent` header (Claude usage requests only).
+    pub user_agent: Option<String>,
 }
 
 #[derive(Default)]
@@ -149,6 +151,15 @@ impl UsageMock {
             .count()
     }
 
+    /// The `User-Agent` of every Claude usage request, in order.
+    pub fn claude_usage_agents(&self) -> Vec<String> {
+        self.requests()
+            .into_iter()
+            .filter(|r| r.path == "/api/oauth/usage")
+            .filter_map(|r| r.user_agent)
+            .collect()
+    }
+
     pub fn claude_token_calls(&self) -> usize {
         self.requests()
             .iter()
@@ -225,6 +236,7 @@ async fn usage(State(log): State<Arc<Log>>, headers: HeaderMap) -> Response {
         path: "/wham/usage".into(),
         bearer: bearer.clone(),
         refresh_token: None,
+        user_agent: None,
     });
     if headers.get("chatgpt-account-id").is_none() {
         return (StatusCode::BAD_REQUEST, "missing ChatGPT-Account-ID").into_response();
@@ -238,6 +250,7 @@ async fn token(State(log): State<Arc<Log>>, Json(body): Json<Value>) -> Response
         path: "/oauth/token".into(),
         bearer: None,
         refresh_token: Some(refresh.clone()),
+        user_agent: None,
     });
     if body["grant_type"] != "refresh_token" || body["client_id"] != "app_EMoamEEZ73f0CkXaXp7hrann"
     {
@@ -271,16 +284,44 @@ fn claude_body(five: f64, seven: f64, seven_reset: &str) -> Value {
     })
 }
 
-async fn claude_usage(State(log): State<Arc<Log>>, headers: HeaderMap) -> Response {
+/// The limit-reset block Anthropic adds for `?cedar_ember=1`, but only when
+/// the request presents as the Claude Code CLI; any other client is told the
+/// surface is ineligible and sees no grants.
+fn limit_resets(query: Option<&str>, user_agent: Option<&str>) -> Value {
+    let asked = query.is_some_and(|q| q.split('&').any(|p| p == "cedar_ember=1"));
+    if !asked {
+        return Value::Null;
+    }
+    if !user_agent.is_some_and(|ua| ua.starts_with("claude-cli/")) {
+        return json!({"eligible": false, "ineligible_reason": "surface", "grants": []});
+    }
+    json!({"eligible": true, "grants": [
+        {"id": "grant-1", "label": "Saved reset", "resets_left": 1, "paused": false,
+         "starts_at": "2026-01-01T00:00:00Z", "ends_at": "2099-02-01T00:00:00Z",
+         "clears": ["five_hour", "seven_day"]},
+        {"id": "grant-2", "resets_left": 2, "paused": true}
+    ]})
+}
+
+async fn claude_usage(
+    State(log): State<Arc<Log>>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     let bearer = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_string);
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     log.requests.lock().unwrap().push(Recorded {
         path: "/api/oauth/usage".into(),
         bearer: bearer.clone(),
         refresh_token: None,
+        user_agent: user_agent.clone(),
     });
     if headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) != Some("oauth-2025-04-20") {
         return (StatusCode::BAD_REQUEST, "missing anthropic-beta").into_response();
@@ -290,6 +331,7 @@ async fn claude_usage(State(log): State<Arc<Log>>, headers: HeaderMap) -> Respon
             let mut b = claude_body(40.0, 55.0, "2099-01-03T10:00:00Z");
             b["extra_usage"] = json!({"is_enabled": true, "used_credits": 729, "monthly_limit": 5000, "utilization": 14.58, "currency": "USD"});
             b["limits"] = json!([{"kind": "weekly_scoped", "percent": 62, "resets_at": "2099-01-03T10:00:00Z", "scope": {"model": {"display_name": CLAUDE_POOL_NAME}}}]);
+            b["cedar_ember"] = limit_resets(query.as_deref(), user_agent.as_deref());
             Json(b).into_response()
         }
         CLAUDE_HOT => Json(claude_body(95.0, 20.0, "2099-01-03T10:00:00Z")).into_response(),
@@ -309,6 +351,7 @@ async fn claude_token(State(log): State<Arc<Log>>, Json(body): Json<Value>) -> R
         path: "/v1/oauth/token".into(),
         bearer: None,
         refresh_token: Some(refresh.clone()),
+        user_agent: None,
     });
     if body["grant_type"] != "refresh_token"
         || body["client_id"] != "9d1c250a-e61b-44d9-88ed-5944d1962f5e"

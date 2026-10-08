@@ -125,7 +125,11 @@ ccsw list --token-status # add stored-token expiry diagnostics
 Usage is fetched on demand (the active account plus one other account per command) and
 cached for three minutes, so run `ccsw list` again to fill in the remaining rows.
 Claude rows add a `$$` line for extra-usage spend and per-model windows such as
-`Fable: 62%`.
+`Fable: 62%`. The dashboard shows an account's saved limit resets (Codex's reset credits,
+Claude Code's `/limit-reset` grants) as a green `♠ n`. Anthropic lists those grants only
+for the Claude Code CLI, so Claude usage requests identify as the installed Claude Code
+(`claude-cli/<version> (external, cli) ccsw/<version>`, the version read from the `claude`
+on your `PATH`).
 
 ### JSON output for scripting
 

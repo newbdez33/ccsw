@@ -62,8 +62,8 @@ and `activeByProvider` carries both.
 | managed API key `sk-ant-api…` (`kind: api_key`); setup-token `sk-ant-oat…` wrapped as `{"claudeAiOauth": {"accessToken": …, "scopes": ["user:inference"]}}` | same wrapping; the slot file is `{"primaryApiKey": "sk-ant-api…", "oauthAccount": {…}}` for a managed key |
 | Claude Code locks (`claude_locks.py`): directory locks `<home>/.oauth_refresh.lock` then `<home>.lock` (`~/.claude.lock`), stale 60 s; `~/.claude.json.lock`, stale 10 s; touched every 3 s; 9 s wait budget per lock with 1–2 s jittered sleeps | `locks.rs`, identical protocol and constants; timeout → `LockError("Claude Code is holding <lock>; retry in a moment")`; no network while held |
 | refresh `POST https://platform.claude.com/v1/oauth/token`, JSON `{grant_type: "refresh_token", refresh_token, client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e"}`; response `access_token`, `expires_in`, optional `refresh_token`, `scope` | `oauth.rs`; `expiresAt = now_ms + expires_in·1000`, `scopes = scope.split(' ')`; expiring = `now_ms + 300 000 ≥ expiresAt`; override `CCSW_CLAUDE_TOKEN_URL` |
-| usage `GET https://api.anthropic.com/api/oauth/usage`, headers `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`, `User-Agent: claude-swap/1.0` | `usage.rs`; same headers, `User-Agent: ccsw/<version>`; override `CCSW_CLAUDE_USAGE_URL`; timeouts as the Codex client |
-| windows `five_hour`, `seven_day`, `extra_usage` → `spend`, `limits[]` with `scope.model.display_name` → `scoped[]` | `NormalizedUsage` gains `spend: Option<Spend>`; `five_hour`/`seven_day`/`scoped` as today; `limited` false, `plan_type` and `reset_credits` absent |
+| usage `GET https://api.anthropic.com/api/oauth/usage`, headers `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`, `User-Agent: claude-swap/1.0` | `usage.rs`; same headers plus `?cedar_ember=1`; `User-Agent: claude-cli/<installed version> (external, cli) ccsw/<version>` (the limit-reset block is served to the Claude Code CLI surface only; the version is read from the `claude` executable's install layout, else `FALLBACK_CLI_VERSION`); override `CCSW_CLAUDE_USAGE_URL`; timeouts as the Codex client |
+| windows `five_hour`, `seven_day`, `extra_usage` → `spend`, `limits[]` with `scope.model.display_name` → `scoped[]` | `NormalizedUsage` gains `spend: Option<Spend>`; `five_hour`/`seven_day`/`scoped` as today; `limited` false, `plan_type` absent; `reset_credits` = the `resets_left` of `cedar_ember.grants[]` that are not paused, started and not ended (absent when the block is missing or `eligible` is false) |
 | restart follow-up: Keychain `Restart Claude Code to apply immediately — otherwise the session can take up to ~30 seconds to pick up the new account.`; file `New account is active on your next message — no restart needed.` | verbatim, chosen by the backend the live write landed on |
 | session profile `CLAUDE_CONFIG_DIR`, Keychain service `Claude Code-credentials-<sha256(dir)[:8]>` per profile | `session.rs` (phase 3, §10) |
 | env scrub `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR` | same list, `run` only |
@@ -370,8 +370,10 @@ Each phase ships green on the quality gate and is usable on its own.
 3. A live Claude managed API key is captured by `add` (cswap refuses it).
 4. The active Claude account is never refreshed by ccsw.
 5. `--json` moves to `schemaVersion: 2`; `status.active` changes shape.
-6. The usage `User-Agent` is `ccsw/<version>`; if the endpoint's non-first-party budget
-   proves tighter under that string than under cswap's, the string is the only knob to turn.
+6. The usage `User-Agent` was `ccsw/<version>` until v0.7.1; since then it is
+   `claude-cli/<installed version> (external, cli) ccsw/<version>` because Anthropic lists
+   the saved limit resets for the Claude Code CLI surface only (owner's decision,
+   2026-10-08). The string is still the only knob to turn.
 7. Claude accounts show `organizationName` or `personal` as their tag; no plan label.
 8. The v1 omissions of §2 stand.
 

@@ -752,6 +752,7 @@ fn mixed_fixture() -> AccountsSnapshot {
             Some(NormalizedUsage {
                 five_hour: Some(window(3.0, 3600)),
                 seven_day: Some(window(22.0, 86_400)),
+                reset_credits: Some(1),
                 ..NormalizedUsage::default()
             }),
         ),
@@ -786,7 +787,10 @@ fn mixed_roster_shows_a_section_per_provider() {
     assert!(spend.contains("  25%  "), "{spend}");
     assert!(spend.ends_with("$12.50 / $50.00"), "{spend}");
     let (_, work) = find_row(&rows, "bob@work.com");
-    assert_eq!(work, "    7  bob@work.com  [Work]   5h 3% · 7d 22%");
+    assert_eq!(
+        work, "    7  bob@work.com  [Work]   5h 3% · 7d 22% · ♠ 1",
+        "a Claude account's limit resets show like Codex's"
+    );
 
     app.handle_key(key(KeyCode::Char('s')), NOW);
     let rows = screen_rows(&render(&mut app, 100, 50, NOW));
