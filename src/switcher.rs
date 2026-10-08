@@ -20,7 +20,7 @@ use crate::claude::live::{ClaudeLive, LiveLogin, backup_live as backup_claude_li
 use crate::codex::app_server::{restart_daemon_if_live_auth_changed, snapshot_live_auth};
 use crate::codex::auth::{AuthJson, AuthKind, backup_live};
 use crate::collect::{self, CollectMode, CollectOptions};
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::model::{
     AccountKind, AccountRecord, AccountRef, ActiveSlots, CurrentAccount, Identity, Roster,
     SwitchOutcome, now_unix,
@@ -199,9 +199,7 @@ impl Strategy {
             None => Ok(Self::Rotation),
             Some("best") => Ok(Self::Best),
             Some("next-available") => Ok(Self::NextAvailable),
-            Some(other) => Err(CswitchError::validation(format!(
-                "unknown strategy '{other}'"
-            ))),
+            Some(other) => Err(CcswError::validation(format!("unknown strategy '{other}'"))),
         }
     }
 
@@ -265,12 +263,12 @@ pub struct Switcher {
     pub ui: Box<dyn Ui>,
 }
 
-fn no_accounts() -> CswitchError {
-    CswitchError::config("No accounts are managed yet")
+fn no_accounts() -> CcswError {
+    CcswError::config("No accounts are managed yet")
 }
 
-fn missing(slot: u32) -> CswitchError {
-    CswitchError::AccountNotFound(format!("Account-{slot} does not exist"))
+fn missing(slot: u32) -> CcswError {
+    CcswError::AccountNotFound(format!("Account-{slot} does not exist"))
 }
 
 fn is_digits(text: &str) -> bool {
@@ -304,13 +302,13 @@ enum Capture {
     Claude(LiveLogin),
 }
 
-fn no_login_error(provider: Option<Provider>) -> CswitchError {
+fn no_login_error(provider: Option<Provider>) -> CcswError {
     match provider {
-        Some(provider) => CswitchError::config(format!(
+        Some(provider) => CcswError::config(format!(
             "No active {} account found. Please log in first.",
             provider.title()
         )),
-        None => CswitchError::config("No active Codex or Claude login found. Log in first."),
+        None => CcswError::config("No active Codex or Claude login found. Log in first."),
     }
 }
 
@@ -368,10 +366,10 @@ impl TokenKind {
 fn slot_arg(slot: Option<i64>) -> Result<Option<u32>> {
     match slot {
         None => Ok(None),
-        Some(n) if n < 1 => Err(CswitchError::config("Slot number must be >= 1")),
+        Some(n) if n < 1 => Err(CcswError::config("Slot number must be >= 1")),
         Some(n) => u32::try_from(n)
             .map(Some)
-            .map_err(|_| CswitchError::config("Slot number must be >= 1")),
+            .map_err(|_| CcswError::config("Slot number must be >= 1")),
     }
 }
 
@@ -396,7 +394,7 @@ fn live_email(live: &AuthJson) -> String {
 fn splice_oauth_account(live_api: &ClaudeLive, account: Value) -> Result<()> {
     #[cfg(test)]
     if tests::FAIL_CONFIG_SPLICE.with(std::cell::Cell::get) {
-        return Err(CswitchError::credential_write("injected config failure"));
+        return Err(CcswError::credential_write("injected config failure"));
     }
     live_api.update_global_config(|config| {
         config.insert(OAUTH_ACCOUNT_KEY.to_string(), account);
@@ -443,7 +441,7 @@ fn rename_if_exists(from: &Path, to: &Path) -> Result<()> {
         return Ok(());
     }
     fs::rename(from, to).map_err(|err| {
-        CswitchError::config(format!(
+        CcswError::config(format!(
             "could not move {} to {}: {err}",
             from.display(),
             to.display()
@@ -573,7 +571,7 @@ impl Switcher {
     ) -> Result<Option<u32>> {
         let aliased = alias_owner(roster, identifier).is_some();
         if !is_digits(identifier) && !aliased && !valid_email(identifier) {
-            return Err(CswitchError::validation(format!(
+            return Err(CcswError::validation(format!(
                 "Invalid account identifier: {identifier}"
             )));
         }
@@ -626,7 +624,7 @@ impl Switcher {
             Provider::Claude => {
                 let login = ClaudeLive::new(&self.store.paths, &SystemSecurity).read()?;
                 if login.credential.is_none() && login.keychain_unavailable {
-                    return Err(CswitchError::credential_read(
+                    return Err(CcswError::credential_read(
                         "The macOS Keychain is unavailable, so the current Claude login cannot be read. Unlock the Keychain and retry.",
                     ));
                 }
@@ -645,7 +643,7 @@ impl Switcher {
     ) -> Result<Vec<(Provider, AddOutcome)>> {
         let requested = slot_arg(slot)?;
         let alias = alias
-            .map(|a| normalize_alias(a).map_err(|e| CswitchError::validation(e.to_string())))
+            .map(|a| normalize_alias(a).map_err(|e| CcswError::validation(e.to_string())))
             .transpose()?;
         let providers: Vec<Provider> = provider.map_or_else(|| Provider::ALL.to_vec(), |p| vec![p]);
         if provider == Some(Provider::Codex) {
@@ -661,8 +659,8 @@ impl Switcher {
             return Err(no_login_error(provider));
         }
         if captures.len() > 1 && (requested.is_some() || alias.is_some()) {
-            return Err(CswitchError::validation(
-                "--slot/--alias need a single login; both a Codex and a Claude login were found. Say which: cswitch add codex … or cswitch add claude …",
+            return Err(CcswError::validation(
+                "--slot/--alias need a single login; both a Codex and a Claude login were found. Say which: ccsw add codex … or ccsw add claude …",
             ));
         }
         let _lock = self.store.lock()?;
@@ -751,12 +749,12 @@ impl Switcher {
         let (record, existing, suffix) = match credential.kind() {
             CredentialKind::OAuth | CredentialKind::SetupToken => {
                 let account = login.oauth_account.as_ref().ok_or_else(|| {
-                    CswitchError::credential_read(
+                    CcswError::credential_read(
                         "the Claude Code login carries no oauthAccount; log in with Claude Code first",
                     )
                 })?;
                 let identity = account.identity().ok_or_else(|| {
-                    CswitchError::credential_read("the Claude Code login carries no email address")
+                    CcswError::credential_read("the Claude Code login carries no email address")
                 })?;
                 let mut record = AccountRecord::new(identity.email.clone());
                 record.provider = Provider::Claude;
@@ -777,7 +775,7 @@ impl Switcher {
                 (record, existing, Some("from API key"))
             }
             CredentialKind::Unknown => {
-                return Err(CswitchError::credential_read(
+                return Err(CcswError::credential_read(
                     "the Claude Code login holds neither an OAuth credential nor an API key",
                 ));
             }
@@ -840,7 +838,7 @@ impl Switcher {
             AuthKind::ChatGpt => {
                 let info = live.account_info();
                 let identity = live.identity().ok_or_else(|| {
-                    CswitchError::credential_read(format!(
+                    CcswError::credential_read(format!(
                         "{}: the login carries no email or account id",
                         live_path.display()
                     ))
@@ -863,7 +861,7 @@ impl Switcher {
                 (record, existing, true)
             }
             AuthKind::Unknown => {
-                return Err(CswitchError::credential_read(format!(
+                return Err(CcswError::credential_read(format!(
                     "{}: holds neither a ChatGPT login nor an API key",
                     live_path.display()
                 )));
@@ -888,17 +886,17 @@ impl Switcher {
         let requested = slot_arg(slot)?;
         let token = token.trim();
         if token.is_empty() {
-            return Err(CswitchError::validation("Token cannot be empty"));
+            return Err(CcswError::validation("Token cannot be empty"));
         }
         if token.starts_with('{') {
-            return Err(CswitchError::validation(
+            return Err(CcswError::validation(
                 "Token must be an API key or setup-token, not a JSON object",
             ));
         }
         if let Some(email) = email
             && !valid_email(email)
         {
-            return Err(CswitchError::validation(format!(
+            return Err(CcswError::validation(format!(
                 "Invalid email format: {email}"
             )));
         }
@@ -923,7 +921,7 @@ impl Switcher {
                 .record(slot)
                 .is_some_and(|r| r.is_api_key() != kind.is_api_key())
         {
-            return Err(CswitchError::validation(format!(
+            return Err(CcswError::validation(format!(
                 "'{email}' already exists as an OAuth account (slot {slot}); cannot add it as an API-key account. Pass a distinct --email."
             )));
         }
@@ -979,7 +977,7 @@ impl Switcher {
             && Some(owner) != existing
             && owner != target
         {
-            return Err(CswitchError::validation(format!(
+            return Err(CcswError::validation(format!(
                 "Alias '{alias}' is already used by account {owner}"
             )));
         }
@@ -1045,7 +1043,7 @@ impl Switcher {
             && let Some(owner) = alias_owner(roster, alias)
             && owner != slot
         {
-            return Err(CswitchError::validation(format!(
+            return Err(CcswError::validation(format!(
                 "Alias '{alias}' is already used by account {owner}"
             )));
         }
@@ -1188,7 +1186,7 @@ impl Switcher {
                 .is_empty()
             {
                 self.say(Line::warning(
-                    "  No accounts remain in rotation — auto-switch and bare switch have nothing to pick. Re-enable one with cswitch enable <num|email>.",
+                    "  No accounts remain in rotation — auto-switch and bare switch have nothing to pick. Re-enable one with ccsw enable <num|email>.",
                 ));
             }
         } else {
@@ -1267,7 +1265,7 @@ impl Switcher {
             None
         };
         let Some(target_slot) = parsed else {
-            return Err(CswitchError::validation(format!(
+            return Err(CcswError::validation(format!(
                 "Target slot must be a positive slot number, got: '{target}' (use `swap` to trade two accounts by identifier)"
             )));
         };
@@ -1385,7 +1383,7 @@ impl Switcher {
     pub fn purge(&mut self) -> Result<bool> {
         let root = self.store.paths.backup_root.clone();
         self.say(Line::warning(
-            "This will remove ALL cswitch data from your system:",
+            "This will remove ALL ccsw data from your system:",
         ));
         self.say(Line::plain(format!(
             "  - Backup directory: {}",
@@ -1412,12 +1410,12 @@ impl Switcher {
         }
         if root.exists() {
             fs::remove_dir_all(&root).map_err(|err| {
-                CswitchError::config(format!("could not remove {}: {err}", root.display()))
+                CcswError::config(format!("could not remove {}: {err}", root.display()))
             })?;
             self.say(Line::new().push(Style::Accent, "Removed:"));
             self.say(Line::plain(format!("  - {}", root.display())));
         } else {
-            self.say(Line::dimmed("No cswitch data found to remove."));
+            self.say(Line::dimmed("No ccsw data found to remove."));
         }
         self.say(Line::new().push(Style::Accent, "Purge complete."));
         Ok(true)
@@ -1441,7 +1439,7 @@ impl Switcher {
         if report.outcome.reason == "already-active" {
             self.say(Line::new().push(Style::Accent, &report.outcome.message));
             self.say(Line::dimmed(format!(
-                "To rewrite the live login from the stored backup (e.g. after --import), run: cswitch switch {slot} --force"
+                "To rewrite the live login from the stored backup (e.g. after --import), run: ccsw switch {slot} --force"
             )));
         }
         Ok(Some(report))
@@ -1466,8 +1464,8 @@ impl Switcher {
         let mut stored = credentials::read(&self.store, target)?
             .map(AuthJson::from_value)
             .ok_or_else(|| {
-                CswitchError::switch(format!(
-                    "Account-{target} has no stored credentials. Re-add with: cswitch add --slot {target}"
+                CcswError::switch(format!(
+                    "Account-{target} has no stored credentials. Re-add with: ccsw add --slot {target}"
                 ))
             })?;
         let live_path = self.store.paths.live_auth_file();
@@ -1610,18 +1608,18 @@ impl Switcher {
 
         let store_lock = self.store.lock()?;
         let stored = credentials::read(&self.store, target)?.ok_or_else(|| {
-            CswitchError::switch(format!(
-                "Account-{target} has no stored credentials. Re-add with: cswitch add claude --slot {target}"
+            CcswError::switch(format!(
+                "Account-{target} has no stored credentials. Re-add with: ccsw add claude --slot {target}"
             ))
         })?;
         let stored = SlotFile::from_value(&stored).map_err(|err| {
-            CswitchError::switch(format!(
-                "Account-{target}'s stored credentials are unusable ({err}). Re-add with: cswitch add claude --slot {target}"
+            CcswError::switch(format!(
+                "Account-{target}'s stored credentials are unusable ({err}). Re-add with: ccsw add claude --slot {target}"
             ))
         })?;
         if stored.credential.kind() == CredentialKind::Unknown {
-            return Err(CswitchError::switch(format!(
-                "Account-{target}'s stored credentials are unusable (no login in the slot file). Re-add with: cswitch add claude --slot {target}"
+            return Err(CcswError::switch(format!(
+                "Account-{target}'s stored credentials are unusable (no login in the slot file). Re-add with: ccsw add claude --slot {target}"
             )));
         }
         let claude_locks = crate::claude::locks::acquire(&self.store.paths)?;
@@ -1840,7 +1838,7 @@ impl Switcher {
                     return Ok(noop(
                         Some(from),
                         "unmanaged-account",
-                        "Active account is not managed; run cswitch add".to_string(),
+                        "Active account is not managed; run ccsw add".to_string(),
                     ));
                 }
                 self.say(Line::plain(format!(
@@ -1849,9 +1847,7 @@ impl Switcher {
                 let slot = match self.add_account(provider, None, None)? {
                     AddOutcome::Added { slot } | AddOutcome::Updated { slot } => slot,
                     AddOutcome::Cancelled => {
-                        return Err(CswitchError::switch(
-                            "Adding the active account was cancelled",
-                        ));
+                        return Err(CcswError::switch("Adding the active account was cancelled"));
                     }
                 };
                 self.say(Line::plain(format!(
@@ -1925,8 +1921,8 @@ impl Switcher {
         match present.as_slice() {
             [] => Ok(Provider::Codex),
             [only] => Ok(*only),
-            _ => Err(CswitchError::config(format!(
-                "Both Codex and Claude accounts are managed — say which: cswitch {verb} codex | cswitch {verb} claude"
+            _ => Err(CcswError::config(format!(
+                "Both Codex and Claude accounts are managed — say which: ccsw {verb} codex | ccsw {verb} claude"
             ))),
         }
     }
@@ -1971,12 +1967,12 @@ impl Switcher {
             return Ok(report);
         }
         Err(if any_disabled {
-            CswitchError::config(
-                "No accounts remain in rotation. Re-enable one with: cswitch enable <num|email>",
+            CcswError::config(
+                "No accounts remain in rotation. Re-enable one with: ccsw enable <num|email>",
             )
         } else {
-            CswitchError::config(
-                "No managed accounts have valid stored credentials. Re-add a slot with: cswitch add --slot <number>",
+            CcswError::config(
+                "No managed accounts have valid stored credentials. Re-add a slot with: ccsw add --slot <number>",
             )
         })
     }
@@ -1990,7 +1986,7 @@ impl Switcher {
         self.skip(
             warnings,
             slot,
-            &format!("no stored credentials, re-add with cswitch add --slot {slot}"),
+            &format!("no stored credentials, re-add with ccsw add --slot {slot}"),
             "no stored credentials",
         );
     }
@@ -2105,7 +2101,7 @@ impl Switcher {
             }
             let message = "No other accounts have valid stored credentials.";
             self.say(Line::dimmed(format!(
-                "{message}\nRe-add a skipped slot with: cswitch add --slot <number>"
+                "{message}\nRe-add a skipped slot with: ccsw add --slot <number>"
             )));
             return Ok(noop("no-valid-target", message.to_string(), warnings));
         };
@@ -2153,7 +2149,7 @@ impl Switcher {
         };
         let Some(current_head) = head(live_slot) else {
             let message = format!(
-                "Current account usage is unavailable — staying on Account-{live_slot}. Run cswitch switch to rotate."
+                "Current account usage is unavailable — staying on Account-{live_slot}. Run ccsw switch to rotate."
             );
             self.say(Line::dimmed(&message));
             return Ok(noop("usage-unavailable", message));
@@ -2171,7 +2167,7 @@ impl Switcher {
             .collect();
         if known.is_empty() {
             let message = format!(
-                "No other account has usage data to compare — staying on Account-{live_slot}. Run cswitch switch to rotate."
+                "No other account has usage data to compare — staying on Account-{live_slot}. Run ccsw switch to rotate."
             );
             self.say(Line::dimmed(&message));
             return Ok(noop("usage-unavailable", message));
@@ -2357,7 +2353,7 @@ impl crate::autoswitch::AutoFacade for Switcher {
     fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
         Switcher::switch_to(self, &slot.to_string(), false, false)?
             .map(|report| report.outcome)
-            .ok_or_else(|| CswitchError::switch("switch cancelled"))
+            .ok_or_else(|| CcswError::switch("switch cancelled"))
     }
 }
 
@@ -3030,10 +3026,7 @@ mod tests {
         f.answer("n");
         assert!(!f.switcher.purge().unwrap());
         let lines = f.lines();
-        assert_eq!(
-            lines[0],
-            "This will remove ALL cswitch data from your system:"
-        );
+        assert_eq!(lines[0], "This will remove ALL ccsw data from your system:");
         assert!(lines[1].starts_with("  - Backup directory: "));
         assert_eq!(lines[2], "  - All stored account credential files");
         assert_eq!(
@@ -3305,7 +3298,7 @@ mod tests {
         assert_eq!(err.type_name(), "ConfigError");
         assert_eq!(
             err.to_string(),
-            "Both Codex and Claude accounts are managed — say which: cswitch switch codex | cswitch switch claude"
+            "Both Codex and Claude accounts are managed — say which: ccsw switch codex | ccsw switch claude"
         );
         fx.lines.borrow_mut().clear();
         let report = fx

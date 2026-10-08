@@ -7,12 +7,12 @@ use std::fs;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use ccsw::cli::tui::TuiStart;
+use ccsw::paths::Paths;
+use ccsw::tui::app::{App, Inbound};
+use ccsw::tui::theme::ThemeName;
+use ccsw::tui::worker::Runtime;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use cswitch::cli::tui::TuiStart;
-use cswitch::paths::Paths;
-use cswitch::tui::app::{App, Inbound};
-use cswitch::tui::theme::ThemeName;
-use cswitch::tui::worker::Runtime;
 use support::{Cli, chatgpt_auth_at};
 
 const LOGIN_SCRIPT: &str = r#"#!/bin/sh

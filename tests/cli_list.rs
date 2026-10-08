@@ -15,7 +15,7 @@ fn first_run_json_never_prompts() {
         json!({"schemaVersion": 2, "activeAccountNumber": null, "active": {"codex": null, "claude": null}, "accounts": []})
     );
     assert!(
-        !cli.cswitch_home.exists(),
+        !cli.ccsw_home.exists(),
         "a read-only command creates nothing"
     );
 }
@@ -34,9 +34,9 @@ fn first_run_human_offers_to_add_the_live_login() {
     let run = cli.run_with_stdin(&["list"], "n\n");
     assert_eq!(
         run.stdout,
-        "No accounts are managed yet.\nNo managed accounts found. Add current account (alice@example.com) to managed list? [Y/n] Setup cancelled. You can run 'cswitch add' later.\n"
+        "No accounts are managed yet.\nNo managed accounts found. Add current account (alice@example.com) to managed list? [Y/n] Setup cancelled. You can run 'ccsw add' later.\n"
     );
-    assert!(!cli.cswitch_home.join("sequence.json").exists());
+    assert!(!cli.ccsw_home.join("sequence.json").exists());
 
     let run = cli.run_with_stdin(&["ls"], "\n");
     assert_eq!(run.status, 0);

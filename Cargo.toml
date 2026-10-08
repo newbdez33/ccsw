@@ -1,17 +1,17 @@
 [package]
-name = "cswitch"
+name = "ccsw"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Multi-account switcher for the OpenAI Codex CLI and Claude Code (cswap-compatible interface)"
 license = "MIT"
-repository = "https://github.com/newbdez33/cswitch"
+repository = "https://github.com/newbdez33/ccsw"
 readme = "README.md"
 keywords = ["codex", "claude", "account-switcher", "cli", "tui"]
 categories = ["command-line-utilities"]
 
 [[bin]]
-name = "cswitch"
+name = "ccsw"
 path = "src/main.rs"
 
 [dependencies]

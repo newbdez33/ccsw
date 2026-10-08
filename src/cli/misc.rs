@@ -6,9 +6,9 @@ use crate::switcher::Switcher;
 
 use super::{VerbArgs, usage_error_for, with_switcher};
 
-const ALIAS_USAGE: &str = "usage: cswitch alias [-h] [--unset] [--debug] [NUM|EMAIL] [NAME]";
-const SWAP_USAGE: &str = "usage: cswitch swap [-h] [--debug] NUM|EMAIL NUM|EMAIL";
-const MOVE_USAGE: &str = "usage: cswitch move [-h] [--debug] NUM|EMAIL SLOT";
+const ALIAS_USAGE: &str = "usage: ccsw alias [-h] [--unset] [--debug] [NUM|EMAIL] [NAME]";
+const SWAP_USAGE: &str = "usage: ccsw swap [-h] [--debug] NUM|EMAIL NUM|EMAIL";
+const MOVE_USAGE: &str = "usage: ccsw move [-h] [--debug] NUM|EMAIL SLOT";
 
 pub fn alias_cmd(argv: Vec<String>) -> i32 {
     let args = match VerbArgs::parse(&argv, &["--unset"]) {
@@ -33,10 +33,10 @@ options:
   --debug     Enable debug logging
 
 examples:
-  cswitch alias 2 dev
-  cswitch alias user@example.com dev
-  cswitch alias 2 --unset
-  cswitch alias                         # list all aliases"
+  ccsw alias 2 dev
+  ccsw alias user@example.com dev
+  ccsw alias 2 --unset
+  ccsw alias                         # list all aliases"
         );
         return 0;
     }
@@ -77,13 +77,13 @@ pub fn swap_cmd(argv: Vec<String>) -> i32 {
         println!(
             "{SWAP_USAGE}
 
-Exchange two accounts' slot numbers, so they trade places in `cswitch list` and
+Exchange two accounts' slot numbers, so they trade places in `ccsw list` and
 as numeric targets. Aliases, backups, and session history move with their
 account.
 
 examples:
-  cswitch swap 1 2
-  cswitch swap dev user@example.com"
+  ccsw swap 1 2
+  ccsw swap dev user@example.com"
         );
         return 0;
     }
@@ -127,9 +127,9 @@ and frees its old slot; an occupied slot swaps the two. Aliases, backups, and
 session history move with the account.
 
 examples:
-  cswitch move user@example.com 1   move an account onto shortcut 1
-  cswitch move dev 1                by alias
-  cswitch move 2 1                  by number (swaps if slot 1 is taken)"
+  ccsw move user@example.com 1   move an account onto shortcut 1
+  ccsw move dev 1                by alias
+  ccsw move 2 1                  by number (swaps if slot 1 is taken)"
         );
         return 0;
     }
@@ -165,17 +165,17 @@ pub fn purge(switcher: &mut Switcher) -> Result<i32> {
 }
 
 pub fn menubar() -> i32 {
-    eprintln!("The menu bar is not available in cswitch.");
+    eprintln!("The menu bar is not available in ccsw.");
     1
 }
 
-/// Guidance only: cswitch does not upgrade itself.
+/// Guidance only: ccsw does not upgrade itself.
 pub fn upgrade() -> i32 {
     eprintln!(
-        "cswitch does not upgrade itself. To install the latest release, run:
-  cargo install --git https://github.com/newbdez33/cswitch --locked
+        "ccsw does not upgrade itself. To install the latest release, run:
+  cargo install --git https://github.com/newbdez33/ccsw --locked
 or download a release binary from:
-  https://github.com/newbdez33/cswitch/releases"
+  https://github.com/newbdez33/ccsw/releases"
     );
     1
 }

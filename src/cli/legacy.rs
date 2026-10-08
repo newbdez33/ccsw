@@ -7,8 +7,8 @@
 use crate::VERSION;
 use crate::provider::Provider;
 
-pub const PROG: &str = "cswitch";
-pub const USAGE_LINE: &str = "usage: cswitch <command> [args] [options]";
+pub const PROG: &str = "ccsw";
+pub const USAGE_LINE: &str = "usage: ccsw <command> [args] [options]";
 
 /// Verbs rewritten to their legacy flag. `switch` is special-cased in [`translate`].
 const VERB_FLAGS: &[(&str, &str)] = &[
@@ -349,35 +349,35 @@ pub fn help_text() -> String {
 Multi-Account Switcher for OpenAI Codex and Claude Code
 
 Commands:
-  cswitch help                       show this help
-  cswitch list [codex|claude]        list managed accounts (both providers by default)
-  cswitch status [codex|claude]      show the active account of each provider
-  cswitch switch [codex|claude]      rotate to the next account of one provider
-  cswitch switch <num|email>         switch to a specific account (Codex or Claude)
-  cswitch add [codex|claude]         add the current login(s)
-  cswitch add-token [TOKEN|-]        register an OpenAI API key, or an Anthropic API key / setup-token (sk-ant-…)
-  cswitch remove <num|email>         remove an account
-  cswitch disable <num|email>        hold an account out of auto-rotation
-  cswitch enable <num|email>         return a disabled account to rotation
-  cswitch run <num|email> [-- ...]   run as an account, this terminal only
-  cswitch run                        run the current dir's mapped account
-  cswitch env <num|email>            print the CODEX_HOME export for an account
-  cswitch map <num|email> [path]     map a directory to an account
-  cswitch map                        list directory mappings
-  cswitch unmap [path]               remove a directory mapping
-  cswitch alias <num|email> <name>   set a short alias for an account
-  cswitch alias <num|email> --unset  remove an account's alias
-  cswitch alias                      list all aliases
-  cswitch swap <a> <b>               exchange two accounts' slot numbers
-  cswitch move <a> <slot>            assign an account to a slot (swaps if taken)
-  cswitch auto                       auto-switch when nearing rate limits
-  cswitch config [set KEY VALUE]     show or change settings (settings.json)
-  cswitch export <path>              export accounts
-  cswitch import <path>              import accounts
-  cswitch tui                        interactive dashboard (also: bare cswitch)
-  cswitch watch                      dashboard, opened on the live watch page
-  cswitch upgrade                    how to upgrade to the latest release
-  cswitch purge                      remove all cswitch data
+  ccsw help                       show this help
+  ccsw list [codex|claude]        list managed accounts (both providers by default)
+  ccsw status [codex|claude]      show the active account of each provider
+  ccsw switch [codex|claude]      rotate to the next account of one provider
+  ccsw switch <num|email>         switch to a specific account (Codex or Claude)
+  ccsw add [codex|claude]         add the current login(s)
+  ccsw add-token [TOKEN|-]        register an OpenAI API key, or an Anthropic API key / setup-token (sk-ant-…)
+  ccsw remove <num|email>         remove an account
+  ccsw disable <num|email>        hold an account out of auto-rotation
+  ccsw enable <num|email>         return a disabled account to rotation
+  ccsw run <num|email> [-- ...]   run as an account, this terminal only
+  ccsw run                        run the current dir's mapped account
+  ccsw env <num|email>            print the CODEX_HOME export for an account
+  ccsw map <num|email> [path]     map a directory to an account
+  ccsw map                        list directory mappings
+  ccsw unmap [path]               remove a directory mapping
+  ccsw alias <num|email> <name>   set a short alias for an account
+  ccsw alias <num|email> --unset  remove an account's alias
+  ccsw alias                      list all aliases
+  ccsw swap <a> <b>               exchange two accounts' slot numbers
+  ccsw move <a> <slot>            assign an account to a slot (swaps if taken)
+  ccsw auto                       auto-switch when nearing rate limits
+  ccsw config [set KEY VALUE]     show or change settings (settings.json)
+  ccsw export <path>              export accounts
+  ccsw import <path>              import accounts
+  ccsw tui                        interactive dashboard (also: bare ccsw)
+  ccsw watch                      dashboard, opened on the live watch page
+  ccsw upgrade                    how to upgrade to the latest release
+  ccsw purge                      remove all ccsw data
 
 Aliases: ls=list  rm=remove  update=upgrade
 
@@ -417,20 +417,20 @@ options:
                         'switch', 'add', 'list' or 'status'
 
 Flags combine with subcommands:
-  cswitch switch --strategy best           # pick the account with most quota left
-  cswitch switch --strategy next-available # rotate, skipping rate-limited accounts
-  cswitch switch claude                     # rotate among the Claude accounts
-  cswitch switch user@example.com
-  cswitch list --token-status
-  cswitch list --json
-  cswitch add --slot 3                      # add to a specific slot
-  cswitch add-token sk-... --email me@example.com
-  cswitch add-token sk-ant-oat01-... --email me@example.com
-  cswitch run 2 -- resume                   # forward args after '--' to codex
-  cswitch auto --once                       # single auto-switch tick (cron-friendly)
-  cswitch config set autoswitch.threshold 80
+  ccsw switch --strategy best           # pick the account with most quota left
+  ccsw switch --strategy next-available # rotate, skipping rate-limited accounts
+  ccsw switch claude                     # rotate among the Claude accounts
+  ccsw switch user@example.com
+  ccsw list --token-status
+  ccsw list --json
+  ccsw add --slot 3                      # add to a specific slot
+  ccsw add-token sk-... --email me@example.com
+  ccsw add-token sk-ant-oat01-... --email me@example.com
+  ccsw run 2 -- resume                   # forward args after '--' to codex
+  ccsw auto --once                       # single auto-switch tick (cron-friendly)
+  ccsw config set autoswitch.threshold 80
 
-The original flag spellings (cswitch --switch, cswitch --list, ...) keep working.
+The original flag spellings (ccsw --switch, ccsw --list, ...) keep working.
 "
     )
 }
@@ -480,8 +480,8 @@ mod tests {
             (&["rm", "2"], &["--remove-account", "2"]),
             (&["update"], &["--upgrade"]),
             (
-                &["export", "b.cswitch", "--full"],
-                &["--export", "b.cswitch", "--full"],
+                &["export", "b.ccsw", "--full"],
+                &["--export", "b.ccsw", "--full"],
             ),
             (&["bogus"], &["bogus"]),
             (&["help"], &["--help"]),
@@ -560,8 +560,8 @@ mod tests {
     #[test]
     fn cross_flag_validation_in_order() {
         let check = |args: &[&str]| validate(&parse(&argv(args)).unwrap()).unwrap_err();
-        assert_eq!(check(&[]), "no command given — try 'cswitch help'");
-        assert_eq!(check(&["--json"]), "no command given — try 'cswitch help'");
+        assert_eq!(check(&[]), "no command given — try 'ccsw help'");
+        assert_eq!(check(&["--json"]), "no command given — try 'ccsw help'");
         assert_eq!(
             check(&["--status", "--token-status"]),
             "--token-status can only be used with 'list'"
@@ -628,13 +628,13 @@ mod tests {
     #[test]
     fn help_and_version() {
         let help = help_text();
-        assert!(help.starts_with("usage: cswitch <command> [args] [options]\n"));
+        assert!(help.starts_with("usage: ccsw <command> [args] [options]\n"));
         assert!(help.contains("Multi-Account Switcher for OpenAI Codex and Claude Code"));
         assert!(help.contains("Aliases: ls=list  rm=remove  update=upgrade"));
         assert!(help.contains("keep working"));
-        assert!(help.contains("cswitch switch [codex|claude]"));
+        assert!(help.contains("ccsw switch [codex|claude]"));
         assert!(help.contains("sk-ant-"));
         assert!(!help.contains("cswap "));
-        assert_eq!(version_line(), format!("cswitch {VERSION}"));
+        assert_eq!(version_line(), format!("ccsw {VERSION}"));
     }
 }

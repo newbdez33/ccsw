@@ -2,7 +2,7 @@
 
 use std::io::{self, BufRead, IsTerminal};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::provider::Provider;
 use crate::switcher::Switcher;
 
@@ -37,14 +37,14 @@ fn read_stdin_line() -> Result<String> {
     io::stdin()
         .lock()
         .read_line(&mut line)
-        .map_err(|err| CswitchError::validation(format!("could not read the token: {err}")))?;
+        .map_err(|err| CcswError::validation(format!("could not read the token: {err}")))?;
     Ok(line.trim_end_matches(['\n', '\r']).to_string())
 }
 
 fn prompt_token() -> Result<String> {
     if io::stdin().is_terminal() {
         rpassword::prompt_password("Token: ")
-            .map_err(|err| CswitchError::validation(format!("could not read the token: {err}")))
+            .map_err(|err| CcswError::validation(format!("could not read the token: {err}")))
     } else {
         read_stdin_line()
     }

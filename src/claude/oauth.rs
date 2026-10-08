@@ -13,9 +13,9 @@ pub const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 /// Claude Code's OAuth client id.
 pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
-/// The token endpoint, or the `CSWITCH_CLAUDE_TOKEN_URL` override (tests).
+/// The token endpoint, or the `CCSW_CLAUDE_TOKEN_URL` override (tests).
 pub fn token_url() -> String {
-    token_url_from(std::env::var("CSWITCH_CLAUDE_TOKEN_URL").ok().as_deref())
+    token_url_from(std::env::var("CCSW_CLAUDE_TOKEN_URL").ok().as_deref())
 }
 
 fn token_url_from(value: Option<&str>) -> String {

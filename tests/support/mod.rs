@@ -1,4 +1,4 @@
-//! Drives the built `cswitch` binary against a temporary store, a temporary
+//! Drives the built `ccsw` binary against a temporary store, a temporary
 //! `CODEX_HOME`, a fake `codex` on `PATH`, and usage/token endpoints that
 //! refuse connections so every fetch fails fast.
 #![allow(dead_code)]
@@ -83,19 +83,19 @@ impl Run {
 
 pub struct Cli {
     pub root: tempfile::TempDir,
-    pub cswitch_home: PathBuf,
+    pub ccsw_home: PathBuf,
     pub codex_home: PathBuf,
     pub bin_dir: PathBuf,
     pub log: PathBuf,
     pub dead_url: String,
     pub daemon_running: bool,
-    /// `CSWITCH_USAGE_URL` / `CSWITCH_TOKEN_URL` overrides; `None` refuses connections.
+    /// `CCSW_USAGE_URL` / `CCSW_TOKEN_URL` overrides; `None` refuses connections.
     pub usage_url: Option<String>,
     pub token_url: Option<String>,
     /// `CLAUDE_CONFIG_DIR`: Claude Code's credentials file and global config.
     pub claude_home: PathBuf,
     pub claude_log: PathBuf,
-    /// `CSWITCH_CLAUDE_USAGE_URL` / `CSWITCH_CLAUDE_TOKEN_URL` overrides.
+    /// `CCSW_CLAUDE_USAGE_URL` / `CCSW_CLAUDE_TOKEN_URL` overrides.
     pub claude_usage_url: Option<String>,
     pub claude_token_url: Option<String>,
 }
@@ -103,7 +103,7 @@ pub struct Cli {
 impl Cli {
     pub fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        let cswitch_home = root.path().join("store");
+        let ccsw_home = root.path().join("store");
         let codex_home = root.path().join("codex");
         let bin_dir = root.path().join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
@@ -139,7 +139,7 @@ impl Cli {
             claude_usage_url: None,
             claude_token_url: None,
             root,
-            cswitch_home,
+            ccsw_home,
             codex_home,
             bin_dir,
             dead_url: format!("http://127.0.0.1:{port}"),
@@ -159,7 +159,7 @@ impl Cli {
     }
 
     pub fn command(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cswitch"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccsw"));
         // The platform separator matters: a ':'-joined PATH is unusable on
         // Windows and the fake codex would silently never be found.
         let inherited = std::env::var_os("PATH").unwrap_or_default();
@@ -184,37 +184,37 @@ impl Cli {
         }
         cmd.env("PATH", path)
             .env("HOME", self.root.path())
-            .env("CSWITCH_HOME", &self.cswitch_home)
+            .env("CCSW_HOME", &self.ccsw_home)
             .env("CODEX_HOME", &self.codex_home)
             .env(
-                "CSWITCH_USAGE_URL",
+                "CCSW_USAGE_URL",
                 self.usage_url
                     .clone()
                     .unwrap_or_else(|| format!("{}/usage", self.dead_url)),
             )
             .env(
-                "CSWITCH_TOKEN_URL",
+                "CCSW_TOKEN_URL",
                 self.token_url
                     .clone()
                     .unwrap_or_else(|| format!("{}/token", self.dead_url)),
             )
             .env("CLAUDE_CONFIG_DIR", &self.claude_home)
-            .env("CSWITCH_KEYCHAIN", "off")
+            .env("CCSW_KEYCHAIN", "off")
             .env("USER", "tester")
             .env(
-                "CSWITCH_CLAUDE_USAGE_URL",
+                "CCSW_CLAUDE_USAGE_URL",
                 self.claude_usage_url
                     .clone()
                     .unwrap_or_else(|| format!("{}/claude-usage", self.dead_url)),
             )
             .env(
-                "CSWITCH_CLAUDE_TOKEN_URL",
+                "CCSW_CLAUDE_TOKEN_URL",
                 self.claude_token_url
                     .clone()
                     .unwrap_or_else(|| format!("{}/claude-token", self.dead_url)),
             )
             .env("CS_CLAUDE_LOG", &self.claude_log)
-            .env("CSWITCH_CLAUDE_LOCK_BUDGET_MS", "300")
+            .env("CCSW_CLAUDE_LOCK_BUDGET_MS", "300")
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
@@ -242,7 +242,7 @@ impl Cli {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn cswitch");
+            .expect("spawn ccsw");
         {
             let mut pipe = child.stdin.take().unwrap();
             pipe.write_all(stdin.as_bytes()).unwrap();
@@ -276,11 +276,11 @@ impl Cli {
     }
 
     pub fn roster(&self) -> Value {
-        read_json(&self.cswitch_home.join("sequence.json"))
+        read_json(&self.ccsw_home.join("sequence.json"))
     }
 
     pub fn credential_path(&self, slot: u32) -> PathBuf {
-        self.cswitch_home
+        self.ccsw_home
             .join("credentials")
             .join(format!("{slot}.json"))
     }
@@ -373,7 +373,7 @@ impl Cli {
     }
 
     pub fn claude_backups(&self) -> Vec<String> {
-        let dir = self.cswitch_home.join("backups").join("claude");
+        let dir = self.ccsw_home.join("backups").join("claude");
         let mut names: Vec<String> = fs::read_dir(&dir)
             .map(|entries| {
                 entries
@@ -408,7 +408,7 @@ impl Cli {
 
     /// The backup store's log file.
     pub fn log_path(&self) -> PathBuf {
-        self.cswitch_home.join("cswitch.log")
+        self.ccsw_home.join("ccsw.log")
     }
 }
 

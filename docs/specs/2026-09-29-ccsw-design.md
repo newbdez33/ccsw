@@ -1,4 +1,4 @@
-# cswitch — design
+# ccsw — design
 
 Status: v0.1 design, 2026-09-29. Author: Jacky (with Claude). Research inputs live in
 `docs/research/` (cswap CLI contract, cswap TUI, cswap data model / auto-switch, Codex
@@ -7,7 +7,7 @@ this document wins; where this document is silent, the research note is the cont
 
 ## 1. Purpose
 
-`cswitch` is a multi-account switcher for the OpenAI Codex CLI. It keeps several Codex
+`ccsw` is a multi-account switcher for the OpenAI Codex CLI. It keeps several Codex
 logins on one machine, activates one of them as the live `auth.json`, switches between
 them without re-authenticating, reports each account's 5-hour / weekly usage, switches
 automatically before an account hits its limit, and runs extra accounts in parallel
@@ -17,8 +17,8 @@ It is `cswap` (claude-swap, the Claude Code account switcher) re-targeted at Cod
 
 - **Interface** — the command grammar, options, human output, `--json` schema, exit codes,
   settings keys, and the full-screen dashboard (TUI) follow cswap 0.25.0. A user who knows
-  `cswap` can use `cswitch` by replacing the word. Scripts written for `cswap --json` work
-  against `cswitch` for every field both tools share.
+  `cswap` can use `ccsw` by replacing the word. Scripts written for `cswap --json` work
+  against `ccsw` for every field both tools share.
 - **Mechanics** — everything that touches Codex (credential file format, identity from the
   id_token, usage API, token refresh, app-server daemon restart, launch flags, isolated
   `CODEX_HOME`) is ported from codex-switch.
@@ -36,9 +36,9 @@ screens, modals, dark/light themes).
 
 Out (accepted grammar, deliberate behavior):
 
-| cswap feature | cswitch v0.1 |
+| cswap feature | ccsw v0.1 |
 |---|---|
-| `menubar` | exits 1: `The menu bar is not available in cswitch.` |
+| `menubar` | exits 1: `The menu bar is not available in ccsw.` |
 | `unclaimed` | not provided (no forensic stash; see §7.3) |
 | `upgrade` / `update` | guidance only, exit 1: prints how to reinstall (`cargo install --git`, or a release download) |
 | `list --token-status` | supported; shows stored-token expiry from the JWT `exp` claim |
@@ -50,7 +50,7 @@ Out (accepted grammar, deliberate behavior):
 ## 3. Concepts
 
 **Account** — a saved Codex login: a snapshot of `auth.json` (ChatGPT OAuth tokens, or an
-API key). cswitch never changes the OpenAI subscription; it only moves credentials into
+API key). ccsw never changes the OpenAI subscription; it only moves credentials into
 and out of Codex's credential file.
 
 **Slot** — accounts occupy numbered slots starting at 1, sparse, never re-packed; `add`
@@ -66,12 +66,12 @@ the email is `--email` or the synthesized `api-key-<slot>@token.local`.
 re-derived from that file on every command (identity match, then byte-hash match for
 API keys), never trusted from the roster alone.
 
-**Backup store** — `$CSWITCH_HOME`, default `~/.cswitch` on every platform. Holds the
+**Backup store** — `$CCSW_HOME`, default `~/.ccsw` on every platform. Holds the
 roster, credentials, settings, mappings, usage cache, auto-switch state, session profiles
 and the log (§5).
 
 **Usage windows** — Codex enforces a 5-hour window and a weekly window per account, plus
-model-specific pools (`additional_rate_limits`). cswitch reports remaining headroom as a
+model-specific pools (`additional_rate_limits`). ccsw reports remaining headroom as a
 percentage and treats an account as *at limit* when a relevant window reaches 100 % (or
 the API flags the account as limited).
 
@@ -79,9 +79,9 @@ the API flags the account as limited).
 credentials, used by `run` / `env` so one terminal can run a different account than the
 machine-wide login.
 
-## 4. Codex mapping (cswap → cswitch)
+## 4. Codex mapping (cswap → ccsw)
 
-| cswap (Claude) | cswitch (Codex) |
+| cswap (Claude) | ccsw (Codex) |
 |---|---|
 | live login = `~/.claude.json` `oauthAccount` + `~/.claude/.credentials.json` / Keychain | live login = `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`); `CODEX_HOME` override; `..` components rejected |
 | credential store must be readable; Keychain on macOS | `$CODEX_HOME/config.toml` must have `cli_auth_credentials_store` absent or `"file"`; `keyring`/`auto`/`ephemeral` are refused with `ConfigError` |
@@ -100,11 +100,11 @@ machine-wide login.
 | history `projects/` + `history.jsonl` | `sessions/` + `history.jsonl` (POSIX symlink only) |
 | env scrub `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, … | env scrub `OPENAI_API_KEY`, `CODEX_API_KEY` |
 | `'claude' was not found on PATH. Install Claude Code first.` | `'codex' was not found on PATH. Install the Codex CLI first.` |
-| recovery hint `cswap add --slot N` | `cswitch add --slot N` |
-| `ClaudeSwitchError` / `ClaudeCodeLockTimeout` | `CswitchError` (JSON `type` names in §13); no Codex lock protocol |
+| recovery hint `cswap add --slot N` | `ccsw add --slot N` |
+| `ClaudeSwitchError` / `ClaudeCodeLockTimeout` | `CcswError` (JSON `type` names in §13); no Codex lock protocol |
 | README: do not `/logout` first | README: log in with the next account (`codex login`); do **not** run `codex logout` first, it may revoke the stored refresh token |
 
-## 5. On-disk layout (`$CSWITCH_HOME`, default `~/.cswitch`)
+## 5. On-disk layout (`$CCSW_HOME`, default `~/.ccsw`)
 
 ```
 sequence.json            roster (schema below)
@@ -118,7 +118,7 @@ credentials/<n>.json.prev  one retained previous generation
 cache/usage.json         {"schemaVersion":2,"accounts":{"<n>":{…}}}  (§8.4)
 cache/.usage.lock
 sessions/<n>-<slug>/     session profiles (a CODEX_HOME)
-cswitch.log[.1-3]        rotating log, 1 MiB × 3, created lazily
+ccsw.log[.1-3]        rotating log, 1 MiB × 3, created lazily
 ```
 
 All files 0600, directories 0700 (POSIX). Every write is atomic: temp file in the same
@@ -160,10 +160,10 @@ fields it expects; `accountId` and `planType` are exposed additively in JSON row
 The grammar, options, human strings, exit codes and `--json` payloads are those in
 `docs/research/cswap-cli-contract.md` with these substitutions, applied everywhere:
 
-- program name `cswitch`, data name `cswitch`, file extension `.cswitch`, export field
-  `swapVersion` → `cswitchVersion` (plus `swapVersion` kept for readers that look for it);
+- program name `ccsw`, data name `ccsw`, file extension `.ccsw`, export field
+  `swapVersion` → `ccswVersion` (plus `swapVersion` kept for readers that look for it);
 - `Claude Code` → `Codex`, `claude` → `codex`, `Claude account` → `Codex account`,
-  `cswap` → `cswitch`, `claude-swap` → `cswitch`;
+  `cswap` → `ccsw`, `claude-swap` → `ccsw`;
 - `[personal]` tag rule per §4;
 - the restart follow-up lines per §4;
 - `add-token` help/prompts talk about an API key only;
@@ -181,7 +181,7 @@ Deltas that are not pure renames:
 | `env` | prints `export CODEX_HOME='<dir>'` (`sh`), `set -gx CODEX_HOME '<dir>'` (`fish`), `$env:CODEX_HOME = '<dir>'` (`pwsh`); `--unset` prints the unset form |
 | `config` | same nine keys and ranges; `autoswitch.model` names model pools |
 | `export`/`import` | §11 |
-| `purge` | removes `$CSWITCH_HOME` only; never touches `$CODEX_HOME` |
+| `purge` | removes `$CCSW_HOME` only; never touches `$CODEX_HOME` |
 
 JSON: every payload carries `schemaVersion: 1`; account rows carry the cswap keys
 (`number, email, organizationName, organizationUuid, isOrganization, active,
@@ -222,7 +222,7 @@ model pools).
 ### 7.3 Outgoing credential ownership
 
 cswap classifies the departing live credential (own / foreign / alien) with an OAuth
-profile call and stashes foreign bytes. cswitch keeps the simpler rule in 7.2a: identity
+profile call and stashes foreign bytes. ccsw keeps the simpler rule in 7.2a: identity
 from the JWT decides; nothing is ever stashed. The live backup in `$CODEX_HOME`
 (`auth.json.bak.*`, 3 kept) is the recovery point.
 
@@ -231,7 +231,7 @@ from the JWT decides; nothing is ever stashed. The live backup in `$CODEX_HOME`
 ### 8.1 Fetch
 
 `GET https://chatgpt.com/backend-api/wham/usage`, headers as in §4, connect timeout
-30 s, total 60 s, proxy from `CSWITCH_PROXY` env or `HTTPS_PROXY`/`ALL_PROXY`, OS trust
+30 s, total 60 s, proxy from `CCSW_PROXY` env or `HTTPS_PROXY`/`ALL_PROXY`, OS trust
 store plus bundled roots. Classification: 2xx parse; 429 → `http-429` with Retry-After
 (header, then body hints); 401/403 with a refresh token → one refresh + one retry; other
 non-2xx → `http-<code>`; timeout → `timeout`; transport → `network`; bad JSON →
@@ -266,7 +266,7 @@ limited by the API) makes headroom 0. Free-plan single weekly window → `seven_
   `invalid_client`, `unauthorized_client`, `access_denied`, or any 4xx except 429/408 →
   `usageStatus: relogin_required`, dead-token strike bound to the SHA-256 of the refresh
   token; a newer stored credential heals it. Human sentinel:
-  `re-login needed — refresh token dead; log in with Codex, then run: cswitch add`.
+  `re-login needed — refresh token dead; log in with Codex, then run: ccsw add`.
 - Never cancel an in-flight refresh; never keep two copies of one account (import dedupe).
 
 ### 8.4 Usage store and poll policy
@@ -327,7 +327,7 @@ all-above-threshold recovery-horizon escape, identity-conflict quarantine,
   expiring token first, best-effort), copy `$CODEX_HOME/config.toml` (whole file; a
   missing file yields none), link `AGENTS.md`, `prompts/`, `skills/` unless `--no-share`,
   link `sessions/` and `history.jsonl` with `--share-history` (POSIX only). Manifest
-  `.cswitch-shared.json` `{"items":[…],"mode":"symlink"|"copy"}` prunes items no longer
+  `.ccsw-shared.json` `{"items":[…],"mode":"symlink"|"copy"}` prunes items no longer
   shared.
 - Launch: `Launching Account-<n> (<email>) [session mode]`, env `CODEX_HOME=<profile>`,
   scrub `OPENAI_API_KEY` / `CODEX_API_KEY` (`Ignoring … for this session — it would
@@ -342,10 +342,10 @@ all-above-threshold recovery-horizon escape, identity-conflict quarantine,
 
 ## 11. Export / import
 
-Envelope `.cswitch` (JSON, indent 2):
+Envelope `.ccsw` (JSON, indent 2):
 
 ```json
-{"version": 1, "exportedAt": "…Z", "exportedFrom": "macos", "cswitchVersion": "0.1.0",
+{"version": 1, "exportedAt": "…Z", "exportedFrom": "macos", "ccswVersion": "0.1.0",
  "swapVersion": "0.1.0", "encrypted": false, "activeAccountNumber": 1,
  "accounts": [{"number": 1, "email": "…", "uuid": "…", "organizationUuid": "…",
                "organizationName": "…", "planType": "plus", "added": "…Z",
@@ -372,7 +372,7 @@ two-lane 3 s refresh follow `docs/research/cswap-tui.md` with these mappings:
   in place. The token modal asks for an
   OpenAI API key;
 - sentinel labels per §8.3 and `API key (no quota)`;
-- confirm texts say `Codex` / `cswitch auto`;
+- confirm texts say `Codex` / `ccsw auto`;
 - theme `auto` resolves to dark unless `COLORFGBG` reports a light background (no OSC
   probe in v0.1); `ctrl+t` cycles; persisted to `ui.theme`.
 
@@ -381,7 +381,7 @@ Output modal shows the command's human lines.
 
 ## 13. Errors and exit codes
 
-`CswitchError` variants and JSON `type` strings: `ConfigError`, `SwitchError`,
+`CcswError` variants and JSON `type` strings: `ConfigError`, `SwitchError`,
 `SessionError`, `LockError`, `AccountNotFoundError`, `ValidationError`, `TransferError`,
 `CredentialReadError`, `CredentialWriteError`. Exit 1 for any of them (`Error: <msg>` on
 stderr, or the JSON envelope on stdout in `--json` mode); 2 for usage errors (clap, and the
@@ -395,8 +395,8 @@ root outside a container.
 src/main.rs            → cli::run()
 src/cli/               clap definitions, legacy-flag translation, cross-flag checks, dispatch,
                        output mode (human / json), exit codes; one file per command group
-src/errors.rs          CswitchError
-src/paths.rs           CSWITCH_HOME, CODEX_HOME, live auth path, credential-store gate
+src/errors.rs          CcswError
+src/paths.rs           CCSW_HOME, CODEX_HOME, live auth path, credential-store gate
 src/fsutil.rs          atomic writes, permissions, JSON read/write, file locks
 src/codex/auth.rs      auth.json model, backups, identity, freshness rule
 src/codex/jwt.rs       claim extraction, plan labels, expiry
@@ -417,16 +417,16 @@ src/tui/               app, screens, widgets, modals, theme
 
 Testing: unit tests beside each module (pure functions: resolution, ranking, poll plan,
 normalization, argv translation, formatting); integration tests under `tests/` drive the
-binary with `CSWITCH_HOME`/`CODEX_HOME` pointed at temp dirs, a fake `codex` on `PATH`
+binary with `CCSW_HOME`/`CODEX_HOME` pointed at temp dirs, a fake `codex` on `PATH`
 (records argv; answers `--help`, `app-server daemon version|restart`), and a local axum
-mock of the usage and token endpoints (`CSWITCH_USAGE_URL`, `CSWITCH_TOKEN_URL`
+mock of the usage and token endpoints (`CCSW_USAGE_URL`, `CCSW_TOKEN_URL`
 overrides). Quality gate: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test --all`.
 
 ## 15. Assumptions recorded for the owner
 
-1. Repository `newbdez33/cswitch` is created **private**; flip to public when ready.
-2. Store location `~/.cswitch` on all platforms (`CSWITCH_HOME` override), not cswap's
+1. Repository `newbdez33/ccsw` is created **private**; flip to public when ready.
+2. Store location `~/.ccsw` on all platforms (`CCSW_HOME` override), not cswap's
    XDG split.
 3. `add-token` registers API keys only; `add` captures an existing ChatGPT login.
    The dashboard also supports browser sign-in through the installed Codex CLI.

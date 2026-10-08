@@ -70,7 +70,7 @@ fn finish(
         match switcher.list_snapshot(true) {
             Ok(Some(snapshot)) => print_lines(&list_lines(switcher, &snapshot, false)),
             _ => print_lines(&[Line::plain(
-                "  (usage display unavailable — run cswitch list to retry)",
+                "  (usage display unavailable — run ccsw list to retry)",
             )]),
         }
     }

@@ -62,7 +62,7 @@ fn running_daemon_is_restarted_and_unchanged_file_is_not() {
     assert_eq!(run.status, 0);
     assert_eq!(
         run.stdout,
-        "Already on Account-1 (alice@example.com)\nTo rewrite the live login from the stored backup (e.g. after --import), run: cswitch switch 1 --force\n"
+        "Already on Account-1 (alice@example.com)\nTo rewrite the live login from the stored backup (e.g. after --import), run: ccsw switch 1 --force\n"
     );
     assert!(cli.codex_calls().is_empty());
 
@@ -165,7 +165,7 @@ fn rotation_no_ops() {
     let run = cli.run(&["switch"]);
     assert_eq!(
         run.stdout,
-        "Skipping Account-1 (disabled)\nNo other accounts have valid stored credentials.\nRe-add a skipped slot with: cswitch add --slot <number>\n"
+        "Skipping Account-1 (disabled)\nNo other accounts have valid stored credentials.\nRe-add a skipped slot with: ccsw add --slot <number>\n"
     );
     let run = cli.run(&["switch", "--json"]);
     let payload = run.json();
@@ -180,13 +180,13 @@ fn rotation_no_ops() {
     std::fs::remove_file(cli.credential_path(1)).unwrap();
     let run = cli.run(&["switch"]);
     assert!(run.stdout.starts_with(
-        "Skipping Account-1 (no stored credentials, re-add with cswitch add --slot 1)\n"
+        "Skipping Account-1 (no stored credentials, re-add with ccsw add --slot 1)\n"
     ));
     let run = cli.run(&["switch", "1"]);
     assert_eq!(run.status, 1);
     assert_eq!(
         run.stderr.trim(),
-        "Error: Account-1 has no stored credentials. Re-add with: cswitch add --slot 1"
+        "Error: Account-1 has no stored credentials. Re-add with: ccsw add --slot 1"
     );
 }
 
@@ -197,7 +197,7 @@ fn strategies_without_usage() {
     assert_eq!(run.status, 0, "{}", run.stderr);
     assert_eq!(
         run.stdout,
-        "Current account usage is unavailable — staying on Account-2. Run cswitch switch to rotate.\n"
+        "Current account usage is unavailable — staying on Account-2. Run ccsw switch to rotate.\n"
     );
     let run = cli.run(&[
         "switch",
@@ -240,7 +240,7 @@ fn unmanaged_and_missing_live_logins() {
     );
     assert_eq!(
         payload["message"],
-        "Active account is not managed; run cswitch add"
+        "Active account is not managed; run ccsw add"
     );
     assert!(
         cli.roster()["accounts"].get("3").is_none(),
@@ -351,6 +351,6 @@ fn identifiers_aliases_and_ambiguous_emails() {
     assert_eq!(envelope["error"]["type"], "ConfigError");
     assert_eq!(
         envelope["error"]["message"],
-        "Email 'alice@example.com' is ambiguous — matches accounts: 1 [Plus], 3 [Acme]. Use account number instead (e.g., cswitch switch 1)."
+        "Email 'alice@example.com' is ambiguous — matches accounts: 1 [Plus], 3 [Acme]. Use account number instead (e.g., ccsw switch 1)."
     );
 }

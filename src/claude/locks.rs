@@ -11,7 +11,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use std::{fs, io};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil::io_error;
 use crate::paths::Paths;
 
@@ -48,13 +48,9 @@ pub fn specs(paths: &Paths) -> Vec<LockSpec> {
     ]
 }
 
-/// `CSWITCH_CLAUDE_LOCK_BUDGET_MS` shortens the wait (tests); anything else is the default.
+/// `CCSW_CLAUDE_LOCK_BUDGET_MS` shortens the wait (tests); anything else is the default.
 pub fn wait_budget() -> Duration {
-    budget_from(
-        std::env::var("CSWITCH_CLAUDE_LOCK_BUDGET_MS")
-            .ok()
-            .as_deref(),
-    )
+    budget_from(std::env::var("CCSW_CLAUDE_LOCK_BUDGET_MS").ok().as_deref())
 }
 
 fn budget_from(value: Option<&str>) -> Duration {
@@ -143,7 +139,7 @@ fn acquire_one(spec: &LockSpec, budget: Duration) -> Result<()> {
                 }
                 let elapsed = started.elapsed();
                 if elapsed >= budget {
-                    return Err(CswitchError::lock(format!(
+                    return Err(CcswError::lock(format!(
                         "Claude Code is holding {}; retry in a moment",
                         spec.path.display()
                     )));
@@ -152,7 +148,7 @@ fn acquire_one(spec: &LockSpec, budget: Duration) -> Result<()> {
                 let jitter = Duration::from_millis(1000 + rand::random::<u64>() % 1000);
                 thread::sleep(jitter.min(budget - elapsed));
             }
-            Err(err) => return Err(io_error(CswitchError::Lock, &spec.path, &err)),
+            Err(err) => return Err(io_error(CcswError::Lock, &spec.path, &err)),
         }
     }
 }

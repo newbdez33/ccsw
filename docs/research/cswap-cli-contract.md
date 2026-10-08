@@ -1,4 +1,4 @@
-# cswap CLI contract — spec input for the `cswitch` Rust port
+# cswap CLI contract — spec input for the `ccsw` Rust port
 
 Sources read (all verbatim strings below come from these):
 
@@ -75,7 +75,7 @@ All members of one mutually-exclusive group (`required=False`); combining two �
 
 ### 1.3 Program name
 
-Usage/help shows the basename of argv[0] with `.exe`/`.pyw`/`.py` stripped; falls back to `cswap` when empty or one of `__main__`, `python`, `python3`, `py`. For the port: binary basename with `.exe` stripped, fallback `cswitch`.
+Usage/help shows the basename of argv[0] with `.exe`/`.pyw`/`.py` stripped; falls back to `cswap` when empty or one of `__main__`, `python`, `python3`, `py`. For the port: binary basename with `.exe` stripped, fallback `ccsw`.
 
 ### 1.4 Main-parser dispatch table
 
@@ -1084,7 +1084,7 @@ SIGINT → dimmed cancel note (§4.1) + exit 130 everywhere. SIGTERM → `auto` 
 
 ## 15. Claude-specific, needs a Codex mapping or omission
 
-Everything below is bound to Claude Code / Anthropic and must be re-mapped to OpenAI Codex equivalents (or dropped) in `cswitch`:
+Everything below is bound to Claude Code / Anthropic and must be re-mapped to OpenAI Codex equivalents (or dropped) in `ccsw`:
 
 1. **Live login files**: `~/.claude.json` (global config; `oauthAccount{emailAddress, accountUuid, organizationUuid, organizationName}` is the identity) and `~/.claude/.credentials.json` (`claudeAiOauth{accessToken, refreshToken, expiresAt, scopes}`), plus the legacy `<config_home>/.config.json`; env override `CLAUDE_CONFIG_DIR`. → Codex: `~/.codex/auth.json` (+ `CODEX_HOME`), whatever identity fields Codex stores.
 2. **macOS Keychain** as the credential backend (service `Claude Code-credentials` for the live login; `claude-swap` for backups; `keychain_unavailable` usageStatus and its human line; `~30 seconds` Keychain-cache followup line; Keychain retry constants; purge/list wording mentioning Keychain). → Codex stores `auth.json` on disk on every platform, so the file-backend followup line (`no restart needed`) likely applies everywhere unless Codex caches; decide on the restart-semantics line for the app-server daemon (the repo already has a "restart the Codex app-server daemon after a credential switch" commit).
@@ -1097,7 +1097,7 @@ Everything below is bound to Claude Code / Anthropic and must be re-mapped to Op
 9. **VS Code extension / Desktop / Chrome mentions** in README tips ("reopen the VS Code extension tab") and in the process labels. → Codex VS Code extension / Codex app.
 10. **macOS menu bar app** (`menubar`, rumps, `claude-swap[menubar]` extra). → omit (Go did) or keep as exit-1 stub.
 11. **Self-upgrade / update check** via PyPI + uv/pipx (`https://pypi.org/pypi/claude-swap/json`). → cargo/brew/GitHub releases.
-12. **Names/paths**: program name `cswap`/`claude-swap`, backup roots `~/.claude-swap-backup` / `claude-swap` XDG dir, log `claude-swap.log`, Keychain service `claude-swap`, export extension `.cswap`, `swapVersion` field, error-type strings (`ClaudeSwitchError`, `ClaudeCodeLockTimeout`), strings like `Claude config file not found`, `Restart Claude Code ...`, `log in with Claude Code`, `No active Claude account`, `'claude' was not found on PATH. Install Claude Code first.`, help header `Multi-Account Switcher for Claude Code`. → rename to `cswitch`/Codex equivalents; keep `schemaVersion` and field names stable where scripts might be shared.
+12. **Names/paths**: program name `cswap`/`claude-swap`, backup roots `~/.claude-swap-backup` / `claude-swap` XDG dir, log `claude-swap.log`, Keychain service `claude-swap`, export extension `.cswap`, `swapVersion` field, error-type strings (`ClaudeSwitchError`, `ClaudeCodeLockTimeout`), strings like `Claude config file not found`, `Restart Claude Code ...`, `log in with Claude Code`, `No active Claude account`, `'claude' was not found on PATH. Install Claude Code first.`, help header `Multi-Account Switcher for Claude Code`. → rename to `ccsw`/Codex equivalents; keep `schemaVersion` and field names stable where scripts might be shared.
 13. **Org identity** (`organizationUuid`/`organizationName`, `[personal]` tag, ambiguous-email-across-orgs handling). → Codex accounts may carry a workspace/org id; keep the composite identity concept.
 14. **`/login` / `/logout` advice** (README: do not `/logout` before `add`, recovery is `/login` + `cswap add`). → Codex `codex login` / `codex logout`.
 15. **Identity oracle / unclaimed stash** (`foreign credential` status, `_classify_outgoing_credential`, `unclaimed` command) depends on the OAuth profile endpoint to resolve who a live token belongs to. → needs a Codex profile call or a simpler fingerprint-only design.
@@ -1122,4 +1122,4 @@ Everything below is bound to Claude Code / Anthropic and must be re-mapped to Op
 | `map` list path | normalized absolute key | `~`-abbreviated in example |
 | Corrupt-roster refusal (`ConfigError` naming the file) | not verified in Python source | documented for alias/run/env/map/export |
 
-Recommendation for `cswitch`: follow the Python source for grammar, messages, settings and JSON (it is the living reference), adopt the Go additions that are clearly useful and additive (`env`, `atLimit`/`limitingWindows`, corrupt-roster refusal), and keep the `--json` schemaVersion-1 rule: only add optional keys, never change existing ones.
+Recommendation for `ccsw`: follow the Python source for grammar, messages, settings and JSON (it is the living reference), adopt the Go additions that are clearly useful and additive (`env`, `atLimit`/`limitingWindows`, corrupt-roster refusal), and keep the `--json` schemaVersion-1 rule: only add optional keys, never change existing ones.

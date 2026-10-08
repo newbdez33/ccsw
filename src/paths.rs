@@ -1,10 +1,10 @@
-//! Where everything lives: the cswitch backup store and the Codex home.
+//! Where everything lives: the ccsw backup store and the Codex home.
 
 use std::path::{Component, Path, PathBuf};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 
-/// `CSWITCH_KEYCHAIN=off|0|false` disables the Keychain; it is never used off macOS.
+/// `CCSW_KEYCHAIN=off|0|false` disables the Keychain; it is never used off macOS.
 pub fn keychain_enabled_from(value: Option<&str>) -> bool {
     let off = value.is_some_and(|v| {
         matches!(
@@ -24,7 +24,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
-    /// `$CSWITCH_HOME`, default `~/.cswitch`.
+    /// `$CCSW_HOME`, default `~/.ccsw`.
     pub backup_root: PathBuf,
     /// `$CODEX_HOME`, default `~/.codex`.
     pub codex_home: PathBuf,
@@ -32,40 +32,40 @@ pub struct Paths {
     pub claude_home: PathBuf,
     /// Where `.claude.json` lives: `$CLAUDE_CONFIG_DIR` when set, else the user home.
     pub claude_config_base: PathBuf,
-    /// macOS with `CSWITCH_KEYCHAIN` not `off`; the file backend otherwise.
+    /// macOS with `CCSW_KEYCHAIN` not `off`; the file backend otherwise.
     pub keychain_enabled: bool,
 }
 
 impl Paths {
     pub fn from_env() -> Result<Self> {
         let home = dirs::home_dir()
-            .ok_or_else(|| CswitchError::config("could not determine home directory"))?;
+            .ok_or_else(|| CcswError::config("could not determine home directory"))?;
         let mut paths = Self::from_values(
-            std::env::var_os("CSWITCH_HOME").map(PathBuf::from),
+            std::env::var_os("CCSW_HOME").map(PathBuf::from),
             std::env::var_os("CODEX_HOME").map(PathBuf::from),
             std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
             &home,
         )?;
         paths.keychain_enabled =
-            keychain_enabled_from(std::env::var("CSWITCH_KEYCHAIN").ok().as_deref());
+            keychain_enabled_from(std::env::var("CCSW_KEYCHAIN").ok().as_deref());
         Ok(paths)
     }
 
     /// Empty overrides are ignored; a `CODEX_HOME` or `CLAUDE_CONFIG_DIR` with a `..` component is refused.
     pub fn from_values(
-        cswitch_home: Option<PathBuf>,
+        ccsw_home: Option<PathBuf>,
         codex_home: Option<PathBuf>,
         claude_config_dir: Option<PathBuf>,
         user_home: &Path,
     ) -> Result<Self> {
-        let backup_root = match cswitch_home.filter(|p| !p.as_os_str().is_empty()) {
+        let backup_root = match ccsw_home.filter(|p| !p.as_os_str().is_empty()) {
             Some(path) => path,
-            None => user_home.join(".cswitch"),
+            None => user_home.join(".ccsw"),
         };
         let codex_home = match codex_home.filter(|p| !p.as_os_str().is_empty()) {
             Some(path) => {
                 if path.components().any(|c| matches!(c, Component::ParentDir)) {
-                    return Err(CswitchError::config(format!(
+                    return Err(CcswError::config(format!(
                         "CODEX_HOME contains '..' component which is not allowed: {}",
                         path.display()
                     )));
@@ -78,7 +78,7 @@ impl Paths {
         if let Some(path) = &claude_dir
             && path.components().any(|c| matches!(c, Component::ParentDir))
         {
-            return Err(CswitchError::config(format!(
+            return Err(CcswError::config(format!(
                 "CLAUDE_CONFIG_DIR contains '..' component which is not allowed: {}",
                 path.display()
             )));
@@ -144,7 +144,7 @@ impl Paths {
             .join(format!("{slot}-{}", slugify_email(email)))
     }
     pub fn log_file(&self) -> PathBuf {
-        self.backup_root.join("cswitch.log")
+        self.backup_root.join("ccsw.log")
     }
 
     /// `$CODEX_HOME/auth.json`.
@@ -193,14 +193,14 @@ impl Paths {
 
     /// Codex must keep its credentials in `auth.json`: `cli_auth_credentials_store`
     /// absent or `"file"`. The keyring, `auto` and `ephemeral` stores bypass the file
-    /// cswitch switches. A missing `config.toml` means the file store.
+    /// ccsw switches. A missing `config.toml` means the file store.
     pub fn validate_credential_store(&self) -> Result<()> {
         let config_path = self.codex_config_file();
         let Ok(raw) = std::fs::read_to_string(&config_path) else {
             return Ok(());
         };
         let config: toml::Value = toml::from_str(&raw).map_err(|err| {
-            CswitchError::config(format!(
+            CcswError::config(format!(
                 "{} could not be parsed ({err}); fix it before continuing",
                 config_path.display()
             ))
@@ -209,8 +209,8 @@ impl Paths {
             None => {}
             Some(toml::Value::String(mode)) if mode == "file" => {}
             Some(_) => {
-                return Err(CswitchError::config(format!(
-                    "cswitch requires file-based Codex credentials; set cli_auth_credentials_store = \"file\" in {}",
+                return Err(CcswError::config(format!(
+                    "ccsw requires file-based Codex credentials; set cli_auth_credentials_store = \"file\" in {}",
                     config_path.display()
                 )));
             }
@@ -242,7 +242,7 @@ mod tests {
     fn defaults_and_overrides() {
         let home = Path::new("/home/u");
         let paths = Paths::from_values(None, None, None, home).unwrap();
-        assert_eq!(paths.backup_root, home.join(".cswitch"));
+        assert_eq!(paths.backup_root, home.join(".ccsw"));
         assert_eq!(paths.codex_home, home.join(".codex"));
         assert_eq!(paths.live_auth_file(), home.join(".codex/auth.json"));
         assert_eq!(paths.claude_home, home.join(".claude"));
@@ -262,7 +262,7 @@ mod tests {
         );
         assert_eq!(
             paths.claude_backups_dir(),
-            home.join(".cswitch/backups/claude")
+            home.join(".ccsw/backups/claude")
         );
         assert!(
             !paths.keychain_enabled,
@@ -276,7 +276,7 @@ mod tests {
             home,
         )
         .unwrap();
-        assert_eq!(paths.backup_root, home.join(".cswitch"));
+        assert_eq!(paths.backup_root, home.join(".ccsw"));
         assert_eq!(paths.codex_home, PathBuf::from("/tmp/codex"));
         assert_eq!(paths.claude_home, PathBuf::from("/tmp/cc"));
         assert_eq!(

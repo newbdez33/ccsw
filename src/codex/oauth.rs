@@ -27,9 +27,9 @@ const TERMINAL_CODES: &[&str] = &[
 /// account marked dead.
 const MEMORABLE_CODES: &[&str] = &["refresh_token_reused", "refresh_token_invalidated"];
 
-/// The token endpoint, or the `CSWITCH_TOKEN_URL` override (tests).
+/// The token endpoint, or the `CCSW_TOKEN_URL` override (tests).
 pub fn token_url() -> String {
-    std::env::var("CSWITCH_TOKEN_URL")
+    std::env::var("CCSW_TOKEN_URL")
         .ok()
         .filter(|url| !url.trim().is_empty())
         .unwrap_or_else(|| TOKEN_URL.to_string())

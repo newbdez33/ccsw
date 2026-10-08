@@ -1,4 +1,4 @@
-//! `cswitch auto` — parses its own arguments (everything after the verb).
+//! `ccsw auto` — parses its own arguments (everything after the verb).
 
 use crate::switcher::{SilentUi, Switcher};
 

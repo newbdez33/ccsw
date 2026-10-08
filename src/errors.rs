@@ -7,7 +7,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub enum CswitchError {
+pub enum CcswError {
     #[error("{0}")]
     Config(String),
     #[error("{0}")]
@@ -28,7 +28,7 @@ pub enum CswitchError {
     CredentialWrite(String),
 }
 
-impl CswitchError {
+impl CcswError {
     /// The JSON `error.type` string.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -73,21 +73,21 @@ impl CswitchError {
     }
 }
 
-pub type Result<T> = std::result::Result<T, CswitchError>;
+pub type Result<T> = std::result::Result<T, CcswError>;
 
 #[cfg(test)]
 mod tests {
-    use super::CswitchError;
+    use super::CcswError;
 
     #[test]
     fn type_names_match_the_json_contract() {
-        assert_eq!(CswitchError::config("x").type_name(), "ConfigError");
+        assert_eq!(CcswError::config("x").type_name(), "ConfigError");
         assert_eq!(
-            CswitchError::not_found("2").type_name(),
+            CcswError::not_found("2").type_name(),
             "AccountNotFoundError"
         );
         assert_eq!(
-            CswitchError::not_found("dev").to_string(),
+            CcswError::not_found("dev").to_string(),
             "No account found with identifier: dev"
         );
     }

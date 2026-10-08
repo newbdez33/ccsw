@@ -1,4 +1,4 @@
-//! `cswitch auto --once` end to end: the built binary, the usage mock, the
+//! `ccsw auto --once` end to end: the built binary, the usage mock, the
 //! fake `codex`, and the files a switch leaves behind.
 
 mod support;
@@ -37,7 +37,7 @@ fn parse_events(run: &Run) -> Vec<Value> {
 }
 
 fn state(cli: &Cli) -> Option<Value> {
-    let path = cli.cswitch_home.join("autoswitch_state.json");
+    let path = cli.ccsw_home.join("autoswitch_state.json");
     path.exists().then(|| support::read_json(&path))
 }
 

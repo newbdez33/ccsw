@@ -310,7 +310,7 @@ fn unauthorized_then_refresh_rotates_the_slot_and_the_live_login() {
         "the active slot's rotation lands in auth.json too"
     );
     assert!(
-        cli.cswitch_home
+        cli.ccsw_home
             .join("credentials")
             .join("1.json.prev")
             .exists(),
@@ -357,7 +357,7 @@ fn log_file_is_created_lazily_in_the_backup_root() {
     let run = cli.run(&["status"]);
     assert_eq!(run.stdout, "Status: No active Codex or Claude account\n");
     assert!(
-        !cli.cswitch_home.exists(),
+        !cli.ccsw_home.exists(),
         "a no-op run creates neither the store nor the log"
     );
 
@@ -365,7 +365,7 @@ fn log_file_is_created_lazily_in_the_backup_root() {
     cli.add_chatgpt("bob@example.com", "acct-bob", "rt-b");
     let run = cli.run(&["switch", "1"]);
     assert_eq!(run.status, 0, "{}", run.stderr);
-    let log = std::fs::read_to_string(cli.log_path()).expect("cswitch.log");
+    let log = std::fs::read_to_string(cli.log_path()).expect("ccsw.log");
     assert!(
         log.contains("INFO") && log.contains("Switched from account 2 to 1"),
         "{log}"
@@ -407,7 +407,7 @@ fn env_verb_prints_the_session_export() {
     assert_eq!(run.status, 0, "{}{}", run.stdout, run.stderr);
     let expected = format!(
         "export CODEX_HOME='{}'\n",
-        cli.cswitch_home
+        cli.ccsw_home
             .join("sessions")
             .join("1-alice_example.com")
             .display()

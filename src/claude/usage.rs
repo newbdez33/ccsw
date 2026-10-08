@@ -14,12 +14,12 @@ pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 pub const BETA_HEADER: &str = "oauth-2025-04-20";
 
 pub fn user_agent() -> String {
-    format!("cswitch/{}", crate::VERSION)
+    format!("ccsw/{}", crate::VERSION)
 }
 
-/// The usage endpoint, or the `CSWITCH_CLAUDE_USAGE_URL` override (tests).
+/// The usage endpoint, or the `CCSW_CLAUDE_USAGE_URL` override (tests).
 pub fn usage_url() -> String {
-    usage_url_from(std::env::var("CSWITCH_CLAUDE_USAGE_URL").ok().as_deref())
+    usage_url_from(std::env::var("CCSW_CLAUDE_USAGE_URL").ok().as_deref())
 }
 
 fn usage_url_from(value: Option<&str>) -> String {
@@ -251,7 +251,7 @@ mod tests {
     fn client_and_urls() {
         assert_eq!(USAGE_URL, "https://api.anthropic.com/api/oauth/usage");
         assert_eq!(BETA_HEADER, "oauth-2025-04-20");
-        assert_eq!(user_agent(), format!("cswitch/{}", crate::VERSION));
+        assert_eq!(user_agent(), format!("ccsw/{}", crate::VERSION));
         assert!(build_client(None).is_ok());
         assert_eq!(usage_url_from(None), USAGE_URL);
         assert_eq!(

@@ -1,4 +1,4 @@
-//! The rotating log file in the backup root (`cswitch.log`, 1 MiB × 3) plus
+//! The rotating log file in the backup root (`ccsw.log`, 1 MiB × 3) plus
 //! the `--debug` mirror on stderr.
 //!
 //! The file is opened on the first record, so a run that logs nothing leaves
@@ -191,31 +191,31 @@ mod tests {
     fn opens_lazily_and_rotates_keeping_three_backups() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("store");
-        let mut log = RotatingFile::new(root.join("cswitch.log"), 100, 3);
+        let mut log = RotatingFile::new(root.join("ccsw.log"), 100, 3);
         assert!(!root.exists(), "nothing is created before the first record");
 
         log.write_record(b"first record, sixty bytes long ......................... 1\n")
             .unwrap();
-        assert_eq!(names(&root), ["cswitch.log"]);
+        assert_eq!(names(&root), ["ccsw.log"]);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode(&root), 0o700);
-            assert_eq!(mode(&root.join("cswitch.log")), 0o600);
+            assert_eq!(mode(&root.join("ccsw.log")), 0o600);
         }
 
         // The second record would cross 100 bytes: the file rotates first.
         log.write_record(b"second record, sixty bytes long ........................ 2\n")
             .unwrap();
-        assert_eq!(names(&root), ["cswitch.log", "cswitch.log.1"]);
+        assert_eq!(names(&root), ["ccsw.log", "ccsw.log.1"]);
         assert!(
-            fs::read_to_string(root.join("cswitch.log.1"))
+            fs::read_to_string(root.join("ccsw.log.1"))
                 .unwrap()
                 .starts_with("first record")
         );
         assert!(
-            fs::read_to_string(root.join("cswitch.log"))
+            fs::read_to_string(root.join("ccsw.log"))
                 .unwrap()
                 .starts_with("second record")
         );
@@ -229,28 +229,23 @@ mod tests {
         }
         assert_eq!(
             names(&root),
-            [
-                "cswitch.log",
-                "cswitch.log.1",
-                "cswitch.log.2",
-                "cswitch.log.3"
-            ]
+            ["ccsw.log", "ccsw.log.1", "ccsw.log.2", "ccsw.log.3"]
         );
         assert!(
-            fs::read_to_string(root.join("cswitch.log"))
+            fs::read_to_string(root.join("ccsw.log"))
                 .unwrap()
                 .starts_with("record number 7")
         );
         assert!(
-            fs::read_to_string(root.join("cswitch.log.3"))
+            fs::read_to_string(root.join("ccsw.log.3"))
                 .unwrap()
                 .starts_with("record number 4")
         );
 
         // Reopening appends and picks up the current size.
-        let mut reopened = RotatingFile::new(root.join("cswitch.log"), 100, 3);
+        let mut reopened = RotatingFile::new(root.join("ccsw.log"), 100, 3);
         reopened.write_record(b"short\n").unwrap();
-        let text = fs::read_to_string(root.join("cswitch.log")).unwrap();
+        let text = fs::read_to_string(root.join("ccsw.log")).unwrap();
         assert!(text.starts_with("record number 7") && text.ends_with("short\n"));
     }
 
@@ -260,7 +255,7 @@ mod tests {
         let blocker = dir.path().join("file");
         fs::write(&blocker, "x").unwrap();
         // The parent "directory" is a regular file, so the open fails.
-        let mut log = RotatingFile::new(blocker.join("cswitch.log"), 100, 3);
+        let mut log = RotatingFile::new(blocker.join("ccsw.log"), 100, 3);
         assert!(log.write_record(b"one\n").is_err());
         assert!(log.disabled);
         assert!(

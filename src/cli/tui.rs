@@ -1,4 +1,4 @@
-//! `cswitch tui` / `cswitch watch` entry. (Task F)
+//! `ccsw tui` / `ccsw watch` entry. (Task F)
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TuiStart {

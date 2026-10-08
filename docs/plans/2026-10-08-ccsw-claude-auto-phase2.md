@@ -1,25 +1,25 @@
-# cswitch Claude auto-switch — phase 2 implementation plan
+# ccsw Claude auto-switch — phase 2 implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `cswitch auto` watches and switches **Claude Code** accounts — the provider that picks a switched login up inside a running session — and refuses to pretend it can do the same for Codex.
+**Goal:** `ccsw auto` watches and switches **Claude Code** accounts — the provider that picks a switched login up inside a running session — and refuses to pretend it can do the same for Codex.
 
 **Architecture:** The v0.1 engine in `src/autoswitch.rs` (poll → classify → rank → freshen → switch, with cooldown, quarantine and the `token expired` idle-hold) is kept whole and given one `provider` field; the CLI and the TUI construct it for `Provider::Claude`. The active account comes from `collect::live_login_for(provider)`, the candidates are the switchable slots of that provider, refresh and switch go through the phase-1 Claude paths that already exist. Four Claude-specific additions ride on top: a `keychain unavailable` active account is held like `token expired`; `auto codex` and rosters without a Claude account are refused before any tick; events move to `schemaVersion: 2` with `provider`; the `autoswitch.model` typo guard that v0.1 omitted is implemented. The TUI auto view shows the Claude active card and Claude candidates only. Codex auto-switch is withdrawn (spec §9 says why).
 
 **Tech Stack:** Rust 2024 (MSRV 1.88), clap (existing `AutoArgs`), serde_json, ratatui (existing), the in-module axum mock in `src/collect.rs` and the `tests/support` harness (existing). No new dependencies.
 
-**Spec:** `docs/specs/2026-10-07-cswitch-claude-provider-design.md` §5, §6.1–6.3, §9, §12, §15, §16 as amended on 2026-10-08 (commit `5512e86`); the engine body is `docs/specs/2026-09-29-cswitch-design.md` §9 and `docs/research/cswap-model-autoswitch.md` §6.
+**Spec:** `docs/specs/2026-10-07-ccsw-claude-provider-design.md` §5, §6.1–6.3, §9, §12, §15, §16 as amended on 2026-10-08 (commit `5512e86`); the engine body is `docs/specs/2026-09-29-ccsw-design.md` §9 and `docs/research/cswap-model-autoswitch.md` §6.
 
 ## Global Constraints
 
 - Rust edition 2024, `rust-version = "1.88"`; the quality gate is `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all` (every task ends green). Run the suite as `env -u CODEX_HOME cargo test --all` on this machine (the host exports `CODEX_HOME`; one pre-existing test asserts it is unset).
 - The engine body (settings, flags, clamps, exit codes `0` switched / `1` error / `2` no action / `3` blocked / `130` Ctrl-C, event kinds, `no-switch` reasons, human lines, banner, signal handling) is v0.1 §9 unchanged.
-- The active Claude account is never refreshed by cswitch (spec §8); the collector's `actives` carries every live slot and `claude_may_refresh` fails safe — the engine must keep both.
-- Refusal text, verbatim (spec §9): `Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'cswitch add claude' first.` — printed to stderr, exit `1`, before any tick.
+- The active Claude account is never refreshed by ccsw (spec §8); the collector's `actives` carries every live slot and `claude_may_refresh` fails safe — the engine must keep both.
+- Refusal text, verbatim (spec §9): `Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'ccsw add claude' first.` — printed to stderr, exit `1`, before any tick.
 - `active-idle` detail, verbatim: `token expired while Claude Code is idle; resumes on next use` (token) and `keychain unavailable; holding until Claude Code's login is readable` (Keychain). Both hold up to `IDLE_HOLD_MAX_S` (1800 s) and never count toward failover.
 - Events: `{"schemaVersion": 2, "event": …, "ts": …, "provider": "claude", …}`; human lines unchanged. `autoswitch_state.json` keeps `schemaVersion: 1`.
 - Model-name warning, verbatim: `autoswitch.model: <names> matches no account's usage windows — only the 5h/7d limits are being watched for it (typo?)` as a `config-warning` event, at most once per engine run, only on a tick where every relevant slot's usage is readable; `all` never warns.
-- Unit tests never touch the real macOS Keychain, `~/.claude`, `~/.codex` or the network: `temp_store()` paths, the `FakeSecurity` seam, the in-module mock, `CSWITCH_KEYCHAIN=off` in the e2e harness.
+- Unit tests never touch the real macOS Keychain, `~/.claude`, `~/.codex` or the network: `temp_store()` paths, the `FakeSecurity` seam, the in-module mock, `CCSW_KEYCHAIN=off` in the e2e harness.
 - Commit after every task with a conventional message (`feat(auto): …`, `fix(...)`, `test(...)`, `docs(...)`); no `Co-Authored-By` lines, no AI attribution.
 
 ## Review Focus
@@ -27,7 +27,7 @@
 1. **A mixed roster where the Claude slot is the one over the threshold** — `auto --once` must switch the Claude login (live `.credentials.json` + `.claude.json` change, `auth.json` byte-identical, no `codex` daemon probe) — Task 2 (`auto_once_switches_the_claude_login_and_leaves_codex_alone`).
 2. **The live Claude token expiring during a tick** — the engine must never rotate it (`claude_token_calls` stays 0 for the active slot) even when the slot is also an inactive-looking candidate under another name — Task 2 keeps `auto_once_never_refreshes_or_targets_the_live_claude_login` (tests/cli_claude.rs) green and asserts the token-call count.
 3. **A locked Keychain while the engine runs** — the active account shows `keychain unavailable`; the engine holds (`active-idle`), does not fail over, does not switch a cool candidate in — Task 3 (`keychain_unavailable_active_holds_like_token_expired`).
-4. **A Codex-only user who runs `cswitch auto` after upgrading** — the command must explain itself and exit `1`, not loop printing `no-active-account` — Task 4 (`auto_refuses_without_a_claude_account` and the e2e `auto_is_refused_on_a_codex_only_store`).
+4. **A Codex-only user who runs `ccsw auto` after upgrading** — the command must explain itself and exit `1`, not loop printing `no-active-account` — Task 4 (`auto_refuses_without_a_claude_account` and the e2e `auto_is_refused_on_a_codex_only_store`).
 5. **An `autoswitch.model` typo (`Fabel`)** — one `config-warning` naming it, the engine keeps watching 5h/7d; the correct name and `all` never warn — Task 6 (`model_typo_warns_once_and_known_names_never_do`).
 
 ---
@@ -92,7 +92,7 @@ In `src/autoswitch.rs`'s `mod tests`, change the `Fake` facade to carry a provid
         }
         fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
             if self.fail_switch {
-                return Err(crate::errors::CswitchError::switch("boom"));
+                return Err(crate::errors::CcswError::switch("boom"));
             }
             self.switches.push(slot);
             let from = match &self.current {
@@ -450,7 +450,7 @@ and a match arm in `claude_usage` next to `CLAUDE_LIMIT_7D` (line ~286):
 Replace the file's header, `world()` and the four tests with the Claude versions below. The engine rules are the same; only the accounts, bearers and the files a switch leaves behind change.
 
 ```rust
-//! `cswitch auto --once` end to end: the built binary, the usage mock, and
+//! `ccsw auto --once` end to end: the built binary, the usage mock, and
 //! the Claude Code files a switch leaves behind. Auto-switch covers Claude
 //! Code accounts only (spec §9); `auth.json` is never touched.
 
@@ -497,7 +497,7 @@ fn parse_events(run: &Run) -> Vec<Value> {
 }
 
 fn state(cli: &Cli) -> Option<Value> {
-    let path = cli.cswitch_home.join("autoswitch_state.json");
+    let path = cli.ccsw_home.join("autoswitch_state.json");
     path.exists().then(|| support::read_json(&path))
 }
 
@@ -638,7 +638,7 @@ Notes for the implementer: `CLAUDE_OK`'s `Fable` scoped window is at 62 % and th
 
 - [ ] **Step 3: Rewrite `tests/auto_once.rs` as a Claude world**
 
-Replace the `chatgpt(slot)` builder and the world's record loop. Imports: drop `cswitch::codex::auth::AuthJson`, `base64::Engine`, `URL_SAFE_NO_PAD`, `jwt` (if nothing else uses them); add `use cswitch::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};`.
+Replace the `chatgpt(slot)` builder and the world's record loop. Imports: drop `ccsw::codex::auth::AuthJson`, `base64::Engine`, `URL_SAFE_NO_PAD`, `jwt` (if nothing else uses them); add `use ccsw::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};`.
 
 ```rust
 /// A Claude slot file for `u{slot}@x.com` with a far-future token.
@@ -991,7 +991,7 @@ Expected: FAIL — the Codex-only run returns `2`/`3` and writes a poll event; t
 ```rust
 /// Why `auto` is Claude-only (spec §9): Codex sessions keep the account they
 /// started with until they restart, so switching under them achieves nothing.
-pub const CLAUDE_ONLY_NOTICE: &str = "Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'cswitch add claude' first.";
+pub const CLAUDE_ONLY_NOTICE: &str = "Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'ccsw add claude' first.";
 ```
 
 `run_cli_to` (line ~1264): accept the selector word before clap sees the argv, and check the roster after `root_guard`:
@@ -1010,7 +1010,7 @@ pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn 
         None => {}
     }
     let args =
-        match AutoArgs::try_parse_from(std::iter::once("cswitch auto".to_string()).chain(argv)) {
+        match AutoArgs::try_parse_from(std::iter::once("ccsw auto".to_string()).chain(argv)) {
             Ok(args) => args,
             Err(err) => {
                 let _ = err.print();
@@ -1043,7 +1043,7 @@ pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn 
 fn auto_is_refused_on_a_codex_only_store_and_for_codex() {
     let mock = UsageMock::start();
     let cli = Cli::new().with_mock(&mock);
-    let notice = "Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'cswitch add claude' first.";
+    let notice = "Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'ccsw add claude' first.";
     cli.add_chatgpt("alice@example.com", "acct-alice", "rt-a");
 
     let run = cli.run(&["auto", "--once"]);
@@ -1360,7 +1360,7 @@ git commit -m "feat(auto): warn once about autoswitch.model names no account rep
 - Test: `src/tui/auto.rs`, `src/tui/app.rs`, `tests/tui_render.rs`
 
 **Interfaces:**
-- Produces: `AccountsSnapshot::only(&self, provider: Provider) -> AccountsSnapshot` (same `active_number` and `taken_at`, only that provider's accounts); `AutoScreen::without_claude(settings, stamp) -> AutoScreen` (no engine; first log line `— no Claude Code account: auto-switch covers Claude Code only (cswitch add claude) —`; badge ` OFF `); `AutoScreen::engine_available(&self) -> bool`; `App::open_auto` starts no engine when the current snapshot has no Claude account.
+- Produces: `AccountsSnapshot::only(&self, provider: Provider) -> AccountsSnapshot` (same `active_number` and `taken_at`, only that provider's accounts); `AutoScreen::without_claude(settings, stamp) -> AutoScreen` (no engine; first log line `— no Claude Code account: auto-switch covers Claude Code only (ccsw add claude) —`; badge ` OFF `); `AutoScreen::engine_available(&self) -> bool`; `App::open_auto` starts no engine when the current snapshot has no Claude account.
 - Consumes: Task 2 (the worker starts a Claude engine); `AccountSnapshot.provider`; `tests/tui_render.rs` `mixed_fixture()` (phase 1: Claude accounts `6 bob@gmail.com` active with `$$`/7d 100/`Fable`, `7 bob@work.com`) and `fixture()` (Codex only); `App::apply_snapshot(snapshot, generation, now)`.
 
 - [ ] **Step 1: Write the failing unit tests**
@@ -1374,7 +1374,7 @@ git commit -m "feat(auto): warn once about autoswitch.model names no account rep
         assert!(!auto.engine_available());
         assert_eq!(
             auto.log()[0].text,
-            "— no Claude Code account: auto-switch covers Claude Code only (cswitch add claude) —"
+            "— no Claude Code account: auto-switch covers Claude Code only (ccsw add claude) —"
         );
         assert_eq!(auto.badge(&DARK).content, " OFF ");
         assert!(
@@ -1445,7 +1445,7 @@ and the account expectations with:
     );
 ```
 
-(Keep the badge, summary, threshold-adjust, modal and log assertions; the `5h` tick-mark assertion stays if the Claude card has a 5h bar — it does.) Change the modal assertion `rows[title_y + 2].contains("Go live? cswitch will switch your active account")` to `contains("Go live? cswitch will switch your active Claude Code account")`.
+(Keep the badge, summary, threshold-adjust, modal and log assertions; the `5h` tick-mark assertion stays if the Claude card has a 5h bar — it does.) Change the modal assertion `rows[title_y + 2].contains("Go live? ccsw will switch your active account")` to `contains("Go live? ccsw will switch your active Claude Code account")`.
 
 Add a new render test:
 
@@ -1459,7 +1459,7 @@ fn auto_view_without_a_claude_account_shows_the_notice_and_starts_no_engine() {
     assert!(rows.iter().any(|r| r.contains(" OFF ")), "{rows:?}");
     assert!(
         rows.iter().any(|r| r.contains(
-            "— no Claude Code account: auto-switch covers Claude Code only (cswitch add claude) —"
+            "— no Claude Code account: auto-switch covers Claude Code only (ccsw add claude) —"
         )),
         "{rows:?}"
     );
@@ -1508,7 +1508,7 @@ Expected: compile errors (`without_claude`, `engine_available`, `only` missing);
             engine_available: false,
         };
         screen.push_system(
-            "— no Claude Code account: auto-switch covers Claude Code only (cswitch add claude) —",
+            "— no Claude Code account: auto-switch covers Claude Code only (ccsw add claude) —",
             stamp,
         );
         screen
@@ -1560,7 +1560,7 @@ In `handle_key`, first arm: when `!self.engine_available`, only `Esc` / `q` pop 
 
 (then the existing `accounts_panel(snapshot, …)` and `auto.candidate_lines(snapshot, p)` calls are unchanged). Import `crate::provider::Provider` in `app.rs` if missing.
 
-`src/tui/modals.rs` `go_live()` body: `"Go live? cswitch will switch your active Claude Code account automatically when the threshold is reached.\n\n(Same behavior as running `cswitch auto` in a terminal.)"`.
+`src/tui/modals.rs` `go_live()` body: `"Go live? ccsw will switch your active Claude Code account automatically when the threshold is reached.\n\n(Same behavior as running `ccsw auto` in a terminal.)"`.
 
 - [ ] **Step 4: Run the tests to see them pass**
 
@@ -1602,23 +1602,23 @@ const AUTO_EPILOG: &str = "Exit codes with --once:
 Auto-switch covers Claude Code accounts: a running Claude Code session picks the
 new login up by itself (next message, or ~30 s with the macOS Keychain). Codex
 sessions keep the account they started with until they restart, so there is no
-Codex auto-switch; use `cswitch switch` and restart the session instead.
+Codex auto-switch; use `ccsw switch` and restart the session instead.
 
 Examples:
-  cswitch auto                       # foreground loop, switch at 90% used
-  cswitch auto claude                # the same (claude is the only provider)
-  cswitch auto --threshold 80        # switch earlier
-  cswitch auto --model Fable         # also switch when that model's weekly limit is hit
-  cswitch auto --json                # one JSON event per line (for scripts)
-  cswitch auto --once; echo $?       # single tick, outcome in exit code
-  cswitch auto --dry-run             # log decisions, never actually switch
+  ccsw auto                       # foreground loop, switch at 90% used
+  ccsw auto claude                # the same (claude is the only provider)
+  ccsw auto --threshold 80        # switch earlier
+  ccsw auto --model Fable         # also switch when that model's weekly limit is hit
+  ccsw auto --json                # one JSON event per line (for scripts)
+  ccsw auto --once; echo $?       # single tick, outcome in exit code
+  ccsw auto --dry-run             # log decisions, never actually switch
 
 Defaults live in settings.json in the backup root; flags override them.";
 ```
 
 `AutoArgs`: `about = "Automatically switch Claude Code accounts when the active one nears its 5h/7d rate limit. Runs a foreground polling loop; use --once for a single tick (cron-friendly)."`, and the `--model` doc comment: `/// Also switch when a per-model weekly limit is hit, not just the account-wide 5h/7d windows. One pool name or a comma-separated list of the model pools an account reports (e.g. Fable), or 'all' for every per-model window`.
 
-`src/cli/legacy.rs`: line ~373 `  cswitch auto [claude]              auto-switch Claude Code accounts near their rate limits` (keep the column alignment of the surrounding lines); line ~430 `  cswitch auto --once                       # single auto-switch tick for Claude Code (cron-friendly)`.
+`src/cli/legacy.rs`: line ~373 `  ccsw auto [claude]              auto-switch Claude Code accounts near their rate limits` (keep the column alignment of the surrounding lines); line ~430 `  ccsw auto --once                       # single auto-switch tick for Claude Code (cron-friendly)`.
 
 - [ ] **Step 2: README**
 
@@ -1637,23 +1637,23 @@ only for now; Claude support for them comes in later phases.
 ### Automatic switching (Claude Code)
 
 ```bash
-cswitch auto                    # foreground loop, switch Claude Code accounts at 90% used
-cswitch auto --threshold 80     # switch earlier
-cswitch auto --once             # one tick, outcome in the exit code (0 switched, 1 error, 2 nothing to do, 3 blocked)
-cswitch auto --dry-run          # log what it would do, never switch
-cswitch auto --json             # one JSON event per line (schemaVersion 2, provider "claude")
+ccsw auto                    # foreground loop, switch Claude Code accounts at 90% used
+ccsw auto --threshold 80     # switch earlier
+ccsw auto --once             # one tick, outcome in the exit code (0 switched, 1 error, 2 nothing to do, 3 blocked)
+ccsw auto --dry-run          # log what it would do, never switch
+ccsw auto --json             # one JSON event per line (schemaVersion 2, provider "claude")
 ```
 
 Auto-switch covers Claude Code accounts only. A running Claude Code session picks the new
 login up by itself (on the next message, or within about 30 seconds with the macOS Keychain),
 so switching early keeps you working. Codex sessions keep the account they started with
 until they restart — Codex CLI's app-server daemon loads `auth.json` once and re-reads it
-only for the account it already holds — so there is no Codex auto-switch; use `cswitch
-switch` and restart the session. `cswitch auto` on a roster without a Claude Code account
+only for the account it already holds — so there is no Codex auto-switch; use `ccsw
+switch` and restart the session. `ccsw auto` on a roster without a Claude Code account
 exits 1 and says so. While the Keychain is locked, the engine holds (`active-idle`) rather
 than failing over.
 
-Defaults live in `settings.json`; change them with `cswitch config set autoswitch.threshold 80`.
+Defaults live in `settings.json`; change them with `ccsw config set autoswitch.threshold 80`.
 `autoswitch.model` names that no account reports produce one `config-warning` event.
 ````
 
@@ -1666,11 +1666,11 @@ Above `## v0.3.0 — 2026-10-08`:
 
 ### Changed
 
-- `cswitch auto` now switches Claude Code accounts. Codex auto-switch is withdrawn: a
+- `ccsw auto` now switches Claude Code accounts. Codex auto-switch is withdrawn: a
   Codex session keeps the account it started with until it restarts (the app-server daemon
   loads `auth.json` once and re-reads it only for the account it already holds), so an
-  automatic switch could never reach the session that hit the limit. `cswitch auto` on a
-  roster without a Claude Code account, and `cswitch auto codex`, exit 1 with an explanation.
+  automatic switch could never reach the session that hit the limit. `ccsw auto` on a
+  roster without a Claude Code account, and `ccsw auto codex`, exit 1 with an explanation.
 - `auto --json` events are `schemaVersion: 2` and carry `provider: "claude"`.
 - The TUI auto view shows the Claude Code active card and candidates; the `Go live`
   confirmation names Claude Code. Without a Claude Code account the view shows a notice

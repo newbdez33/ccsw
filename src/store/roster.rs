@@ -9,7 +9,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil::write_json_private;
 use crate::model::{AccountRecord, Roster};
 use crate::paths::Paths;
@@ -22,7 +22,7 @@ pub fn read(paths: &Paths) -> Result<Option<Roster>> {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
-            return Err(CswitchError::config(format!(
+            return Err(CcswError::config(format!(
                 "{} exists but could not be read ({err}). Fix what is blocking the read, then retry.",
                 path.display()
             )));
@@ -30,7 +30,7 @@ pub fn read(paths: &Paths) -> Result<Option<Roster>> {
     };
     let value: Value = serde_json::from_slice(&bytes).map_err(|err| unparseable(&path, &err))?;
     if !value.is_object() {
-        return Err(CswitchError::config(format!(
+        return Err(CcswError::config(format!(
             "{} holds {}, not a JSON object. Repair or move it, then retry.",
             path.display(),
             python_type_name(&value)
@@ -41,8 +41,8 @@ pub fn read(paths: &Paths) -> Result<Option<Roster>> {
         .map_err(|err| unparseable(&path, &err))
 }
 
-fn unparseable(path: &Path, err: &dyn std::fmt::Display) -> CswitchError {
-    CswitchError::config(format!(
+fn unparseable(path: &Path, err: &dyn std::fmt::Display) -> CcswError {
+    CcswError::config(format!(
         "{} exists but could not be parsed ({err}). Repair or move it, then retry — refusing to overwrite it unread.",
         path.display()
     ))
@@ -70,9 +70,9 @@ pub fn read_or_empty(paths: &Paths) -> Result<Roster> {
 pub fn write(paths: &Paths, roster: &Roster) -> Result<()> {
     let path = paths.sequence_file();
     let value = serde_json::to_value(roster)
-        .map_err(|err| CswitchError::config(format!("Generated invalid JSON: {err}")))?;
+        .map_err(|err| CcswError::config(format!("Generated invalid JSON: {err}")))?;
     write_json_private(&path, &value)
-        .map_err(|err| CswitchError::config(format!("{}: {err}", path.display())))
+        .map_err(|err| CcswError::config(format!("{}: {err}", path.display())))
 }
 
 /// Return the roster, writing the initial empty file when none exists.
@@ -85,8 +85,8 @@ pub fn init_if_absent(paths: &Paths) -> Result<Roster> {
     Ok(roster)
 }
 
-fn missing(slot: u32) -> CswitchError {
-    CswitchError::AccountNotFound(format!("Account-{slot} does not exist"))
+fn missing(slot: u32) -> CcswError {
+    CcswError::AccountNotFound(format!("Account-{slot} does not exist"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +150,7 @@ impl Roster {
         if let Some(owner) = alias_owner(self, &alias)
             && owner != slot
         {
-            return Err(CswitchError::config(format!(
+            return Err(CcswError::config(format!(
                 "Alias '{alias}' is already used by account {owner}"
             )));
         }
@@ -189,13 +189,13 @@ impl Roster {
             return Err(missing(src));
         }
         if target < 1 {
-            return Err(CswitchError::validation(format!(
+            return Err(CcswError::validation(format!(
                 "Target slot must be a positive slot number, got: '{target}' (use `swap` to trade two accounts by identifier)"
             )));
         }
         let cap = self.sorted_slots().last().copied().unwrap_or(0).max(99);
         if target > cap {
-            return Err(CswitchError::validation(format!(
+            return Err(CcswError::validation(format!(
                 "Target slot {target} is out of range (1-{cap}): new accounts are numbered from the highest slot, so a large target would inflate future account numbers"
             )));
         }
@@ -217,9 +217,7 @@ impl Roster {
 
     pub fn swap_slots(&mut self, a: u32, b: u32) -> Result<()> {
         if a == b {
-            return Err(CswitchError::validation(
-                "Cannot swap an account with itself",
-            ));
+            return Err(CcswError::validation("Cannot swap an account with itself"));
         }
         for slot in [a, b] {
             if self.record(slot).is_none() {
@@ -285,20 +283,20 @@ impl Roster {
 pub fn normalize_alias(name: &str) -> Result<String> {
     let alias = name.trim().to_lowercase();
     if alias.is_empty() {
-        return Err(CswitchError::validation("alias cannot be empty"));
+        return Err(CcswError::validation("alias cannot be empty"));
     }
     if alias.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(CswitchError::validation(format!(
+        return Err(CcswError::validation(format!(
             "alias '{alias}' cannot be purely numeric (reserved for slot numbers)"
         )));
     }
     if alias.starts_with('-') {
-        return Err(CswitchError::validation(format!(
+        return Err(CcswError::validation(format!(
             "alias '{alias}' cannot start with '-' (would be read as a command flag)"
         )));
     }
     if Provider::parse_selector(&alias).is_some() {
-        return Err(CswitchError::validation(format!(
+        return Err(CcswError::validation(format!(
             "alias '{alias}' is reserved for the provider selector"
         )));
     }
@@ -306,7 +304,7 @@ pub fn normalize_alias(name: &str) -> Result<String> {
         .chars()
         .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '.' | '-'))
     {
-        return Err(CswitchError::validation(format!(
+        return Err(CcswError::validation(format!(
             "alias '{alias}' may only contain letters, digits, '-', '_', and '.'"
         )));
     }
@@ -355,8 +353,8 @@ pub fn resolve_identifier(roster: &Roster, identifier: &str) -> Result<Option<u3
                     format!("{slot} [{tag}]")
                 })
                 .collect();
-            Err(CswitchError::config(format!(
-                "Email '{identifier}' is ambiguous — matches accounts: {}. Use account number instead (e.g., cswitch switch 1).",
+            Err(CcswError::config(format!(
+                "Email '{identifier}' is ambiguous — matches accounts: {}. Use account number instead (e.g., ccsw switch 1).",
                 listed.join(", ")
             )))
         }
@@ -365,8 +363,8 @@ pub fn resolve_identifier(roster: &Roster, identifier: &str) -> Result<Option<u3
 
 /// `resolve_identifier` that must land on an existing record.
 pub fn resolve_slot(roster: &Roster, identifier: &str) -> Result<u32> {
-    let slot = resolve_identifier(roster, identifier)?
-        .ok_or_else(|| CswitchError::not_found(identifier))?;
+    let slot =
+        resolve_identifier(roster, identifier)?.ok_or_else(|| CcswError::not_found(identifier))?;
     if roster.record(slot).is_none() {
         return Err(missing(slot));
     }
@@ -699,7 +697,7 @@ mod tests {
         assert_eq!(err.type_name(), "ConfigError");
         assert_eq!(
             err.to_string(),
-            "Email 'dup@x.com' is ambiguous — matches accounts: 2 [personal], 3 [Acme]. Use account number instead (e.g., cswitch switch 1)."
+            "Email 'dup@x.com' is ambiguous — matches accounts: 2 [personal], 3 [Acme]. Use account number instead (e.g., ccsw switch 1)."
         );
 
         assert_eq!(resolve_slot(&roster, "team").unwrap(), 1);

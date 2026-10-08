@@ -18,7 +18,7 @@ pub mod tui;
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::jsonout;
 use crate::logging;
 use crate::paths::Paths;
@@ -149,7 +149,7 @@ pub(crate) fn with_switcher(
 }
 
 /// `Error: <msg>` on stderr, or the JSON envelope on stdout; exit 1.
-pub(crate) fn report_error(err: &CswitchError, json: bool) -> i32 {
+pub(crate) fn report_error(err: &CcswError, json: bool) -> i32 {
     if json {
         print!(
             "{}",

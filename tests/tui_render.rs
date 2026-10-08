@@ -8,14 +8,14 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 
-use cswitch::cli::tui::TuiStart;
-use cswitch::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso};
-use cswitch::provider::Provider;
-use cswitch::store::AutoSwitchSettings;
-use cswitch::store::usage_store::{UsageEntry, UsageSentinel};
-use cswitch::tui::app::{Action, ActionResult, App, Command, Inbound, ScreenKind};
-use cswitch::tui::snapshot::{AccountSnapshot, AccountsSnapshot};
-use cswitch::tui::theme::{DARK, ThemeName};
+use ccsw::cli::tui::TuiStart;
+use ccsw::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso};
+use ccsw::provider::Provider;
+use ccsw::store::AutoSwitchSettings;
+use ccsw::store::usage_store::{UsageEntry, UsageSentinel};
+use ccsw::tui::app::{Action, ActionResult, App, Command, Inbound, ScreenKind};
+use ccsw::tui::snapshot::{AccountSnapshot, AccountsSnapshot};
+use ccsw::tui::theme::{DARK, ThemeName};
 
 /// 2026-09-21T14:13:20Z.
 const NOW: f64 = 1_790_000_000.0;
@@ -53,7 +53,7 @@ fn entry(age: f64, usage: Option<NormalizedUsage>) -> UsageEntry {
 fn account(number: u32, email: &str, tag: &str, usage: UsageEntry) -> AccountSnapshot {
     AccountSnapshot {
         number,
-        provider: cswitch::provider::Provider::Codex,
+        provider: ccsw::provider::Provider::Codex,
         email: email.to_string(),
         tag: tag.to_string(),
         alias: None,
@@ -372,7 +372,7 @@ fn browser_login_starts_immediately_and_can_be_cancelled() {
             Inbound::ActionDone(ActionResult {
                 action: Action::AddNew,
                 ok: true,
-                lines: vec![cswitch::switcher::Line::plain("Login cancelled.")],
+                lines: vec![ccsw::switcher::Line::plain("Login cancelled.")],
                 switch: None,
                 followup: None,
             }),
@@ -609,10 +609,10 @@ fn auto_screen_badge_summary_candidates_log_and_threshold() {
     app.handle_key(key(KeyCode::Char('l')), NOW);
     let rows = screen_rows(&render(&mut app, 100, 30, NOW));
     let (title_y, _) = find_row(&rows, "Go live");
-    assert!(rows[title_y + 2].contains("Go live? cswitch will switch your active account"));
+    assert!(rows[title_y + 2].contains("Go live? ccsw will switch your active account"));
     assert!(
         rows.iter()
-            .any(|r| r.contains("(Same behavior as running `cswitch auto` in a terminal.)"))
+            .any(|r| r.contains("(Same behavior as running `ccsw auto` in a terminal.)"))
     );
     assert!(
         rows.iter()
@@ -698,12 +698,12 @@ fn light_theme_changes_the_palette() {
     let mut app = App::new(TuiStart::Dashboard, ThemeName::Light, 90.0, None);
     app.apply_snapshot(fixture(), 1, NOW);
     let buf = render(&mut app, 100, 30, NOW);
-    assert_eq!(buf[(0, 0)].bg, cswitch::tui::theme::LIGHT.bg);
+    assert_eq!(buf[(0, 0)].bg, ccsw::tui::theme::LIGHT.bg);
     let rows = screen_rows(&buf);
     let (y, header) = find_row(&rows, "john.doe@gmail.com");
     assert_eq!(
         fg(&buf, col(header, '●'), y),
-        cswitch::tui::theme::LIGHT.accent
+        ccsw::tui::theme::LIGHT.accent
     );
     let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
     assert_eq!(

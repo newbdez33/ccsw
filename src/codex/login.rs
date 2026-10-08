@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil;
 use crate::paths::Paths;
 
@@ -65,7 +65,7 @@ pub fn browser_login(
     on_url: impl FnMut(String),
 ) -> Result<Option<AuthJson>> {
     let codex = command_on_path("codex").ok_or_else(|| {
-        CswitchError::config("Codex CLI was not found on PATH. Install Codex to sign in.")
+        CcswError::config("Codex CLI was not found on PATH. Install Codex to sign in.")
     })?;
     run_login(paths, &codex, cancel, on_url, LOGIN_TIMEOUT)
 }
@@ -82,24 +82,24 @@ fn run_login(
         return Ok(None);
     }
     let home = tempfile::Builder::new()
-        .prefix("cswitch-login-")
+        .prefix("ccsw-login-")
         .tempdir()
-        .map_err(|err| CswitchError::config(format!("Could not prepare login: {err}")))?;
+        .map_err(|err| CcswError::config(format!("Could not prepare login: {err}")))?;
     // Keep workspace and login policies, but never copy auth.json. Starting
     // outside the project also avoids loading project-local Codex settings.
     match std::fs::read(paths.codex_config_file()) {
         Ok(config) => fsutil::atomic_write_private(&home.path().join("config.toml"), &config)
-            .map_err(|err| CswitchError::config(format!("Could not copy login settings: {err}")))?,
+            .map_err(|err| CcswError::config(format!("Could not copy login settings: {err}")))?,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
         Err(err) => {
-            return Err(CswitchError::config(format!(
+            return Err(CcswError::config(format!(
                 "Could not read login settings: {err}"
             )));
         }
     }
     let codex = codex
         .canonicalize()
-        .map_err(|err| CswitchError::config(format!("Could not locate Codex CLI: {err}")))?;
+        .map_err(|err| CcswError::config(format!("Could not locate Codex CLI: {err}")))?;
     let mut child = LoginChild(
         Command::new(codex)
             .args(["login", "-c", "cli_auth_credentials_store=\"file\""])
@@ -109,7 +109,7 @@ fn run_login(
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|err| CswitchError::config(format!("Could not start Codex login: {err}")))?,
+            .map_err(|err| CcswError::config(format!("Could not start Codex login: {err}")))?,
     );
     let stderr = child.0.stderr.take().expect("piped stderr");
     let (tx, rx) = mpsc::channel();
@@ -134,7 +134,7 @@ fn run_login(
         if let Some(status) = child
             .0
             .try_wait()
-            .map_err(|err| CswitchError::config(format!("Could not check Codex login: {err}")))?
+            .map_err(|err| CcswError::config(format!("Could not check Codex login: {err}")))?
         {
             let _ = reader.join();
             for url in rx.try_iter() {
@@ -144,18 +144,17 @@ fn run_login(
                 return Ok(None);
             }
             if !status.success() {
-                return Err(CswitchError::config(format!(
+                return Err(CcswError::config(format!(
                     "Codex login failed ({status}). Check your Codex login settings and try again."
                 )));
             }
-            let auth = AuthJson::read(&home.path().join("auth.json"))?.ok_or_else(|| {
-                CswitchError::credential_read("Codex login returned no credentials")
-            })?;
+            let auth = AuthJson::read(&home.path().join("auth.json"))?
+                .ok_or_else(|| CcswError::credential_read("Codex login returned no credentials"))?;
             validate_login(&auth)?;
             return Ok(Some(auth));
         }
         if started.elapsed() >= timeout {
-            return Err(CswitchError::config("Login timed out. Please try again."));
+            return Err(CcswError::config("Login timed out. Please try again."));
         }
         thread::sleep(POLL_INTERVAL);
     }
@@ -164,7 +163,7 @@ fn run_login(
 pub(crate) fn validate_login(auth: &AuthJson) -> Result<()> {
     if auth.identity().is_none() || auth.access_token().is_none() || auth.refresh_token().is_none()
     {
-        return Err(CswitchError::credential_read(
+        return Err(CcswError::credential_read(
             "Codex login returned incomplete ChatGPT credentials",
         ));
     }

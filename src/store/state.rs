@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil::{read_json, write_json_private};
 use crate::paths::Paths;
 
@@ -55,10 +55,10 @@ pub fn read(paths: &Paths) -> AutoSwitchState {
 pub fn write(paths: &Paths, state: &AutoSwitchState) -> Result<()> {
     let path = paths.state_file();
     let mut value = serde_json::to_value(state)
-        .map_err(|err| CswitchError::config(format!("{}: {err}", path.display())))?;
+        .map_err(|err| CcswError::config(format!("{}: {err}", path.display())))?;
     value["schemaVersion"] = Value::from(1);
     write_json_private(&path, &value)
-        .map_err(|err| CswitchError::config(format!("{}: {err}", path.display())))
+        .map_err(|err| CcswError::config(format!("{}: {err}", path.display())))
 }
 
 /// Read-modify-write under the state lock.

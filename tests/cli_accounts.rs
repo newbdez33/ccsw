@@ -177,7 +177,7 @@ fn alias_move_swap_disable_enable_remove() {
     assert_eq!(run.status, 2);
     assert!(
         run.stderr
-            .contains("cswitch alias: error: NUM|EMAIL is required with --unset")
+            .contains("ccsw alias: error: NUM|EMAIL is required with --unset")
     );
     let run = cli.run(&["alias", "1"]);
     assert_eq!(run.status, 2);
@@ -233,7 +233,7 @@ fn alias_move_swap_disable_enable_remove() {
     );
     let run = cli.run(&["disable", "2"]);
     assert!(run.stdout.ends_with(
-        "  No accounts remain in rotation — auto-switch and bare switch have nothing to pick. Re-enable one with cswitch enable <num|email>.\n"
+        "  No accounts remain in rotation — auto-switch and bare switch have nothing to pick. Re-enable one with ccsw enable <num|email>.\n"
     ));
     let run = cli.run(&["enable", "2"]);
     assert_eq!(
@@ -283,7 +283,7 @@ fn purge_removes_the_store_after_confirmation() {
     assert_eq!(run.status, 0);
     assert!(
         run.stdout
-            .starts_with("This will remove ALL cswitch data from your system:\n")
+            .starts_with("This will remove ALL ccsw data from your system:\n")
     );
     assert!(
         run.stdout
@@ -293,11 +293,11 @@ fn purge_removes_the_store_after_confirmation() {
         run.stdout
             .ends_with("Are you sure you want to purge all data? [y/N] Cancelled\n")
     );
-    assert!(cli.cswitch_home.exists());
+    assert!(cli.ccsw_home.exists());
     let run = cli.run_with_stdin(&["--purge"], "y\n");
     assert_eq!(run.status, 0);
     assert!(run.stdout.ends_with("Purge complete.\n"));
-    assert!(!cli.cswitch_home.exists());
+    assert!(!cli.ccsw_home.exists());
     assert!(cli.live_path().exists(), "the Codex login is untouched");
 }
 
@@ -305,8 +305,8 @@ fn purge_removes_the_store_after_confirmation() {
 fn usage_errors_exit_2_with_the_usage_line() {
     let cli = Cli::new();
     let cases = [
-        (&[][..], "no command given — try 'cswitch help'"),
-        (&["--json"], "no command given — try 'cswitch help'"),
+        (&[][..], "no command given — try 'ccsw help'"),
+        (&["--json"], "no command given — try 'ccsw help'"),
         (&["bogus"], "unrecognized arguments: bogus"),
         (
             &["list", "--strategy", "best"],
@@ -374,7 +374,7 @@ fn usage_errors_exit_2_with_the_usage_line() {
         assert_eq!(run.status, 2, "{args:?}: {}", run.stderr);
         assert_eq!(
             run.stderr,
-            format!("usage: cswitch <command> [args] [options]\ncswitch: error: {message}\n"),
+            format!("usage: ccsw <command> [args] [options]\nccsw: error: {message}\n"),
             "{args:?}"
         );
         assert!(run.stdout.is_empty());
@@ -389,7 +389,7 @@ fn help_version_menubar_and_upgrade() {
         assert_eq!(run.status, 0);
         assert!(
             run.stdout
-                .starts_with("usage: cswitch <command> [args] [options]\n")
+                .starts_with("usage: ccsw <command> [args] [options]\n")
         );
         assert!(
             run.stdout
@@ -400,32 +400,26 @@ fn help_version_menubar_and_upgrade() {
                 .contains("Aliases: ls=list  rm=remove  update=upgrade")
         );
         assert!(run.stdout.contains(
-            "The original flag spellings (cswitch --switch, cswitch --list, ...) keep working."
+            "The original flag spellings (ccsw --switch, ccsw --list, ...) keep working."
         ));
     }
     let run = cli.run(&["--version"]);
     assert_eq!(run.status, 0);
-    assert_eq!(
-        run.stdout,
-        format!("cswitch {}\n", env!("CARGO_PKG_VERSION"))
-    );
+    assert_eq!(run.stdout, format!("ccsw {}\n", env!("CARGO_PKG_VERSION")));
     let run = cli.run(&["menubar"]);
     assert_eq!(run.status, 1);
-    assert_eq!(
-        run.stderr.trim(),
-        "The menu bar is not available in cswitch."
-    );
+    assert_eq!(run.stderr.trim(), "The menu bar is not available in ccsw.");
     for args in [&["upgrade"][..], &["update"], &["--upgrade"]] {
         let run = cli.run(args);
         assert_eq!(run.status, 1);
         assert!(
             run.stderr
-                .contains("cargo install --git https://github.com/newbdez33/cswitch --locked")
+                .contains("cargo install --git https://github.com/newbdez33/ccsw --locked")
         );
     }
     let run = cli.run(&["alias", "-h"]);
     assert_eq!(run.status, 0);
-    assert!(run.stdout.starts_with("usage: cswitch alias"));
+    assert!(run.stdout.starts_with("usage: ccsw alias"));
 }
 
 #[test]
@@ -468,6 +462,6 @@ fn credential_store_gate_refuses_keyring_mode() {
     assert_eq!(run.status, 1);
     assert!(
         run.stderr
-            .contains("cswitch requires file-based Codex credentials")
+            .contains("ccsw requires file-based Codex credentials")
     );
 }

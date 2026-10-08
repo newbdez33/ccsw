@@ -1,26 +1,26 @@
-# cswitch Claude provider — phase 1 implementation plan
+# ccsw Claude provider — phase 1 implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** One `cswitch` roster that manages Codex *and* Claude Code accounts under one global slot space: `add` captures both live logins, `switch 2` acts on whichever provider slot 2 belongs to, `list` / `status` / `--json` report both, and the TUI shows a section per provider.
+**Goal:** One `ccsw` roster that manages Codex *and* Claude Code accounts under one global slot space: `add` captures both live logins, `switch 2` acts on whichever provider slot 2 belongs to, `list` / `status` / `--json` report both, and the TUI shows a section per provider.
 
 **Architecture:** A `Provider` tag on every roster record selects between the existing `src/codex/` mechanics and a new `src/claude/` tree ported from claude-swap (paths, Keychain via `/usr/bin/security`, credential read/write across backends, Claude Code's directory-lock protocol, OAuth refresh, usage API). The usage collector, the switcher and the CLI dispatch on the record's provider; the TUI groups one flat snapshot by provider. Phase 1 covers the roster, the Claude core, `add` / `add-token` / `switch` / `list` / `status`, JSON v2 and the TUI sections. Auto-switch (phase 2), session mode (phase 3) and export/import v2 (phase 4) get their own plans.
 
 **Tech Stack:** Rust 2024 (MSRV 1.88), serde/serde_json, reqwest + tokio (existing), ratatui/crossterm (existing), sha2/hex (existing), `filetime` (new, for touching lock directories), axum (dev, existing mock server).
 
-**Spec:** `docs/specs/2026-10-07-cswitch-claude-provider-design.md` (amends `docs/specs/2026-09-29-cswitch-design.md`). The research notes `docs/research/cswap-cli-contract.md`, `cswap-tui.md` and `cswap-model-autoswitch.md` are the contract where both specs are silent.
+**Spec:** `docs/specs/2026-10-07-ccsw-claude-provider-design.md` (amends `docs/specs/2026-09-29-ccsw-design.md`). The research notes `docs/research/cswap-cli-contract.md`, `cswap-tui.md` and `cswap-model-autoswitch.md` are the contract where both specs are silent.
 
 ## Global Constraints
 
 - Rust edition 2024, `rust-version = "1.88"`; the quality gate is `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all` (every task ends green).
-- Program name `cswitch`; help header `Multi-Account Switcher for OpenAI Codex and Claude Code`.
+- Program name `ccsw`; help header `Multi-Account Switcher for OpenAI Codex and Claude Code`.
 - The words `codex` and `claude` are reserved: refused as aliases (`alias 'claude' is reserved for the provider selector`), accepted as a selector argument of `switch`, `add`, `list`, `status` (phase 1).
 - Slots are one global space; `add` allocates `max(existing)+1` across providers; `provider` is always written to `sequence.json` and defaults to `codex` on read.
 - Codex behaviour for a single-provider store is unchanged: every existing integration test keeps passing except where this plan edits an assertion (JSON `schemaVersion` → 2, new `provider` field).
 - Claude strings are verbatim from the spec §4: Keychain service `Claude Code-credentials` (live OAuth) and `Claude Code` (managed key), account `$USER`; locks `<home>/.oauth_refresh.lock` and `<home>.lock` (stale 60 s), `<global config>.lock` (stale 10 s), touched every 3 s, 9 s wait budget per lock; refresh `POST https://platform.claude.com/v1/oauth/token` with client id `9d1c250a-e61b-44d9-88ed-5944d1962f5e`; usage `GET https://api.anthropic.com/api/oauth/usage` with `anthropic-beta: oauth-2025-04-20`; follow-ups `Restart Claude Code to apply immediately — otherwise the session can take up to ~30 seconds to pick up the new account.` (Keychain) and `New account is active on your next message — no restart needed.` (file).
-- `CSWITCH_KEYCHAIN=off` forces the file backend (tests, CI, and users who want it); `CSWITCH_CLAUDE_USAGE_URL` / `CSWITCH_CLAUDE_TOKEN_URL` override the endpoints; `CLAUDE_CONFIG_DIR` is honoured exactly as Claude Code does (`.claude.json` moves inside it).
+- `CCSW_KEYCHAIN=off` forces the file backend (tests, CI, and users who want it); `CCSW_CLAUDE_USAGE_URL` / `CCSW_CLAUDE_TOKEN_URL` override the endpoints; `CLAUDE_CONFIG_DIR` is honoured exactly as Claude Code does (`.claude.json` moves inside it).
 - No network while any lock is held. Every file write is atomic and 0600 (`fsutil::write_json_private` / `atomic_write_private`).
-- The active Claude account is never refreshed by cswitch; a switch replaces only `claudeAiOauth` inside the live credential object and keeps every other top-level key.
+- The active Claude account is never refreshed by ccsw; a switch replaces only `claudeAiOauth` inside the live credential object and keeps every other top-level key.
 - JSON payloads of `list`, `status`, `switch`, `config` and the error envelope carry `schemaVersion: 2`; `settings.json`, `cache/usage.json` and `autoswitch_state.json` keep their own versions; auto-switch events stay at 1 until phase 2.
 - Commit after every task with a conventional message (`feat(...)`, `test(...)`, `docs(...)`); no `Co-Authored-By` lines.
 
@@ -28,7 +28,7 @@
 
 1. **A live `.credentials.json` with sibling keys** (Claude Code's `mcpOAuth` tokens next to `claudeAiOauth`): a switch must keep the siblings byte-for-byte and replace only `claudeAiOauth` — pinned in Task 6 (`replace_oauth_keeps_siblings_and_oauth_only_strips_them`) and Task 16 (`switch_claude_keeps_sibling_keys`).
 2. **A v0.1 `sequence.json` with no `provider` field**: it must load as all-Codex, `switch 2` must still rewrite `auth.json`, and the next write must add `"provider": "codex"` — Task 1 (`provider_defaults_to_codex_on_read`) and Task 16 (`v1_roster_is_read_as_codex`).
-3. **`cswitch switch <claude slot>` while a Codex account is live**: `auth.json`, its backups and the Codex daemon must be untouched — Task 16 (`switching_a_claude_slot_leaves_codex_alone`).
+3. **`ccsw switch <claude slot>` while a Codex account is live**: `auth.json`, its backups and the Codex daemon must be untouched — Task 16 (`switching_a_claude_slot_leaves_codex_alone`).
 4. **The same email under both providers** (a Codex login and a Claude login for `me@example.com`): `add` must create two slots, never fold one into the other — Task 1 (`find_slot_is_scoped_by_provider`) and Task 16 (`add_captures_both_logins_even_with_the_same_email`).
 5. **A lock directory left behind by a crashed Claude Code**: a directory older than its staleness is taken over, a fresh one makes the switch fail with `LockError` after the budget instead of hanging — Task 8 (`stale_lock_is_stolen`, `fresh_lock_times_out`).
 
@@ -70,7 +70,7 @@ Modified files (owner task in parentheses): `src/model.rs` (1, 2, 3), `src/store
 Create `src/provider.rs` with only the tests first:
 
 ```rust
-//! The two account providers cswitch manages and the selector grammar.
+//! The two account providers ccsw manages and the selector grammar.
 
 use std::fmt;
 
@@ -395,7 +395,7 @@ In `normalize_alias`, after the `starts_with('-')` check:
 
 ```rust
     if Provider::parse_selector(&alias).is_some() {
-        return Err(CswitchError::validation(format!(
+        return Err(CcswError::validation(format!(
             "alias '{alias}' is reserved for the provider selector"
         )));
     }
@@ -1027,7 +1027,7 @@ Deviation from spec §14: the Claude paths live on the existing `Paths` (one pat
 - Test: `src/paths.rs`
 
 **Interfaces:**
-- Produces: `Paths.claude_home`, `Paths.claude_config_base`, `Paths.keychain_enabled: bool`; `Paths::from_values(cswitch_home, codex_home, claude_config_dir: Option<PathBuf>, user_home)`; `claude_credentials_file()`, `claude_global_config_file()`, `claude_refresh_lock_dir()`, `claude_legacy_lock_dir()`, `claude_config_lock_dir()`, `claude_backups_dir()`.
+- Produces: `Paths.claude_home`, `Paths.claude_config_base`, `Paths.keychain_enabled: bool`; `Paths::from_values(ccsw_home, codex_home, claude_config_dir: Option<PathBuf>, user_home)`; `claude_credentials_file()`, `claude_global_config_file()`, `claude_refresh_lock_dir()`, `claude_legacy_lock_dir()`, `claude_config_lock_dir()`, `claude_backups_dir()`.
 - Consumes: nothing new.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1039,7 +1039,7 @@ Replace the `defaults_and_overrides` test in `src/paths.rs` and add two more:
     fn defaults_and_overrides() {
         let home = Path::new("/home/u");
         let paths = Paths::from_values(None, None, None, home).unwrap();
-        assert_eq!(paths.backup_root, home.join(".cswitch"));
+        assert_eq!(paths.backup_root, home.join(".ccsw"));
         assert_eq!(paths.codex_home, home.join(".codex"));
         assert_eq!(paths.live_auth_file(), home.join(".codex/auth.json"));
         assert_eq!(paths.claude_home, home.join(".claude"));
@@ -1048,7 +1048,7 @@ Replace the `defaults_and_overrides` test in `src/paths.rs` and add two more:
         assert_eq!(paths.claude_refresh_lock_dir(), home.join(".claude/.oauth_refresh.lock"));
         assert_eq!(paths.claude_legacy_lock_dir(), home.join(".claude.lock"));
         assert_eq!(paths.claude_config_lock_dir(), home.join(".claude.json.lock"));
-        assert_eq!(paths.claude_backups_dir(), home.join(".cswitch/backups/claude"));
+        assert_eq!(paths.claude_backups_dir(), home.join(".ccsw/backups/claude"));
         assert!(!paths.keychain_enabled, "from_values never touches the Keychain");
 
         let paths = Paths::from_values(
@@ -1058,7 +1058,7 @@ Replace the `defaults_and_overrides` test in `src/paths.rs` and add two more:
             home,
         )
         .unwrap();
-        assert_eq!(paths.backup_root, home.join(".cswitch"));
+        assert_eq!(paths.backup_root, home.join(".ccsw"));
         assert_eq!(paths.codex_home, PathBuf::from("/tmp/codex"));
         assert_eq!(paths.claude_home, PathBuf::from("/tmp/cc"));
         assert_eq!(
@@ -1104,7 +1104,7 @@ In `src/paths.rs`:
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
-    /// `$CSWITCH_HOME`, default `~/.cswitch`.
+    /// `$CCSW_HOME`, default `~/.ccsw`.
     pub backup_root: PathBuf,
     /// `$CODEX_HOME`, default `~/.codex`.
     pub codex_home: PathBuf,
@@ -1112,11 +1112,11 @@ pub struct Paths {
     pub claude_home: PathBuf,
     /// Where `.claude.json` lives: `$CLAUDE_CONFIG_DIR` when set, else the user home.
     pub claude_config_base: PathBuf,
-    /// macOS with `CSWITCH_KEYCHAIN` not `off`; the file backend otherwise.
+    /// macOS with `CCSW_KEYCHAIN` not `off`; the file backend otherwise.
     pub keychain_enabled: bool,
 }
 
-/// `CSWITCH_KEYCHAIN=off|0|false` disables the Keychain; it is never used off macOS.
+/// `CCSW_KEYCHAIN=off|0|false` disables the Keychain; it is never used off macOS.
 pub fn keychain_enabled_from(value: Option<&str>) -> bool {
     let off = value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false"));
     cfg!(target_os = "macos") && !off
@@ -1128,14 +1128,14 @@ pub fn keychain_enabled_from(value: Option<&str>) -> bool {
 ```rust
     pub fn from_env() -> Result<Self> {
         let home = dirs::home_dir()
-            .ok_or_else(|| CswitchError::config("could not determine home directory"))?;
+            .ok_or_else(|| CcswError::config("could not determine home directory"))?;
         let mut paths = Self::from_values(
-            std::env::var_os("CSWITCH_HOME").map(PathBuf::from),
+            std::env::var_os("CCSW_HOME").map(PathBuf::from),
             std::env::var_os("CODEX_HOME").map(PathBuf::from),
             std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
             &home,
         )?;
-        paths.keychain_enabled = keychain_enabled_from(std::env::var("CSWITCH_KEYCHAIN").ok().as_deref());
+        paths.keychain_enabled = keychain_enabled_from(std::env::var("CCSW_KEYCHAIN").ok().as_deref());
         Ok(paths)
     }
 ```
@@ -1147,7 +1147,7 @@ pub fn keychain_enabled_from(value: Option<&str>) -> bool {
         if let Some(path) = &claude_dir
             && path.components().any(|c| matches!(c, Component::ParentDir))
         {
-            return Err(CswitchError::config(format!(
+            return Err(CcswError::config(format!(
                 "CLAUDE_CONFIG_DIR contains '..' component which is not allowed: {}",
                 path.display()
             )));
@@ -1227,7 +1227,7 @@ Expected: green.
 
 ```bash
 git add src/paths.rs src/store/mod.rs
-git commit -m "feat(paths): resolve the Claude config home, global config, lock dirs and backups; CSWITCH_KEYCHAIN switch"
+git commit -m "feat(paths): resolve the Claude config home, global config, lock dirs and backups; CCSW_KEYCHAIN switch"
 ```
 
 ---
@@ -1250,7 +1250,7 @@ git commit -m "feat(paths): resolve the Claude config home, global config, lock 
 ```rust
 //! Everything that touches Claude Code: config files, the macOS Keychain,
 //! Claude Code's lock protocol, token refresh and the usage API (spec
-//! `docs/specs/2026-10-07-cswitch-claude-provider-design.md` §4).
+//! `docs/specs/2026-10-07-ccsw-claude-provider-design.md` §4).
 
 pub mod credentials;
 pub mod keychain;
@@ -1770,13 +1770,13 @@ Expected: compile errors.
 ```rust
 //! Claude Code's credential object (`{"claudeAiOauth": …}` plus machine-scoped
 //! siblings, or a managed `sk-ant-api…` key), the global config's
-//! `oauthAccount` (the identity), and the slot file cswitch stores for a
+//! `oauthAccount` (the identity), and the slot file ccsw stores for a
 //! Claude account (spec §5).
 
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::model::Identity;
 
 pub const OAUTH_KEY: &str = "claudeAiOauth";
@@ -1816,9 +1816,9 @@ impl ClaudeCredential {
 
     pub fn parse(text: &str) -> Result<Self> {
         let value: Value = serde_json::from_str(text)
-            .map_err(|err| CswitchError::credential_read(format!("invalid JSON: {err}")))?;
+            .map_err(|err| CcswError::credential_read(format!("invalid JSON: {err}")))?;
         if !value.is_object() {
-            return Err(CswitchError::credential_read("not a JSON object"));
+            return Err(CcswError::credential_read("not a JSON object"));
         }
         Ok(Self(value))
     }
@@ -2035,11 +2035,11 @@ impl SlotFile {
         let mut map = value
             .as_object()
             .cloned()
-            .ok_or_else(|| CswitchError::credential_read("stored Claude credentials are not a JSON object"))?;
+            .ok_or_else(|| CcswError::credential_read("stored Claude credentials are not a JSON object"))?;
         let account = map
             .remove(OAUTH_ACCOUNT_KEY)
             .filter(Value::is_object)
-            .ok_or_else(|| CswitchError::credential_read("stored Claude credentials carry no oauthAccount"))?;
+            .ok_or_else(|| CcswError::credential_read("stored Claude credentials carry no oauthAccount"))?;
         Ok(Self {
             credential: ClaudeCredential(Value::Object(map)),
             oauth_account: OauthAccount(account),
@@ -2320,7 +2320,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil;
 use crate::model::Identity;
 use crate::paths::Paths;
@@ -2377,7 +2377,7 @@ fn read_text_if_present(path: &std::path::Path) -> Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(fsutil::io_error(CswitchError::CredentialRead, path, &err)),
+        Err(err) => Err(fsutil::io_error(CcswError::CredentialRead, path, &err)),
     }
 }
 
@@ -2465,10 +2465,10 @@ impl<'a> ClaudeLive<'a> {
     pub fn read_global_config(&self) -> Result<Option<Value>> {
         let path = self.paths.claude_global_config_file();
         let value = fsutil::read_json(&path).map_err(|err| {
-            CswitchError::config(format!("{} could not be read ({err})", path.display()))
+            CcswError::config(format!("{} could not be read ({err})", path.display()))
         })?;
         match value {
-            Some(value) if !value.is_object() => Err(CswitchError::config(format!(
+            Some(value) if !value.is_object() => Err(CcswError::config(format!(
                 "{} does not hold a JSON object",
                 path.display()
             ))),
@@ -2483,7 +2483,7 @@ impl<'a> ClaudeLive<'a> {
         let mut value = self.read_global_config()?.unwrap_or_else(|| json!({}));
         mutate(value.as_object_mut().expect("object checked on read"));
         fsutil::write_json_private(&path, &value)
-            .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, &path, &err))
+            .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &path, &err))
     }
 
     /// Write the OAuth login where Claude Code reads it (spec §7.2c): the
@@ -2491,7 +2491,7 @@ impl<'a> ClaudeLive<'a> {
     /// created), else the file (and a stale Keychain item is dropped).
     pub fn write_oauth(&self, live: &ClaudeCredential) -> Result<Backend> {
         let text = serde_json::to_string(&live.0)
-            .map_err(|err| CswitchError::credential_write(format!("invalid credential: {err}")))?;
+            .map_err(|err| CcswError::credential_write(format!("invalid credential: {err}")))?;
         let file = self.paths.claude_credentials_file();
         if self.use_keychain() {
             match self.keychain.set_password(LIVE_SERVICE, &self.account, &text) {
@@ -2511,7 +2511,7 @@ impl<'a> ClaudeLive<'a> {
             }
         }
         fsutil::atomic_write_private(&file, text.as_bytes())
-            .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, &file, &err))?;
+            .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &file, &err))?;
         if self.paths.keychain_enabled {
             let _ = self.keychain.delete_password(LIVE_SERVICE, &self.account);
         }
@@ -2563,7 +2563,7 @@ impl<'a> ClaudeLive<'a> {
         {
             credential.0.as_object_mut().expect("object").remove(OAUTH_KEY);
             fsutil::write_json_private(&file, &credential.0)
-                .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, &file, &err))?;
+                .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &file, &err))?;
         }
         Ok(())
     }
@@ -2579,18 +2579,18 @@ pub fn backup_live(paths: &Paths, login: &LiveLogin) -> Result<()> {
     ensure_private_dir(&dir)?;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| CswitchError::credential_write("system clock is before the Unix epoch"))?
+        .map_err(|_| CcswError::credential_write("system clock is before the Unix epoch"))?
         .as_nanos();
     let path = (0..1000u16)
         .map(|n| if n == 0 { dir.join(format!("{nanos}.json")) } else { dir.join(format!("{nanos}-{n}.json")) })
         .find(|candidate| !candidate.exists())
-        .ok_or_else(|| CswitchError::credential_write("could not allocate a Claude backup path"))?;
+        .ok_or_else(|| CcswError::credential_write("could not allocate a Claude backup path"))?;
     let value = json!({
         "credentials": login.credential.as_ref().map(|c| c.0.clone()).unwrap_or(Value::Null),
         "oauthAccount": login.oauth_account.as_ref().map(|a| a.0.clone()).unwrap_or(Value::Null),
     });
     fsutil::write_json_private(&path, &value)
-        .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, &path, &err))?;
+        .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &path, &err))?;
     let mut backups: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
         .ok()
         .into_iter()
@@ -2633,7 +2633,7 @@ git commit -m "feat(claude): read and write the live Claude Code login across th
 - Test: `src/claude/locks.rs`
 
 **Interfaces:**
-- Produces: `LockSpec { path, stale }`, `ClaudeLocks` (RAII guard), `specs(&Paths) -> Vec<LockSpec>`, `acquire(&Paths) -> Result<ClaudeLocks>`, `acquire_with(specs, budget, touch_every) -> Result<ClaudeLocks>`, constants `CREDENTIALS_STALE`, `CONFIG_STALE`, `TOUCH_INTERVAL`, `WAIT_BUDGET`, `wait_budget()` (honours `CSWITCH_CLAUDE_LOCK_BUDGET_MS`, tests only).
+- Produces: `LockSpec { path, stale }`, `ClaudeLocks` (RAII guard), `specs(&Paths) -> Vec<LockSpec>`, `acquire(&Paths) -> Result<ClaudeLocks>`, `acquire_with(specs, budget, touch_every) -> Result<ClaudeLocks>`, constants `CREDENTIALS_STALE`, `CONFIG_STALE`, `TOUCH_INTERVAL`, `WAIT_BUDGET`, `wait_budget()` (honours `CCSW_CLAUDE_LOCK_BUDGET_MS`, tests only).
 - Consumes: Task 4 lock paths, `rand`, `filetime`.
 
 - [ ] **Step 1: Add the dependency and write the failing tests**
@@ -2751,7 +2751,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use std::{fs, io};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil::io_error;
 use crate::paths::Paths;
 
@@ -2779,9 +2779,9 @@ pub fn specs(paths: &Paths) -> Vec<LockSpec> {
     ]
 }
 
-/// `CSWITCH_CLAUDE_LOCK_BUDGET_MS` shortens the wait (tests); anything else is the default.
+/// `CCSW_CLAUDE_LOCK_BUDGET_MS` shortens the wait (tests); anything else is the default.
 pub fn wait_budget() -> Duration {
-    budget_from(std::env::var("CSWITCH_CLAUDE_LOCK_BUDGET_MS").ok().as_deref())
+    budget_from(std::env::var("CCSW_CLAUDE_LOCK_BUDGET_MS").ok().as_deref())
 }
 
 fn budget_from(value: Option<&str>) -> Duration {
@@ -2861,7 +2861,7 @@ fn acquire_one(spec: &LockSpec, budget: Duration) -> Result<()> {
                 }
                 let elapsed = started.elapsed();
                 if elapsed >= budget {
-                    return Err(CswitchError::lock(format!(
+                    return Err(CcswError::lock(format!(
                         "Claude Code is holding {}; retry in a moment",
                         spec.path.display()
                     )));
@@ -2870,7 +2870,7 @@ fn acquire_one(spec: &LockSpec, budget: Duration) -> Result<()> {
                 let jitter = Duration::from_millis(1000 + rand::random::<u64>() % 1000);
                 thread::sleep(jitter.min(budget - elapsed));
             }
-            Err(err) => return Err(io_error(CswitchError::Lock, &spec.path, &err)),
+            Err(err) => return Err(io_error(CcswError::Lock, &spec.path, &err)),
         }
     }
 }
@@ -3021,9 +3021,9 @@ pub const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 /// Claude Code's OAuth client id.
 pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
-/// The token endpoint, or the `CSWITCH_CLAUDE_TOKEN_URL` override (tests).
+/// The token endpoint, or the `CCSW_CLAUDE_TOKEN_URL` override (tests).
 pub fn token_url() -> String {
-    token_url_from(std::env::var("CSWITCH_CLAUDE_TOKEN_URL").ok().as_deref())
+    token_url_from(std::env::var("CCSW_CLAUDE_TOKEN_URL").ok().as_deref())
 }
 
 fn token_url_from(value: Option<&str>) -> String {
@@ -3225,7 +3225,7 @@ mod tests {
     fn client_and_urls() {
         assert_eq!(USAGE_URL, "https://api.anthropic.com/api/oauth/usage");
         assert_eq!(BETA_HEADER, "oauth-2025-04-20");
-        assert_eq!(user_agent(), format!("cswitch/{}", crate::VERSION));
+        assert_eq!(user_agent(), format!("ccsw/{}", crate::VERSION));
         assert!(build_client(None).is_ok());
         assert_eq!(usage_url_from(None), USAGE_URL);
         assert_eq!(usage_url_from(Some("http://127.0.0.1:1/u")), "http://127.0.0.1:1/u");
@@ -3247,7 +3247,7 @@ Expected: compile errors.
 ```rust
 /// HTTP client with the given user agent (30 s connect / 60 s total, rustls
 /// with the OS trust store plus bundled roots; proxy from the argument,
-/// `CSWITCH_PROXY`, then reqwest's own environment handling).
+/// `CCSW_PROXY`, then reqwest's own environment handling).
 pub fn build_client_with_agent(proxy: Option<&str>, agent: &str) -> Result<reqwest::Client> {
     // … the existing body, with `.user_agent(agent)` instead of `.user_agent(user_agent())`
 }
@@ -3279,12 +3279,12 @@ pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 pub const BETA_HEADER: &str = "oauth-2025-04-20";
 
 pub fn user_agent() -> String {
-    format!("cswitch/{}", crate::VERSION)
+    format!("ccsw/{}", crate::VERSION)
 }
 
-/// The usage endpoint, or the `CSWITCH_CLAUDE_USAGE_URL` override (tests).
+/// The usage endpoint, or the `CCSW_CLAUDE_USAGE_URL` override (tests).
 pub fn usage_url() -> String {
-    usage_url_from(std::env::var("CSWITCH_CLAUDE_USAGE_URL").ok().as_deref())
+    usage_url_from(std::env::var("CCSW_CLAUDE_USAGE_URL").ok().as_deref())
 }
 
 fn usage_url_from(value: Option<&str>) -> String {
@@ -3573,7 +3573,7 @@ git commit -m "feat(claude): fetch and normalize Anthropic usage (5h, 7d, spend,
 
 Change the existing `opts` helper to `fn opts<'a>(mode, actives: &[u32], candidates: &'a [u32]) -> CollectOptions<'a>` with `actives: actives.to_vec()`, and update its existing callers (`Some(1)` → `&[1]`, `None` → `&[]`).
 
-Extend the in-module mock: routes `/claude/usage` (GET; requires the `anthropic-beta` header; bearer `cat-good` → `{"five_hour": {"utilization": 40, "resets_at": "…"}, "seven_day": {"utilization": 55}}`, `cat-stale` → 401) and `/claude/token` (POST; `client_id` must be `9d1c250a-e61b-44d9-88ed-5944d1962f5e`; `crt-live-<x>` → `{"access_token": "cat-good", "expires_in": 3600, "refresh_token": "crt-next"}`; else 400 `{"error": "invalid_grant"}`); record them under paths `/claude/usage` and `/claude/token`; set `CSWITCH_CLAUDE_USAGE_URL` / `CSWITCH_CLAUDE_TOKEN_URL` in `mock()` next to the Codex overrides; add `fn claude_token_calls(&self) -> usize` counting `/claude/token` records.
+Extend the in-module mock: routes `/claude/usage` (GET; requires the `anthropic-beta` header; bearer `cat-good` → `{"five_hour": {"utilization": 40, "resets_at": "…"}, "seven_day": {"utilization": 55}}`, `cat-stale` → 401) and `/claude/token` (POST; `client_id` must be `9d1c250a-e61b-44d9-88ed-5944d1962f5e`; `crt-live-<x>` → `{"access_token": "cat-good", "expires_in": 3600, "refresh_token": "crt-next"}`; else 400 `{"error": "invalid_grant"}`); record them under paths `/claude/usage` and `/claude/token`; set `CCSW_CLAUDE_USAGE_URL` / `CCSW_CLAUDE_TOKEN_URL` in `mock()` next to the Codex overrides; add `fn claude_token_calls(&self) -> usize` counting `/claude/token` records.
 
 - [ ] **Step 2: Run the tests to see them fail**
 
@@ -4167,13 +4167,13 @@ enum Capture {
     Claude(LiveLogin),
 }
 
-fn no_login_error(provider: Option<Provider>) -> CswitchError {
+fn no_login_error(provider: Option<Provider>) -> CcswError {
     match provider {
-        Some(provider) => CswitchError::config(format!(
+        Some(provider) => CcswError::config(format!(
             "No active {} account found. Please log in first.",
             provider.title()
         )),
-        None => CswitchError::config("No active Codex or Claude login found. Log in first."),
+        None => CcswError::config("No active Codex or Claude login found. Log in first."),
     }
 }
 
@@ -4204,7 +4204,7 @@ impl Switcher {
     ) -> Result<Vec<(Provider, AddOutcome)>> {
         let requested = slot_arg(slot)?;
         let alias = alias
-            .map(|a| normalize_alias(a).map_err(|e| CswitchError::validation(e.to_string())))
+            .map(|a| normalize_alias(a).map_err(|e| CcswError::validation(e.to_string())))
             .transpose()?;
         let providers: Vec<Provider> = provider.map_or_else(|| Provider::ALL.to_vec(), |p| vec![p]);
         let mut captures = Vec::new();
@@ -4217,8 +4217,8 @@ impl Switcher {
             return Err(no_login_error(provider));
         }
         if captures.len() > 1 && (requested.is_some() || alias.is_some()) {
-            return Err(CswitchError::validation(
-                "--slot/--alias need a single login; both a Codex and a Claude login were found. Say which: cswitch add codex … or cswitch add claude …",
+            return Err(CcswError::validation(
+                "--slot/--alias need a single login; both a Codex and a Claude login were found. Say which: ccsw add codex … or ccsw add claude …",
             ));
         }
         let _lock = self.store.lock()?;
@@ -4295,12 +4295,12 @@ impl Switcher {
         let (record, existing, suffix) = match credential.kind() {
             CredentialKind::OAuth | CredentialKind::SetupToken => {
                 let account = login.oauth_account.as_ref().ok_or_else(|| {
-                    CswitchError::credential_read(
+                    CcswError::credential_read(
                         "the Claude Code login carries no oauthAccount; log in with Claude Code first",
                     )
                 })?;
                 let identity = account.identity().ok_or_else(|| {
-                    CswitchError::credential_read("the Claude Code login carries no email address")
+                    CcswError::credential_read("the Claude Code login carries no email address")
                 })?;
                 let mut record = AccountRecord::new(identity.email.clone());
                 record.provider = Provider::Claude;
@@ -4319,7 +4319,7 @@ impl Switcher {
                 (record, existing, Some("from API key"))
             }
             CredentialKind::Unknown => {
-                return Err(CswitchError::credential_read(
+                return Err(CcswError::credential_read(
                     "the Claude Code login holds neither an OAuth credential nor an API key",
                 ));
             }
@@ -4413,7 +4413,7 @@ and the body after the email validation:
         if let Some(slot) = existing
             && roster.record(slot).is_some_and(|r| r.is_api_key() != kind.is_api_key())
         {
-            return Err(CswitchError::validation(format!(
+            return Err(CcswError::validation(format!(
                 "'{email}' already exists as an OAuth account (slot {slot}); cannot add it as an API-key account. Pass a distinct --email."
             )));
         }
@@ -4560,13 +4560,13 @@ Set `provider: Provider::Codex` in both `SwitchOutcome` literals of `perform_swi
         force: bool,
     ) -> Result<SwitchReport> {
         let stored = credentials::read(&self.store, target)?.ok_or_else(|| {
-            CswitchError::switch(format!(
-                "Account-{target} has no stored credentials. Re-add with: cswitch add claude --slot {target}"
+            CcswError::switch(format!(
+                "Account-{target} has no stored credentials. Re-add with: ccsw add claude --slot {target}"
             ))
         })?;
         let stored = SlotFile::from_value(&stored).map_err(|err| {
-            CswitchError::switch(format!(
-                "Account-{target}'s stored credentials are unusable ({err}). Re-add with: cswitch add claude --slot {target}"
+            CcswError::switch(format!(
+                "Account-{target}'s stored credentials are unusable ({err}). Re-add with: ccsw add claude --slot {target}"
             ))
         })?;
         let to = AccountRef {
@@ -4762,7 +4762,7 @@ git commit -m "feat(switch): switch Claude accounts under Claude Code's locks wi
         assert_eq!(err.type_name(), "ConfigError");
         assert_eq!(
             err.to_string(),
-            "Both Codex and Claude accounts are managed — say which: cswitch switch codex | cswitch switch claude"
+            "Both Codex and Claude accounts are managed — say which: ccsw switch codex | ccsw switch claude"
         );
         fx.lines.borrow_mut().clear();
         let report = fx.switcher.switch(Some(Provider::Claude), Strategy::Rotation, &[], false).unwrap();
@@ -4835,8 +4835,8 @@ Expected: compile errors (`switch` takes 3 arguments).
         match present.as_slice() {
             [] => Ok(Provider::Codex),
             [only] => Ok(*only),
-            _ => Err(CswitchError::config(format!(
-                "Both Codex and Claude accounts are managed — say which: cswitch {verb} codex | cswitch {verb} claude"
+            _ => Err(CcswError::config(format!(
+                "Both Codex and Claude accounts are managed — say which: ccsw {verb} codex | ccsw {verb} claude"
             ))),
         }
     }
@@ -5017,7 +5017,7 @@ git commit -m "feat(switch): scope rotation and strategies to one provider; list
         );
 ```
 
-and in the `ok` list add `&["--switch", "--provider", "claude", "--strategy", "best"]` and `&["--status", "--provider", "codex", "--json"]`. `help_and_version`: replace `assert!(help.contains("Multi-Account Switcher for OpenAI Codex"))` with `"Multi-Account Switcher for OpenAI Codex and Claude Code"`, drop `assert!(!help.contains("Claude"))`, add `assert!(help.contains("cswitch switch [codex|claude]"))` and `assert!(help.contains("sk-ant-"))`.
+and in the `ok` list add `&["--switch", "--provider", "claude", "--strategy", "best"]` and `&["--status", "--provider", "codex", "--json"]`. `help_and_version`: replace `assert!(help.contains("Multi-Account Switcher for OpenAI Codex"))` with `"Multi-Account Switcher for OpenAI Codex and Claude Code"`, drop `assert!(!help.contains("Claude"))`, add `assert!(help.contains("ccsw switch [codex|claude]"))` and `assert!(help.contains("sk-ant-"))`.
 
 `src/cli/list.rs` tests:
 
@@ -5108,12 +5108,12 @@ and after the `VERB_FLAGS` lookup, for `add`, `list`, `ls`, `status` only:
 - `help_text`: header `Multi-Account Switcher for OpenAI Codex and Claude Code`; commands:
 
 ```
-  cswitch list [codex|claude]        list managed accounts (both providers by default)
-  cswitch status [codex|claude]      show the active account of each provider
-  cswitch switch [codex|claude]      rotate to the next account of one provider
-  cswitch switch <num|email>         switch to a specific account (Codex or Claude)
-  cswitch add [codex|claude]         add the current login(s)
-  cswitch add-token [TOKEN|-]        register an OpenAI API key, or an Anthropic API key / setup-token (sk-ant-…)
+  ccsw list [codex|claude]        list managed accounts (both providers by default)
+  ccsw status [codex|claude]      show the active account of each provider
+  ccsw switch [codex|claude]      rotate to the next account of one provider
+  ccsw switch <num|email>         switch to a specific account (Codex or Claude)
+  ccsw add [codex|claude]         add the current login(s)
+  ccsw add-token [TOKEN|-]        register an OpenAI API key, or an Anthropic API key / setup-token (sk-ant-…)
 ```
 
 (the remaining lines unchanged); options add after `--full`:
@@ -5124,7 +5124,7 @@ and after the `VERB_FLAGS` lookup, for `add`, `list`, `ls`, `status` only:
                         'switch', 'add', 'list' or 'status'
 ```
 
-and `--email` reads `… defaults to api-key-{{slot}}@token.local (setup-token-{{slot}}@token.local for a Claude setup-token) …`; examples add `cswitch switch claude                     # rotate among the Claude accounts` and `cswitch add-token sk-ant-oat01-... --email me@example.com`.
+and `--email` reads `… defaults to api-key-{{slot}}@token.local (setup-token-{{slot}}@token.local for a Claude setup-token) …`; examples add `ccsw switch claude                     # rotate among the Claude accounts` and `ccsw add-token sk-ant-oat01-... --email me@example.com`.
 
 `src/cli/mod.rs` dispatch:
 
@@ -5231,7 +5231,7 @@ git commit -m "feat(cli): accept a provider selector on switch, add, list and st
 `tests/support/mod.rs`:
 
 - `Cli` gains `pub claude_home: PathBuf` (`root/claude`, created in `new`), a fake `claude` next to the fake `codex` (`#!/bin/sh\nprintf '%s\n' "$*" >> "$CS_CLAUDE_LOG"\nexit 0\n`, plus a `claude.cmd` twin on Windows), `claude_log: PathBuf`, `claude_usage_url: Option<String>`, `claude_token_url: Option<String>`.
-- `command()` adds: `.env("CLAUDE_CONFIG_DIR", &self.claude_home)`, `.env("CSWITCH_KEYCHAIN", "off")`, `.env("USER", "tester")`, `.env("CSWITCH_CLAUDE_USAGE_URL", self.claude_usage_url.clone().unwrap_or_else(|| format!("{}/claude-usage", self.dead_url)))`, `.env("CSWITCH_CLAUDE_TOKEN_URL", …"/claude-token")`, `.env("CS_CLAUDE_LOG", &self.claude_log)`, `.env("CSWITCH_CLAUDE_LOCK_BUDGET_MS", "300")`.
+- `command()` adds: `.env("CLAUDE_CONFIG_DIR", &self.claude_home)`, `.env("CCSW_KEYCHAIN", "off")`, `.env("USER", "tester")`, `.env("CCSW_CLAUDE_USAGE_URL", self.claude_usage_url.clone().unwrap_or_else(|| format!("{}/claude-usage", self.dead_url)))`, `.env("CCSW_CLAUDE_TOKEN_URL", …"/claude-token")`, `.env("CS_CLAUDE_LOG", &self.claude_log)`, `.env("CCSW_CLAUDE_LOCK_BUDGET_MS", "300")`.
 - `with_mock` also copies `mock.claude_usage_url` / `mock.claude_token_url`.
 - Helpers:
 
@@ -5270,7 +5270,7 @@ git commit -m "feat(cli): accept a provider selector on switch, add, list and st
     }
 
     pub fn claude_backups(&self) -> Vec<String> {
-        let dir = self.cswitch_home.join("backups").join("claude");
+        let dir = self.ccsw_home.join("backups").join("claude");
         let mut names: Vec<String> = fs::read_dir(&dir)
             .map(|entries| entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
             .unwrap_or_default();
@@ -5531,7 +5531,7 @@ fn switch_claude_keeps_sibling_keys() {
     assert_eq!(after["mcpOAuth"]["srv"]["accessToken"], "mcp-token");
     assert_eq!(cli.claude_config()["projects"]["/tmp/p"]["allowedTools"], json!([]));
     assert_eq!(cli.claude_config()["numStartups"], 7);
-    let backup = support::read_json(&cli.cswitch_home.join("backups").join("claude").join(&cli.claude_backups()[0]));
+    let backup = support::read_json(&cli.ccsw_home.join("backups").join("claude").join(&cli.claude_backups()[0]));
     assert_eq!(backup["credentials"]["claudeAiOauth"]["refreshToken"], "crt-2");
     assert_eq!(backup["oauthAccount"]["emailAddress"], "two@example.com");
 }
@@ -5543,7 +5543,7 @@ fn bare_switch_needs_a_selector_when_both_providers_exist() {
     assert_eq!(run.status, 1);
     assert_eq!(
         run.stderr.trim(),
-        "Error: Both Codex and Claude accounts are managed — say which: cswitch switch codex | cswitch switch claude"
+        "Error: Both Codex and Claude accounts are managed — say which: ccsw switch codex | ccsw switch claude"
     );
     let run = cli.run(&["switch", "claude", "--json"]);
     assert_eq!(run.status, 0, "{}", run.stderr);
@@ -5620,7 +5620,7 @@ fn v1_roster_is_read_as_codex() {
     let mut roster = cli.roster();
     roster["accounts"]["1"].as_object_mut().unwrap().remove("provider");
     roster.as_object_mut().unwrap().remove("activeByProvider");
-    std::fs::write(cli.cswitch_home.join("sequence.json"), roster.to_string()).unwrap();
+    std::fs::write(cli.ccsw_home.join("sequence.json"), roster.to_string()).unwrap();
     let run = cli.run(&["list"]);
     assert_eq!(run.status, 0, "{}", run.stderr);
     assert_eq!(run.lines()[0], "Accounts:");
@@ -6080,7 +6080,7 @@ fn mixed_fixture() -> AccountsSnapshot {
                 five_hour: Some(window(40.0, 70 * 60)),
                 seven_day: Some(window(100.0, 2 * 86_400 + 4 * 3600)),
                 scoped: vec![ScopedWindow { name: "Fable".into(), pct: 100.0, resets_at: Some(format_iso(NOW as i64 + 2 * 86_400 + 4 * 3600)) }],
-                spend: Some(cswitch::model::Spend { used: 12.5, limit: 50.0, pct: 25.0, currency: "USD".into(), resets_at: None }),
+                spend: Some(ccsw::model::Spend { used: 12.5, limit: 50.0, pct: 25.0, currency: "USD".into(), resets_at: None }),
                 ..NormalizedUsage::default()
             }),
         ),
@@ -6137,7 +6137,7 @@ fn mixed_roster_shows_a_section_per_provider() {
 }
 ```
 
-(`use cswitch::provider::Provider;` at the top.) Add a mixed-roster check to the auto screen test only if `draw_auto` changed; it did not.
+(`use ccsw::provider::Provider;` at the top.) Add a mixed-roster check to the auto screen test only if `draw_auto` changed; it did not.
 
 - [ ] **Step 2: Run the render tests**
 
@@ -6210,18 +6210,18 @@ cp docs/tui-dashboard.png docs/tui-watch.png ~/showme/
 `README.md`:
 
 - First paragraph: `Multi-account switcher for the OpenAI Codex CLI and Claude Code. Keep several Codex and Claude logins on one machine in one roster, switch any of them without logging in again, …`.
-- `## Install`: add after the `cli_auth_credentials_store` paragraph: `Claude Code's login is read from the macOS Keychain (service "Claude Code-credentials") or from ~/.claude/.credentials.json, and the account identity from ~/.claude.json; CLAUDE_CONFIG_DIR is honoured. Set CSWITCH_KEYCHAIN=off to use the file backend only.`
-- `### Add your first account`: `cswitch add` captures the current Codex login and the current Claude Code login; `cswitch add claude` / `cswitch add codex` for one.
-- `### Add more accounts`: the Claude note: log in with `claude` (`/login`), then `cswitch add claude`; never `/logout` first.
-- `### Switch accounts`: `cswitch switch 5   # by slot — slots are one list across Codex and Claude`, `cswitch switch claude   # rotate among the Claude accounts`, `cswitch switch claude --strategy best`; the follow-up note for Claude (Keychain ~30 s / file immediately).
-- `### See every account's usage`: `cswitch list` prints a Codex block and a Claude block; Claude rows add `$$` (extra-usage spend) and per-model windows (`Fable: 62%`); `cswitch list claude`.
+- `## Install`: add after the `cli_auth_credentials_store` paragraph: `Claude Code's login is read from the macOS Keychain (service "Claude Code-credentials") or from ~/.claude/.credentials.json, and the account identity from ~/.claude.json; CLAUDE_CONFIG_DIR is honoured. Set CCSW_KEYCHAIN=off to use the file backend only.`
+- `### Add your first account`: `ccsw add` captures the current Codex login and the current Claude Code login; `ccsw add claude` / `ccsw add codex` for one.
+- `### Add more accounts`: the Claude note: log in with `claude` (`/login`), then `ccsw add claude`; never `/logout` first.
+- `### Switch accounts`: `ccsw switch 5   # by slot — slots are one list across Codex and Claude`, `ccsw switch claude   # rotate among the Claude accounts`, `ccsw switch claude --strategy best`; the follow-up note for Claude (Keychain ~30 s / file immediately).
+- `### See every account's usage`: `ccsw list` prints a Codex block and a Claude block; Claude rows add `$$` (extra-usage spend) and per-model windows (`Fable: 62%`); `ccsw list claude`.
 - `### JSON output for scripting`: `schemaVersion: 2`; rows carry `provider`; `active` is `{"codex": n, "claude": n}` on `list` and a per-provider object on `status`; `switch` carries `provider`.
-- `### Other commands`: `cswitch add-token sk-ant-oat01-...   # Anthropic setup-token`, `cswitch add-token sk-ant-api03-...   # Anthropic API key`.
-- `## Data locations`: `backups/claude/` (the outgoing Claude login, three kept), the Claude lock directories are created and removed inside `~/.claude` during a switch, `CLAUDE_CONFIG_DIR`, `CSWITCH_KEYCHAIN`.
-- `## Development`: `CSWITCH_CLAUDE_USAGE_URL` / `CSWITCH_CLAUDE_TOKEN_URL`, `CSWITCH_KEYCHAIN=off` in tests, `CSWITCH_CLAUDE_LOCK_BUDGET_MS`.
-- Design line: add `docs/specs/2026-10-07-cswitch-claude-provider-design.md` and this plan.
+- `### Other commands`: `ccsw add-token sk-ant-oat01-...   # Anthropic setup-token`, `ccsw add-token sk-ant-api03-...   # Anthropic API key`.
+- `## Data locations`: `backups/claude/` (the outgoing Claude login, three kept), the Claude lock directories are created and removed inside `~/.claude` during a switch, `CLAUDE_CONFIG_DIR`, `CCSW_KEYCHAIN`.
+- `## Development`: `CCSW_CLAUDE_USAGE_URL` / `CCSW_CLAUDE_TOKEN_URL`, `CCSW_KEYCHAIN=off` in tests, `CCSW_CLAUDE_LOCK_BUDGET_MS`.
+- Design line: add `docs/specs/2026-10-07-ccsw-claude-provider-design.md` and this plan.
 
-`CHANGELOG.md`: a new `## Unreleased` section above `v0.2.0` with `### Added` (Claude accounts: `add` captures both logins, `add claude|codex`, `add-token` recognises `sk-ant-oat…` / `sk-ant-api…`, `switch <slot>` across providers, `switch claude|codex`, two-block `list`, per-provider `status`, the TUI sections, `$$` spend row, `backups/claude/`, `CSWITCH_KEYCHAIN`) and `### Changed` (`--json` is `schemaVersion: 2`: `provider` on rows and switch refs, `active` maps on `list` and `status`; `codex` / `claude` are reserved alias names; `sequence.json` records carry `provider` and the roster `activeByProvider`).
+`CHANGELOG.md`: a new `## Unreleased` section above `v0.2.0` with `### Added` (Claude accounts: `add` captures both logins, `add claude|codex`, `add-token` recognises `sk-ant-oat…` / `sk-ant-api…`, `switch <slot>` across providers, `switch claude|codex`, two-block `list`, per-provider `status`, the TUI sections, `$$` spend row, `backups/claude/`, `CCSW_KEYCHAIN`) and `### Changed` (`--json` is `schemaVersion: 2`: `provider` on rows and switch refs, `active` maps on `list` and `status`; `codex` / `claude` are reserved alias names; `sequence.json` records carry `provider` and the roster `activeByProvider`).
 
 `Cargo.toml`: `description = "Multi-account switcher for the OpenAI Codex CLI and Claude Code (cswap-compatible interface)"`, keywords add `"claude"`.
 
@@ -6244,7 +6244,7 @@ git commit -m "docs: mixed-roster screenshots, README and changelog for the Clau
 - `add --slot` / `--alias` with two live logins is refused outright (even when only one of them is new), with a message naming the selector (Task 12). This is stricter than §6.2 and avoids placing two records into one requested slot.
 - The `add-token` cross-kind collision keeps v0.1's wording for every token kind (Task 12).
 - `list <provider>` on a mixed roster prints the titled block (`Claude accounts:`); `Accounts:` is printed only when the roster itself has one provider (Task 15).
-- `CSWITCH_CLAUDE_LOCK_BUDGET_MS` (tests only) shortens the lock wait (Task 8).
+- `CCSW_CLAUDE_LOCK_BUDGET_MS` (tests only) shortens the lock wait (Task 8).
 
 ## Self-review notes
 

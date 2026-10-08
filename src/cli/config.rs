@@ -1,4 +1,4 @@
-//! `cswitch config` — a pre-dispatched verb with its own parser: `list` (the
+//! `ccsw config` — a pre-dispatched verb with its own parser: `list` (the
 //! default), `get KEY`, `set KEY VALUE`, `unset KEY`, `path`.
 //!
 //! The settings themselves live in `store::settings`; this file owns the
@@ -13,7 +13,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::model::SCHEMA_VERSION;
 use crate::paths::Paths;
 use crate::printer;
@@ -85,10 +85,10 @@ impl Action {
 
 fn command() -> Command {
     let key = || Arg::new("key").value_name("KEY").required(true);
-    Command::new("cswitch config")
-        .bin_name("cswitch config")
+    Command::new("ccsw config")
+        .bin_name("ccsw config")
         .no_binary_name(true)
-        .about("Read and edit cswitch settings (settings.json in the backup root).")
+        .about("Read and edit ccsw settings (settings.json in the backup root).")
         .after_help(epilog())
         .disable_help_subcommand(true)
         .arg(
@@ -139,11 +139,11 @@ fn epilog() -> String {
     }
     text.push_str(
         "\nExamples:\n  \
-         cswitch config                              # list effective settings\n  \
-         cswitch config get autoswitch.threshold\n  \
-         cswitch config set autoswitch.threshold 80\n  \
-         cswitch config unset autoswitch.threshold   # back to the default\n  \
-         cswitch config path                         # where settings.json lives",
+         ccsw config                              # list effective settings\n  \
+         ccsw config get autoswitch.threshold\n  \
+         ccsw config set autoswitch.threshold 80\n  \
+         ccsw config unset autoswitch.threshold   # back to the default\n  \
+         ccsw config path                         # where settings.json lives",
     );
     text
 }
@@ -310,7 +310,7 @@ struct ErrorBody {
 }
 
 impl ErrorPayload {
-    fn new(error: &CswitchError) -> Self {
+    fn new(error: &CcswError) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             error: ErrorBody {
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn error_envelope_shape() {
-        let text = serde_json::to_string(&ErrorPayload::new(&CswitchError::config("x"))).unwrap();
+        let text = serde_json::to_string(&ErrorPayload::new(&CcswError::config("x"))).unwrap();
         assert_eq!(
             text,
             r#"{"schemaVersion":2,"error":{"type":"ConfigError","message":"x"}}"#

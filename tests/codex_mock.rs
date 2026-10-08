@@ -1,5 +1,5 @@
 //! `codex::usage::fetch_usage` against an axum mock of the usage and token
-//! endpoints, reached through the `CSWITCH_USAGE_URL` / `CSWITCH_TOKEN_URL`
+//! endpoints, reached through the `CCSW_USAGE_URL` / `CCSW_TOKEN_URL`
 //! overrides.
 //!
 //! The mock answers by the credential it is shown: the bearer token picks the
@@ -18,10 +18,10 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 
-use cswitch::codex::auth::AuthJson;
-use cswitch::codex::oauth::RefreshError;
-use cswitch::codex::usage::{FetchError, FetchOutcome, build_client, fetch_usage};
-use cswitch::model::now_unix;
+use ccsw::codex::auth::AuthJson;
+use ccsw::codex::oauth::RefreshError;
+use ccsw::codex::usage::{FetchError, FetchOutcome, build_client, fetch_usage};
+use ccsw::model::now_unix;
 
 /// The endpoint overrides are process-wide, so scenarios run one at a time.
 static ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -217,8 +217,8 @@ async fn run(auth: &AuthJson) -> (FetchOutcome, Arc<Mock>) {
     // SAFETY: the ENV mutex serializes every scenario, and no other thread in
     // this test binary reads or writes the environment concurrently.
     unsafe {
-        std::env::set_var("CSWITCH_USAGE_URL", format!("http://{addr}/usage"));
-        std::env::set_var("CSWITCH_TOKEN_URL", format!("http://{addr}/token"));
+        std::env::set_var("CCSW_USAGE_URL", format!("http://{addr}/usage"));
+        std::env::set_var("CCSW_TOKEN_URL", format!("http://{addr}/token"));
     }
     let client = build_client(None).unwrap();
     let outcome = fetch_usage(&client, auth).await;

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil::{read_json, write_json_private};
 use crate::paths::Paths;
 
@@ -66,7 +66,7 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
             hi: 3600.0,
             default: 60.0,
         },
-        help: "Poll interval for the cswitch auto loop, in seconds",
+        help: "Poll interval for the ccsw auto loop, in seconds",
     },
     SettingSpec {
         key: "autoswitch.cooldownSeconds",
@@ -149,7 +149,7 @@ impl SettingSpec {
         let value = match self.kind {
             SettingKind::Float { lo, hi, .. } => {
                 let number: f64 = text.parse().map_err(|_| {
-                    CswitchError::config(format!("{key} expects a number, got '{text}'"))
+                    CcswError::config(format!("{key} expects a number, got '{text}'"))
                 })?;
                 if !(number >= lo && number <= hi) {
                     return Err(out_of_range(key, lo, hi));
@@ -158,7 +158,7 @@ impl SettingSpec {
             }
             SettingKind::Int { lo, hi, .. } => {
                 let number: i64 = text.parse().map_err(|_| {
-                    CswitchError::config(format!("{key} expects an integer, got '{text}'"))
+                    CcswError::config(format!("{key} expects an integer, got '{text}'"))
                 })?;
                 if number < lo || number > hi {
                     return Err(out_of_range(key, lo as f64, hi as f64));
@@ -169,14 +169,14 @@ impl SettingSpec {
                 "true" | "1" | "yes" => Value::Bool(true),
                 "false" | "0" | "no" => Value::Bool(false),
                 _ => {
-                    return Err(CswitchError::config(format!(
+                    return Err(CcswError::config(format!(
                         "{key} expects true or false (or 1/0, yes/no), got '{text}'"
                     )));
                 }
             },
             SettingKind::Choice { choices, .. } => {
                 if !choices.contains(&text) {
-                    return Err(CswitchError::config(format!(
+                    return Err(CcswError::config(format!(
                         "{key} must be one of: {}",
                         choices.join(", ")
                     )));
@@ -185,8 +185,8 @@ impl SettingSpec {
             }
             SettingKind::Text => {
                 if text.is_empty() {
-                    return Err(CswitchError::config(format!(
-                        "{key} expects a non-empty value; use 'cswitch config unset {key}' to clear it"
+                    return Err(CcswError::config(format!(
+                        "{key} expects a non-empty value; use 'ccsw config unset {key}' to clear it"
                     )));
                 }
                 Value::from(text)
@@ -228,8 +228,8 @@ impl SettingSpec {
     }
 }
 
-fn out_of_range(key: &str, lo: f64, hi: f64) -> CswitchError {
-    CswitchError::config(format!(
+fn out_of_range(key: &str, lo: f64, hi: f64) -> CcswError {
+    CcswError::config(format!(
         "{key} must be between {} and {}",
         format_number(lo),
         format_number(hi)
@@ -307,7 +307,7 @@ pub struct AutoSwitchSettings {
     pub model: Option<String>,
 }
 
-/// `cswitch auto` flags; only `Some` values override the file.
+/// `ccsw auto` flags; only `Some` values override the file.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AutoSwitchOverrides {
     pub threshold: Option<f64>,
@@ -473,21 +473,21 @@ fn read_root_strict(paths: &Paths) -> Result<Map<String, Value>> {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Map::new()),
         Err(err) => {
-            return Err(CswitchError::config(format!(
+            return Err(CcswError::config(format!(
                 "could not read {}: {err}",
                 path.display()
             )));
         }
     };
     let value: Value = serde_json::from_slice(&bytes).map_err(|err| {
-        CswitchError::config(format!(
+        CcswError::config(format!(
             "{} is not valid JSON ({err}); fix or delete it before changing settings",
             path.display()
         ))
     })?;
     match value {
         Value::Object(map) => Ok(map),
-        _ => Err(CswitchError::config(format!(
+        _ => Err(CcswError::config(format!(
             "{} is not a JSON object; fix or delete it before changing settings",
             path.display()
         ))),
@@ -497,13 +497,13 @@ fn read_root_strict(paths: &Paths) -> Result<Map<String, Value>> {
 fn write_root(paths: &Paths, root: Map<String, Value>) -> Result<()> {
     let path = paths.settings_file();
     write_json_private(&path, &Value::Object(root))
-        .map_err(|err| CswitchError::config(format!("{}: {err}", path.display())))
+        .map_err(|err| CcswError::config(format!("{}: {err}", path.display())))
 }
 
 fn spec_or_unknown(key: &str) -> Result<&'static SettingSpec> {
     SettingSpec::find(key).ok_or_else(|| {
         let keys: Vec<&str> = SETTING_SPECS.iter().map(|spec| spec.key).collect();
-        CswitchError::config(format!(
+        CcswError::config(format!(
             "unknown setting '{key}'\nValid keys: {}",
             keys.join(", ")
         ))
@@ -788,7 +788,7 @@ mod tests {
             (
                 "autoswitch.model",
                 "  ",
-                "autoswitch.model expects a non-empty value; use 'cswitch config unset autoswitch.model' to clear it",
+                "autoswitch.model expects a non-empty value; use 'ccsw config unset autoswitch.model' to clear it",
             ),
         ];
         for (key, raw, message) in cases {
