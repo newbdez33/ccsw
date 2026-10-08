@@ -179,8 +179,9 @@ fn dry_run_reports_the_switch_and_writes_nothing() {
     assert_eq!(code, 0);
     assert_eq!(events.len(), 2, "{events:?}");
     let poll = &events[0];
-    assert_eq!(poll["schemaVersion"], 1);
     assert_eq!(poll["event"], "poll");
+    assert_eq!(poll["schemaVersion"], 2);
+    assert_eq!(poll["provider"], "claude");
     assert_eq!(poll["active"], json!({"number": 1, "email": "u1@x.com"}));
     assert_eq!(poll["headroomPct"], json!({"1": 5.0, "2": 60.0, "3": 80.0}));
     assert_eq!(poll["threshold"], 90.0);
@@ -190,6 +191,7 @@ fn dry_run_reports_the_switch_and_writes_nothing() {
     assert!(ts.ends_with('Z') && ts.len() == 20, "{ts}");
     let switch = &events[1];
     assert_eq!(switch["event"], "switch");
+    assert_eq!(switch["provider"], "claude");
     assert_eq!(switch["trigger"], "proactive");
     assert_eq!(switch["dryRun"], true);
     assert_eq!(switch["from"]["number"], 1);

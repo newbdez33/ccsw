@@ -150,12 +150,13 @@ impl Event {
         }
     }
 
-    /// `{"schemaVersion": 1, "event": kind, "ts": now, …}`.
-    pub fn to_json(&self) -> Value {
+    /// `{"schemaVersion": 2, "event": kind, "ts": now, "provider": provider, …}`.
+    pub fn to_json(&self, provider: Provider) -> Value {
         let mut map = Map::new();
-        map.insert("schemaVersion".into(), json!(1));
+        map.insert("schemaVersion".into(), json!(2));
         map.insert("event".into(), json!(self.kind()));
         map.insert("ts".into(), json!(now_iso()));
+        map.insert("provider".into(), json!(provider.as_str()));
         match self {
             Self::Poll {
                 active,
@@ -1230,9 +1231,9 @@ fn running_in_container() -> bool {
 }
 
 /// Write one event: compact JSON, or `HH:MM:SS  <human>` colored by kind.
-fn write_event(out: &mut dyn Write, event: &Event, json: bool) {
+fn write_event(out: &mut dyn Write, event: &Event, provider: Provider, json: bool) {
     if json {
-        let _ = writeln!(out, "{}", event.to_json());
+        let _ = writeln!(out, "{}", event.to_json(provider));
     } else {
         let line = event.human();
         let styled = match event {
@@ -1352,7 +1353,7 @@ pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn 
         );
         let _ = writeln!(out, "{}", printer::dimmed(&banner));
     }
-    let sink = |event: &Event| write_event(out, event, json);
+    let sink = |event: &Event| write_event(out, event, Provider::Claude, json);
     let mut engine = Engine::new(facade, Provider::Claude, settings, args.dry_run, sink);
     if args.once {
         return engine.tick().code();
@@ -1695,8 +1696,9 @@ mod tests {
             fetch_errors,
             windows,
         };
-        let json = poll.to_json();
-        assert_eq!(json["schemaVersion"], 1);
+        let json = poll.to_json(Provider::Claude);
+        assert_eq!(json["schemaVersion"], 2);
+        assert_eq!(json["provider"], "claude");
         assert_eq!(json["event"], "poll");
         let ts = json["ts"].as_str().unwrap();
         assert!(ts.ends_with('Z') && ts.len() == 20, "{ts}");
@@ -1720,7 +1722,7 @@ mod tests {
             fetch_errors: BTreeMap::new(),
             windows: BTreeMap::new(),
         };
-        let json = bare.to_json();
+        let json = bare.to_json(Provider::Claude);
         assert!(json["active"].is_null());
         assert_eq!(json["headroomPct"], json!({}));
         assert!(json.get("fetchErrors").is_none());
@@ -1753,7 +1755,7 @@ mod tests {
             warnings: vec!["w".into()],
             dry_run: false,
         };
-        let json = switch.to_json();
+        let json = switch.to_json(Provider::Claude);
         assert_eq!(json["event"], "switch");
         assert_eq!(json["trigger"], "at-limit");
         assert_eq!(json["from"]["number"], 1);
@@ -1771,8 +1773,8 @@ mod tests {
             warnings: vec![],
             dry_run: true,
         };
-        assert_eq!(dry.to_json()["dryRun"], true);
-        assert!(dry.to_json()["from"].is_null());
+        assert_eq!(dry.to_json(Provider::Claude)["dryRun"], true);
+        assert!(dry.to_json(Provider::Claude)["from"].is_null());
         assert_eq!(
             dry.human(),
             "[dry-run] would switch (none) -> ? (proactive)"
@@ -1782,14 +1784,17 @@ mod tests {
             reason: "below-threshold".into(),
             detail: "62% < 90%".into(),
         };
-        assert_eq!(no_switch.to_json()["reason"], "below-threshold");
-        assert_eq!(no_switch.to_json()["detail"], "62% < 90%");
+        assert_eq!(
+            no_switch.to_json(Provider::Claude)["reason"],
+            "below-threshold"
+        );
+        assert_eq!(no_switch.to_json(Provider::Claude)["detail"], "62% < 90%");
         assert_eq!(no_switch.human(), "no switch: below-threshold (62% < 90%)");
         let plain = Event::NoSwitch {
             reason: "no-viable-target".into(),
             detail: String::new(),
         };
-        assert_eq!(plain.to_json()["detail"], "");
+        assert_eq!(plain.to_json(Provider::Claude)["detail"], "");
         assert_eq!(plain.human(), "no switch: no-viable-target");
 
         let quarantined = Event::AccountQuarantined {
@@ -1797,7 +1802,7 @@ mod tests {
             email: "c@x".into(),
             reason: "invalid_grant".into(),
         };
-        let json = quarantined.to_json();
+        let json = quarantined.to_json(Provider::Claude);
         assert_eq!(json["event"], "account-quarantined");
         assert_eq!(json["number"], "3", "number is a string");
         assert_eq!(
@@ -1809,7 +1814,10 @@ mod tests {
             email: "c@x".into(),
             reason: "credentials-replaced".into(),
         };
-        assert_eq!(back.to_json()["event"], "account-unquarantined");
+        assert_eq!(
+            back.to_json(Provider::Claude)["event"],
+            "account-unquarantined"
+        );
         assert_eq!(
             back.human(),
             "Account-3 (c@x) back in rotation (credentials-replaced)"
@@ -1819,7 +1827,7 @@ mod tests {
             earliest_reset_at: Some("2026-09-29T12:00:00Z".into()),
         };
         assert_eq!(
-            exhausted.to_json()["earliestResetAt"],
+            exhausted.to_json(Provider::Claude)["earliestResetAt"],
             "2026-09-29T12:00:00Z"
         );
         assert_eq!(
@@ -1829,7 +1837,7 @@ mod tests {
         let unknown = Event::AllExhausted {
             earliest_reset_at: None,
         };
-        assert!(unknown.to_json()["earliestResetAt"].is_null());
+        assert!(unknown.to_json(Provider::Claude)["earliestResetAt"].is_null());
         assert_eq!(
             unknown.human(),
             "all accounts exhausted; no reset time known"
@@ -1839,14 +1847,20 @@ mod tests {
             seconds: 599.96,
             until: "2026-09-29T12:10:00Z".into(),
         };
-        assert_eq!(sleep.to_json()["seconds"], 600.0);
+        assert_eq!(sleep.to_json(Provider::Claude)["seconds"], 600.0);
+        let other = sleep.to_json(Provider::Codex);
+        assert_eq!(other["provider"], "codex");
+        assert_eq!(other["schemaVersion"], 2);
+        for key in ["event", "ts", "schemaVersion", "provider"] {
+            assert!(other.get(key).is_some());
+        }
         assert_eq!(sleep.human(), "sleeping 10m (until 2026-09-29T12:10:00Z)");
 
         let error = Event::Error {
             message: "boom".into(),
             transient: true,
         };
-        assert_eq!(error.to_json()["transient"], true);
+        assert_eq!(error.to_json(Provider::Claude)["transient"], true);
         assert_eq!(error.human(), "error: boom (will retry)");
         let fatal = Event::Error {
             message: "boom".into(),
@@ -1856,7 +1870,7 @@ mod tests {
         let warning = Event::ConfigWarning {
             message: "typo?".into(),
         };
-        assert_eq!(warning.to_json()["event"], "config-warning");
+        assert_eq!(warning.to_json(Provider::Claude)["event"], "config-warning");
         assert_eq!(warning.human(), "warning: typo?");
     }
 

@@ -103,6 +103,8 @@ fn once_switches_when_the_active_account_is_over_the_threshold() {
     assert_eq!(events.len(), 2, "{events:?}");
     let poll = &events[0];
     assert_eq!(poll["event"], "poll");
+    assert_eq!(poll["schemaVersion"], 2);
+    assert_eq!(poll["provider"], "claude");
     assert_eq!(poll["active"]["number"], alice(1));
     assert_eq!(poll["headroomPct"][alice(1).to_string()], 5.0);
     assert_eq!(poll["headroomPct"]["1"], 45.0);
@@ -110,6 +112,7 @@ fn once_switches_when_the_active_account_is_over_the_threshold() {
     assert_eq!(poll["windowsPct"][alice(1).to_string()]["5h"], 95.0);
     let switch = &events[1];
     assert_eq!(switch["event"], "switch");
+    assert_eq!(switch["provider"], "claude");
     assert_eq!(switch["trigger"], "proactive");
     assert_eq!(switch["dryRun"], false);
     assert_eq!(switch["from"]["number"], alice(1));
