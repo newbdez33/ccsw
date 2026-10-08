@@ -112,7 +112,7 @@ impl HostEnv {
 pub fn source_home(store: &Store) -> PathBuf {
     let home = &store.paths.codex_home;
     if home.starts_with(store.paths.sessions_dir()) {
-        dirs::home_dir()
+        crate::paths::user_home()
             .map(|h| h.join(".codex"))
             .unwrap_or_else(|| home.clone())
     } else {
@@ -1026,7 +1026,7 @@ mod tests {
         let pinned_store = Store::open(pinned);
         assert_eq!(
             source_home(&pinned_store),
-            dirs::home_dir().unwrap().join(".codex")
+            crate::paths::user_home().unwrap().join(".codex")
         );
     }
 }

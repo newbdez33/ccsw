@@ -4,6 +4,15 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::errors::{CcswError, Result};
 
+pub(crate) fn user_home() -> Option<PathBuf> {
+    // Windows CLIs honor USERPROFILE, including redirected and test homes.
+    #[cfg(windows)]
+    if let Some(home) = std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(home));
+    }
+    dirs::home_dir()
+}
+
 /// `CCSW_KEYCHAIN=off|0|false` disables the Keychain; it is never used off macOS.
 pub fn keychain_enabled_from(value: Option<&str>) -> bool {
     let off = value.is_some_and(|v| {
@@ -44,8 +53,8 @@ pub struct Paths {
 
 impl Paths {
     pub fn from_env() -> Result<Self> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| CcswError::config("could not determine home directory"))?;
+        let home =
+            user_home().ok_or_else(|| CcswError::config("could not determine home directory"))?;
         let mut paths = Self::from_values(
             std::env::var_os("CCSW_HOME").map(PathBuf::from),
             std::env::var_os("CODEX_HOME").map(PathBuf::from),
