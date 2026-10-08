@@ -66,6 +66,7 @@ pub struct ClaudeLive<'a> {
     /// to the file so a command never splits between backends.
     file_mode: Cell<bool>,
     account: String,
+    oauth_service: String,
 }
 
 /// A stored credential covers the login only when it holds a login; a file
@@ -89,7 +90,18 @@ impl<'a> ClaudeLive<'a> {
             keychain: Keychain::new(cli),
             file_mode: Cell::new(!paths.keychain_enabled),
             account: account_name(),
+            oauth_service: paths
+                .claude_secure_storage_dir
+                .as_ref()
+                .or(paths.claude_config_dir_raw.as_ref())
+                .filter(|s| !s.is_empty())
+                .map(|s| super::session::keychain_service(s))
+                .unwrap_or_else(|| LIVE_SERVICE.to_string()),
         }
+    }
+
+    fn default_profile(&self) -> bool {
+        self.paths.claude_config_dir_raw.is_none()
     }
 
     fn use_keychain(&self) -> bool {
@@ -107,7 +119,10 @@ impl<'a> ClaudeLive<'a> {
         let mut credential = None;
         let mut raw: Option<ClaudeCredential> = None;
         if self.use_keychain() {
-            match self.keychain.get_password(LIVE_SERVICE, &self.account) {
+            match self
+                .keychain
+                .get_password(&self.oauth_service, &self.account)
+            {
                 Ok(Some(text)) => {
                     let parsed = ClaudeCredential::parse(&text)?;
                     raw = Some(parsed.clone());
@@ -160,7 +175,7 @@ impl<'a> ClaudeLive<'a> {
     /// The managed key, and whether the Keychain failed while looking for it.
     fn read_managed_key(&self) -> Result<(Option<String>, bool)> {
         let mut failed = false;
-        if self.use_keychain() {
+        if self.default_profile() && self.use_keychain() {
             match self.keychain.get_password(MANAGED_SERVICE, &self.account) {
                 Ok(Some(key)) if !key.trim().is_empty() => return Ok((Some(key), false)),
                 Ok(_) => {}
@@ -216,7 +231,7 @@ impl<'a> ClaudeLive<'a> {
         if self.use_keychain() {
             match self
                 .keychain
-                .set_password(LIVE_SERVICE, &self.account, &text)
+                .set_password(&self.oauth_service, &self.account, &text)
             {
                 Ok(()) => {
                     if file.exists()
@@ -239,7 +254,9 @@ impl<'a> ClaudeLive<'a> {
         fsutil::atomic_write_private(&file, text.as_bytes())
             .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &file, &err))?;
         if self.paths.keychain_enabled {
-            let _ = self.keychain.delete_password(LIVE_SERVICE, &self.account);
+            let _ = self
+                .keychain
+                .delete_password(&self.oauth_service, &self.account);
         }
         self.clear_managed_key()?;
         Ok(Backend::File)
@@ -248,7 +265,8 @@ impl<'a> ClaudeLive<'a> {
     /// Write a managed API key (Keychain `Claude Code`, else `primaryApiKey`)
     /// and clear any OAuth login.
     pub fn write_managed_key(&self, key: &str) -> Result<Backend> {
-        let backend = if self.use_keychain()
+        let backend = if self.default_profile()
+            && self.use_keychain()
             && self
                 .keychain
                 .set_password(MANAGED_SERVICE, &self.account, key)
@@ -267,7 +285,7 @@ impl<'a> ClaudeLive<'a> {
     }
 
     fn clear_managed_key(&self) -> Result<()> {
-        if self.paths.keychain_enabled {
+        if self.default_profile() && self.paths.keychain_enabled {
             let _ = self
                 .keychain
                 .delete_password(MANAGED_SERVICE, &self.account);
@@ -311,7 +329,10 @@ impl<'a> ClaudeLive<'a> {
     /// Best effort: a Keychain failure here leaves a login the managed key
     /// already outranks, so it is logged, not raised.
     fn clear_keychain_oauth(&self) {
-        let text = match self.keychain.get_password(LIVE_SERVICE, &self.account) {
+        let text = match self
+            .keychain
+            .get_password(&self.oauth_service, &self.account)
+        {
             Ok(Some(text)) => text,
             Ok(None) => return,
             Err(err) => {
@@ -336,7 +357,7 @@ impl<'a> ClaudeLive<'a> {
                     .map_err(|err| err.to_string())
                     .and_then(|text| {
                         self.keychain
-                            .set_password(LIVE_SERVICE, &self.account, &text)
+                            .set_password(&self.oauth_service, &self.account, &text)
                             .map_err(|err| err.to_string())
                     });
                 if let Err(err) = written {
@@ -345,7 +366,10 @@ impl<'a> ClaudeLive<'a> {
                     );
                 }
             }
-            None => match self.keychain.delete_password(LIVE_SERVICE, &self.account) {
+            None => match self
+                .keychain
+                .delete_password(&self.oauth_service, &self.account)
+            {
                 Ok(true) => {}
                 Ok(false) => tracing::warn!("the Claude Keychain item was already gone"),
                 Err(err) => tracing::warn!("could not delete the Claude Keychain item: {err}"),
@@ -408,7 +432,11 @@ pub fn backup_live(paths: &Paths, login: &LiveLogin) -> Result<()> {
 mod tests {
     use super::*;
     use crate::claude::keychain::CliOutput;
-    use crate::store::temp_store;
+    fn temp_store() -> (tempfile::TempDir, crate::store::Store) {
+        let (dir, mut store) = crate::store::temp_store();
+        store.paths.claude_config_dir_raw = None;
+        (dir, store)
+    }
     use serde_json::json;
     use std::cell::RefCell;
     use std::collections::{BTreeMap, VecDeque};
@@ -505,6 +533,39 @@ mod tests {
     fn write_config(paths: &crate::paths::Paths, value: &serde_json::Value) {
         std::fs::create_dir_all(paths.claude_global_config_file().parent().unwrap()).unwrap();
         std::fs::write(paths.claude_global_config_file(), value.to_string()).unwrap();
+    }
+
+    #[test]
+    fn custom_home_reads_and_writes_its_hashed_service_only() {
+        let (_dir, store) = temp_store();
+        let mut paths = store.paths.clone();
+        paths.keychain_enabled = true;
+        paths.claude_config_dir_raw = Some(paths.claude_home.to_string_lossy().into_owned());
+        let fake = FakeKeychain::default();
+        Keychain::new(&fake)
+            .set_password(
+                LIVE_SERVICE,
+                &account_name(),
+                &creds("default", "rt-default").0.to_string(),
+            )
+            .unwrap();
+        let service =
+            crate::claude::session::keychain_service(&paths.claude_home.to_string_lossy());
+        Keychain::new(&fake)
+            .set_password(
+                &service,
+                &account_name(),
+                &creds("profile", "rt-profile").0.to_string(),
+            )
+            .unwrap();
+        let live = ClaudeLive::new(&paths, &fake);
+        assert_eq!(
+            live.read().unwrap().credential.unwrap().access_token(),
+            Some("profile")
+        );
+        live.write_oauth(&creds("updated", "rt-updated")).unwrap();
+        assert!(fake.item(LIVE_SERVICE).unwrap().contains("rt-default"));
+        assert!(fake.item(&service).unwrap().contains("rt-updated"));
     }
 
     #[test]

@@ -188,6 +188,20 @@ pub fn prepare_profile(
     let record = roster
         .record(slot)
         .ok_or_else(|| CcswError::AccountNotFound(format!("Account-{slot} does not exist")))?;
+    if record.provider == Provider::Claude {
+        let profile = crate::claude::session::prepare(
+            store,
+            slot,
+            record,
+            &crate::claude::keychain::SystemSecurity,
+        )?;
+        return Ok(Prepared {
+            slot,
+            email: record.email.clone(),
+            profile,
+            notices: Vec::new(),
+        });
+    }
     let profile = store.paths.session_dir(slot, &record.email);
     let mut notices = Vec::new();
 

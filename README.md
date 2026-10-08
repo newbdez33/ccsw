@@ -18,7 +18,13 @@ the commands, options, JSON output, settings and full-screen dashboard follow `c
 so `cswap list` becomes `ccsw list`. The Codex-specific mechanics (credential file,
 identity, usage API, token refresh, app-server daemon) come from
 [codex-switch](https://github.com/xjoker/codex-switch). Both are MIT licensed; see
-`NOTICE`.
+[NOTICE](NOTICE).
+
+Claude session support is ported from
+[cswap's session implementation](https://github.com/realiti4/claude-swap/blob/3a4e5c14873eb5b32f182d55c68da98ac8c0db45/src/claude_swap/session.py),
+with its credential and process guards adapted to Rust and the shared provider store.
+The source reference is commit `3a4e5c1`; the upstream MIT license is included in
+[NOTICE](NOTICE).
 
 > `ccsw` manages local credential files. Never publish `~/.ccsw`, `auth.json`,
 > tokens, or unredacted debug output.

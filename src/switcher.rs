@@ -548,6 +548,18 @@ impl Switcher {
         }
     }
 
+    /// Caller holds the store lock. Capture Keychain-only rotations before a
+    /// path change makes the old hashed service inaccessible.
+    fn prepare_session_change(&self, slot: u32, record: &AccountRecord) -> Result<()> {
+        if record.provider == Provider::Claude {
+            let profile = self.store.paths.session_dir(slot, &record.email);
+            crate::claude::session::require_quiescent(&profile)?;
+            crate::claude::session::reconcile_locked(&self.store, slot, record, &SystemSecurity)?;
+            crate::claude::session::materialize(&self.store, &profile, &SystemSecurity)?;
+        }
+        Ok(())
+    }
+
     fn remove_session_dir(&self, slot: u32, email: &str) {
         let dir = self.store.paths.session_dir(slot, email);
         match fs::remove_dir_all(&dir) {
@@ -991,6 +1003,7 @@ impl Switcher {
                 self.say(Line::dimmed("Cancelled"));
                 return Ok(Placement::Cancelled);
             }
+            self.prepare_session_change(target, &occupant)?;
             credentials::delete(&self.store, target)?;
             self.remove_session_dir(target, &occupant.email);
             roster.remove_slot(target);
@@ -1135,6 +1148,7 @@ impl Switcher {
         }
         let _lock = self.store.lock()?;
         let mut roster = self.roster()?;
+        self.prepare_session_change(slot, &record)?;
         credentials::delete(&self.store, slot)?;
         self.remove_session_dir(slot, &record.email);
         roster.remove_slot(slot);
@@ -1277,6 +1291,11 @@ impl Switcher {
             .map(|r| r.email.clone())
             .ok_or_else(|| missing(src))?;
         let target_email = roster.record(target_slot).map(|r| r.email.clone());
+        for slot in [src, target_slot] {
+            if let Some(record) = roster.record(slot) {
+                self.prepare_session_change(slot, record)?;
+            }
+        }
         match roster.move_slot(src, target_slot)? {
             MoveOutcome::NoOp => self.say(
                 Line::new()
@@ -1319,6 +1338,11 @@ impl Switcher {
         };
         let email_a = email_of(&roster, a)?;
         let email_b = email_of(&roster, b)?;
+        for slot in [a, b] {
+            if let Some(record) = roster.record(slot) {
+                self.prepare_session_change(slot, record)?;
+            }
+        }
         roster.swap_slots(a, b)?;
         self.swap_files(a, &email_a, b, &email_b)?;
         self.write_roster(&roster)?;
@@ -1607,6 +1631,9 @@ impl Switcher {
         let live_api = ClaudeLive::new(&self.store.paths, &SystemSecurity);
 
         let store_lock = self.store.lock()?;
+        let profile = self.store.paths.session_dir(target, &record.email);
+        crate::claude::session::require_quiescent(&profile)?;
+        crate::claude::session::reconcile_locked(&self.store, target, &record, &SystemSecurity)?;
         let stored = credentials::read(&self.store, target)?.ok_or_else(|| {
             CcswError::switch(format!(
                 "Account-{target} has no stored credentials. Re-add with: ccsw add claude --slot {target}"
@@ -3083,6 +3110,35 @@ mod tests {
         );
         assert_eq!(limits_label(&[]), "5h/7d limit");
         assert_eq!(limits_label(&["x".into()]), "usage limits");
+    }
+
+    #[test]
+    fn active_profile_blocks_switch_remove_and_move() {
+        let mut fx = fixture();
+        fx.write_claude_live("session@example.com", "org", "", "rt-session");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        fx.write_claude_live("default@example.com", "org-default", "", "rt-default");
+        let profile = fx
+            .switcher
+            .store
+            .paths
+            .session_dir(1, "session@example.com");
+        crate::fsutil::write_json_private(
+            &profile.join("sessions/owner.json"),
+            &json!({"pid": std::process::id()}),
+        )
+        .unwrap();
+        assert!(fx.switcher.switch_to("1", false, true).is_err());
+        assert!(fx.switcher.move_account("1", "2").is_err());
+        fx.answer("y");
+        assert!(fx.switcher.remove("1", false).is_err());
+        assert!(fx.roster().record(1).is_some());
+        assert_eq!(
+            fx.claude_credentials()["claudeAiOauth"]["refreshToken"],
+            "rt-default"
+        );
     }
 
     #[test]

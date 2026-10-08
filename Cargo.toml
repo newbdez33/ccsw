@@ -43,6 +43,10 @@ webbrowser = "1"
 rpassword = "7"
 libc = "0.2"
 filetime = "0.2"
+unicode-normalization = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 axum = "0.8"

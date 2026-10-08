@@ -7,4 +7,5 @@ pub mod keychain;
 pub mod live;
 pub mod locks;
 pub mod oauth;
+pub mod session;
 pub mod usage;
