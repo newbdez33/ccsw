@@ -13,6 +13,7 @@ use ccsw::codex::auth::AuthJson;
 use ccsw::errors::CcswError;
 use ccsw::model::{AccountKind, AccountRecord, Identity, Roster, now_unix, parse_iso};
 use ccsw::paths::Paths;
+use ccsw::provider::Provider;
 use ccsw::store::usage_store::{FetchRecord, UsageStore};
 use ccsw::store::{Store, credentials, roster};
 use ccsw::transfer::{
@@ -234,13 +235,13 @@ fn export_bulk_writes_the_envelope_file() {
 
     let text = fs::read_to_string(&path).unwrap();
     assert!(
-        text.starts_with("{\n  \"version\": 1,\n  \"exportedAt\": \""),
+        text.starts_with("{\n  \"version\": 2,\n  \"exportedAt\": \""),
         "{text}"
     );
     assert!(text.ends_with("}\n"));
     let value: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(value, report.envelope);
-    assert_eq!(value["version"], 1);
+    assert_eq!(value["version"], 2);
     assert!(value["exportedAt"].as_str().unwrap().ends_with('Z'));
     assert_eq!(value["exportedFrom"], platform_name());
     assert!(["macos", "linux", "wsl", "windows", "unknown"].contains(&platform_name()));
@@ -248,11 +249,13 @@ fn export_bulk_writes_the_envelope_file() {
     assert_eq!(value["swapVersion"], ccsw::VERSION);
     assert_eq!(value["encrypted"], false);
     assert_eq!(value["activeAccountNumber"], 3);
+    assert_eq!(value["activeByProvider"], json!({"codex": 3}));
 
     let accounts = value["accounts"].as_array().unwrap();
     assert_eq!(accounts.len(), 3);
     let first = &accounts[0];
     assert_eq!(first["number"], 1);
+    assert_eq!(first["provider"], "codex");
     assert_eq!(first["email"], "a@example.com");
     assert_eq!(first["uuid"], "user-acct-a");
     assert_eq!(first["organizationUuid"], "acct-a");
@@ -473,6 +476,232 @@ fn export_to_stdout_prints_no_summary() {
     assert!(report.notices.is_empty(), "{:?}", report.notices);
     assert_eq!(report.envelope["accounts"].as_array().unwrap().len(), 3);
     assert_eq!(report.envelope["activeAccountNumber"], 3);
+}
+
+fn claude_slot_file(email: &str, org: &str, org_name: &str, refresh: &str) -> Value {
+    json!({
+        "claudeAiOauth": {
+            "accessToken": format!("cat-{refresh}"),
+            "refreshToken": refresh,
+            "expiresAt": 4_102_444_800_000i64,
+            "scopes": ["user:inference", "user:profile"]
+        },
+        "oauthAccount": {
+            "accountUuid": format!("uuid-{email}"),
+            "emailAddress": email,
+            "organizationUuid": org,
+            "organizationName": org_name,
+            "billingType": "stripe"
+        }
+    })
+}
+
+fn claude_record(email: &str, org: &str, org_name: &str) -> AccountRecord {
+    let mut record = AccountRecord::new(email);
+    record.provider = Provider::Claude;
+    record.uuid = format!("uuid-{email}");
+    record.organization_uuid = org.into();
+    record.organization_name = org_name.into();
+    record.added = "2026-09-01T00:00:00Z".into();
+    record
+}
+
+/// Slots 1 (Codex, active), 2 (Claude OAuth, Acme, alias `cc`, active), 4 (Claude managed key).
+fn seed_mixed(fx: &Fx) -> Roster {
+    let mut ro = Roster::empty();
+    add(
+        fx,
+        &mut ro,
+        1,
+        record("a@example.com", "acct-a"),
+        Some(&chatgpt_auth("a@example.com", "acct-a", "rt-a")),
+    );
+    let mut cc = claude_record("c@example.com", "org-c", "Acme");
+    cc.alias = Some("cc".into());
+    add(
+        fx,
+        &mut ro,
+        2,
+        cc,
+        Some(&claude_slot_file("c@example.com", "org-c", "Acme", "crt-c")),
+    );
+    let mut key = claude_record("api-key-4@token.local", "", "");
+    key.kind = Some(AccountKind::ApiKey);
+    add(
+        fx,
+        &mut ro,
+        4,
+        key,
+        Some(&json!({
+            "primaryApiKey": "sk-ant-api03-four",
+            "oauthAccount": {"emailAddress": "api-key-4@token.local", "accountUuid": "",
+                             "organizationUuid": null, "organizationName": null}
+        })),
+    );
+    ro.set_active_for(Provider::Codex, Some(1));
+    ro.set_active_for(Provider::Claude, Some(2));
+    roster::write(&fx.paths, &ro).unwrap();
+    ro
+}
+
+fn write_claude_live(fx: &Fx, creds: &Value, config: &Value) {
+    fs::create_dir_all(&fx.paths.claude_home).unwrap();
+    fs::write(fx.paths.claude_credentials_file(), creds.to_string()).unwrap();
+    fs::write(fx.paths.claude_global_config_file(), config.to_string()).unwrap();
+}
+
+#[test]
+fn export_carries_both_providers() {
+    let fx = fixture();
+    seed_mixed(&fx);
+    let path = fx.root.join("mixed.ccsw");
+    let report = export_accounts(&fx.paths, ExportTarget::File(path.clone()), None, false).unwrap();
+    assert_eq!(report.written, 3);
+    assert_eq!(
+        report.notices,
+        vec![format!("Exported 3 account(s) to {}", path.display())]
+    );
+    let value = report.envelope;
+    assert_eq!(value["version"], 2);
+    assert_eq!(value["activeAccountNumber"], 1);
+    assert_eq!(value["activeByProvider"], json!({"claude": 2, "codex": 1}));
+    let accounts = value["accounts"].as_array().unwrap();
+    assert_eq!(accounts[0]["provider"], "codex");
+    assert_eq!(accounts[1]["provider"], "claude");
+    assert_eq!(accounts[1]["number"], 2);
+    assert_eq!(accounts[1]["alias"], "cc");
+    assert_eq!(accounts[1]["organizationName"], "Acme");
+    assert!(accounts[1].get("planType").is_none());
+    assert_eq!(
+        accounts[1]["credentials"],
+        claude_slot_file("c@example.com", "org-c", "Acme", "crt-c"),
+        "the slot file is exported as stored"
+    );
+    assert_eq!(accounts[2]["provider"], "claude");
+    assert_eq!(accounts[2]["kind"], "api_key");
+    assert_eq!(
+        accounts[2]["credentials"]["primaryApiKey"],
+        "sk-ant-api03-four"
+    );
+
+    // `--account` on a Claude slot by number or alias.
+    for id in ["2", "cc"] {
+        let report =
+            export_accounts(&fx.paths, ExportTarget::File(path.clone()), Some(id), false).unwrap();
+        assert_eq!(report.written, 1, "{id}");
+        assert_eq!(report.envelope["accounts"][0]["email"], "c@example.com");
+        assert_eq!(report.envelope["activeAccountNumber"], Value::Null);
+        assert_eq!(report.envelope["activeByProvider"], json!({"claude": 2}));
+    }
+    // Neither active slot in the file: `activeByProvider` is left out entirely.
+    let report = export_accounts(
+        &fx.paths,
+        ExportTarget::File(path.clone()),
+        Some("4"),
+        false,
+    )
+    .unwrap();
+    assert!(report.envelope.get("activeByProvider").is_none());
+    assert_eq!(report.envelope["activeAccountNumber"], Value::Null);
+}
+
+#[test]
+fn export_claude_active_prefers_the_live_login_only_when_it_matches() {
+    let fx = fixture();
+    seed_mixed(&fx);
+    let export = |fx: &Fx| {
+        export_accounts(
+            &fx.paths,
+            ExportTarget::File(fx.root.join("b.ccsw")),
+            None,
+            false,
+        )
+        .unwrap()
+        .envelope
+    };
+    let refresh = |value: &Value, index: usize| {
+        value["accounts"][index]["credentials"]["claudeAiOauth"]["refreshToken"].clone()
+    };
+    let config = |email: &str, org: &str| {
+        json!({"numStartups": 1, "oauthAccount": {"emailAddress": email, "accountUuid": "u",
+               "organizationUuid": org, "organizationName": "Acme"}})
+    };
+    let live = |refresh: &str| {
+        json!({"claudeAiOauth": {"accessToken": "live-at", "refreshToken": refresh,
+               "expiresAt": 4_102_444_900_000i64, "scopes": ["user:inference"]},
+               "mcpOAuth": {"srv": {"accessToken": "m"}}})
+    };
+    // No live login at all.
+    assert_eq!(refresh(&export(&fx), 1), "crt-c");
+    // The live login is the active slot's identity: its token wins, siblings are
+    // dropped and the stored oauthAccount stays as stored.
+    write_claude_live(&fx, &live("crt-live"), &config("C@example.com", "org-c"));
+    let value = export(&fx);
+    assert_eq!(refresh(&value, 1), "crt-live");
+    assert!(
+        value["accounts"][1]["credentials"]
+            .get("mcpOAuth")
+            .is_none()
+    );
+    assert_eq!(
+        value["accounts"][1]["credentials"]["oauthAccount"]["billingType"],
+        "stripe"
+    );
+    assert_eq!(
+        slot_creds(&fx, 2)["claudeAiOauth"]["refreshToken"],
+        "crt-c",
+        "an export never modifies the stored snapshot"
+    );
+    // Another identity (same email, other org) is ignored.
+    write_claude_live(&fx, &live("crt-z"), &config("c@example.com", "org-z"));
+    assert_eq!(refresh(&export(&fx), 1), "crt-c");
+    // Garbage live files are ignored.
+    fs::write(fx.paths.claude_credentials_file(), "nope").unwrap();
+    assert_eq!(refresh(&export(&fx), 1), "crt-c");
+    // A live login matching an inactive Claude slot is not consulted.
+    let mut ro = roster_of(&fx);
+    ro.set_active_for(Provider::Claude, Some(4));
+    roster::write(&fx.paths, &ro).unwrap();
+    write_claude_live(&fx, &live("crt-live"), &config("c@example.com", "org-c"));
+    assert_eq!(refresh(&export(&fx), 1), "crt-c");
+}
+
+#[test]
+fn export_folds_a_newer_session_profile_token_into_a_claude_slot() {
+    let fx = fixture();
+    seed_mixed(&fx);
+    let profile = fx.paths.session_dir(2, "c@example.com");
+    fs::create_dir_all(&profile).unwrap();
+    let mut rotated = claude_slot_file("c@example.com", "org-c", "Acme", "crt-rotated");
+    rotated["claudeAiOauth"]["expiresAt"] = json!(4_102_444_900_000i64);
+    let account = rotated
+        .as_object_mut()
+        .unwrap()
+        .remove("oauthAccount")
+        .unwrap();
+    fs::write(profile.join(".credentials.json"), rotated.to_string()).unwrap();
+    fs::write(
+        profile.join(".claude.json"),
+        json!({"oauthAccount": account}).to_string(),
+    )
+    .unwrap();
+
+    let report = export_accounts(
+        &fx.paths,
+        ExportTarget::File(fx.root.join("b.ccsw")),
+        Some("2"),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        report.envelope["accounts"][0]["credentials"]["claudeAiOauth"]["refreshToken"],
+        "crt-rotated"
+    );
+    assert_eq!(
+        slot_creds(&fx, 2)["claudeAiOauth"]["refreshToken"],
+        "crt-rotated",
+        "the profile's rotation is folded into the slot first"
+    );
 }
 
 #[test]
@@ -781,16 +1010,16 @@ fn import_validates_the_envelope_before_writing_anything() {
     let cases: Vec<(Value, &str)> = vec![
         (json!([1]), "export file must be a JSON object"),
         (
-            json!({"version": 2, "accounts": [good(1, "a@example.com", "acct-a")]}),
-            "unsupported export version: 2 (expected 1)",
+            json!({"version": 3, "accounts": [good(1, "a@example.com", "acct-a")]}),
+            "unsupported export version: 3 (expected 1 or 2)",
         ),
         (
             json!({"accounts": []}),
-            "unsupported export version: None (expected 1)",
+            "unsupported export version: None (expected 1 or 2)",
         ),
         (
             json!({"version": "1"}),
-            "unsupported export version: '1' (expected 1)",
+            "unsupported export version: '1' (expected 1 or 2)",
         ),
         (
             json!({"version": 1, "encrypted": true, "accounts": [1]}),

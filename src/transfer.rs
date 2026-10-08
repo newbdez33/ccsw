@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::claude::credentials::SlotFile;
+use crate::claude::keychain::SystemSecurity;
+use crate::claude::live::{ClaudeLive, LiveLogin};
 use crate::codex::auth::{AuthJson, AuthKind};
 use crate::errors::{CcswError, Result};
 use crate::model::{AccountKind, AccountRecord, Identity, Roster, now_iso, now_unix};
@@ -23,7 +26,7 @@ use crate::provider::Provider;
 use crate::store::usage_store::{AUTH_DEAD_STRIKES, UsageStore};
 use crate::store::{Store, alias_owner, credentials, normalize_alias, resolve_identifier, roster};
 
-pub const FORMAT_VERSION: u64 = 1;
+pub const FORMAT_VERSION: u64 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportTarget {
@@ -71,7 +74,11 @@ struct Envelope {
     /// The same value under cswap's name, for readers that look for it.
     swap_version: &'static str,
     encrypted: bool,
+    /// The Codex active slot (v1 readers); mirrors `activeByProvider.codex`.
     active_account_number: Option<u32>,
+    /// Each provider's active slot when it is in the file.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    active_by_provider: BTreeMap<String, u32>,
     accounts: Vec<ExportedAccount>,
 }
 
@@ -79,6 +86,7 @@ struct Envelope {
 #[serde(rename_all = "camelCase")]
 struct ExportedAccount {
     number: u32,
+    provider: Provider,
     email: String,
     uuid: String,
     organization_uuid: String,
@@ -97,6 +105,7 @@ impl ExportedAccount {
     fn new(number: u32, record: &AccountRecord, credentials: Value) -> Self {
         Self {
             number,
+            provider: record.provider,
             email: record.email.clone(),
             uuid: record.uuid.clone(),
             organization_uuid: record.organization_uuid.clone(),
@@ -196,31 +205,42 @@ pub fn export_accounts(
         ],
         None => roster.sorted_slots(),
     };
-    // The archive format carries Codex accounts only in this release.
-    let (slots, claude): (Vec<u32>, Vec<u32>) = slots.into_iter().partition(|slot| {
-        roster
-            .record(*slot)
-            .is_none_or(|r| r.provider == Provider::Codex)
-    });
-    let live = AuthJson::read(&paths.live_auth_file()).ok().flatten();
+    let live_codex = AuthJson::read(&paths.live_auth_file()).ok().flatten();
+    // Only a Claude active slot that is being exported justifies reading Claude's login.
+    let live_claude = roster
+        .active_for(Provider::Claude)
+        .filter(|active| slots.contains(active))
+        .and_then(|_| ClaudeLive::new(paths, &SystemSecurity).read().ok());
 
     let mut notices = Vec::new();
-    if !claude.is_empty() {
-        notice(
-            &mut notices,
-            format!(
-                "Skipped {} Claude Code account(s): export covers Codex accounts only in this release.",
-                claude.len()
-            ),
-        );
-    }
     let mut skipped = Vec::new();
     let mut accounts = Vec::new();
     for slot in slots {
         let Some(record) = roster.record(slot) else {
             continue;
         };
-        match export_credentials(&store, &roster, slot, record, live.as_ref())? {
+        // A token Claude Code rotated inside the slot's session profile is the
+        // freshest copy; fold it in before reading the snapshot.
+        if record.provider == Provider::Claude
+            && let Err(err) =
+                crate::claude::session::reconcile(&store, slot, record, &SystemSecurity)
+        {
+            notice(
+                &mut notices,
+                format!(
+                    "Warning: Account-{slot} ({}): {err}; exporting the stored snapshot",
+                    record.email
+                ),
+            );
+        }
+        match export_credentials(
+            &store,
+            &roster,
+            slot,
+            record,
+            live_codex.as_ref(),
+            live_claude.as_ref(),
+        )? {
             Some(value) => accounts.push(ExportedAccount::new(slot, record, value)),
             None if account.is_some() => {
                 return Err(CcswError::credential_read(format!(
@@ -249,6 +269,11 @@ pub fn export_accounts(
         ));
     }
 
+    let in_file = |slot: Option<u32>| slot.filter(|s| accounts.iter().any(|e| e.number == *s));
+    let active_by_provider: BTreeMap<String, u32> = Provider::ALL
+        .into_iter()
+        .filter_map(|p| in_file(roster.active_for(p)).map(|s| (p.as_str().to_string(), s)))
+        .collect();
     let envelope = Envelope {
         version: FORMAT_VERSION,
         exported_at: now_iso(),
@@ -256,9 +281,8 @@ pub fn export_accounts(
         ccsw_version: crate::VERSION,
         swap_version: crate::VERSION,
         encrypted: false,
-        active_account_number: roster
-            .active_account_number
-            .filter(|active| accounts.iter().any(|entry| entry.number == *active)),
+        active_account_number: in_file(roster.active_for(Provider::Codex)),
+        active_by_provider,
         accounts,
     };
     let written = envelope.accounts.len();
@@ -293,24 +317,51 @@ pub fn export_accounts(
     })
 }
 
-/// The active slot exports the live login when it is the same identity (the
-/// freshest tokens); everything else comes from the stored snapshot.
+/// The active slot of each provider exports the live login when it is the same
+/// identity (the freshest tokens); everything else comes from the stored
+/// snapshot. A Claude live login contributes its login part only; the slot's
+/// stored `oauthAccount` stays.
 fn export_credentials(
     store: &Store,
     roster: &Roster,
     slot: u32,
     record: &AccountRecord,
-    live: Option<&AuthJson>,
+    live_codex: Option<&AuthJson>,
+    live_claude: Option<&LiveLogin>,
 ) -> Result<Option<Value>> {
-    if roster.active_account_number == Some(slot)
-        && let Some(live) = live
-        && live
-            .identity()
-            .is_some_and(|identity| identity == record.identity())
-    {
-        return Ok(Some(live.0.clone()));
+    let active = roster.active_for(record.provider) == Some(slot);
+    let stored = credentials::read(store, slot)?;
+    match record.provider {
+        Provider::Codex => {
+            if active
+                && let Some(live) = live_codex
+                && live
+                    .identity()
+                    .is_some_and(|identity| identity == record.identity())
+            {
+                return Ok(Some(live.0.clone()));
+            }
+            Ok(stored)
+        }
+        Provider::Claude => {
+            let Some(stored) = stored else {
+                return Ok(None);
+            };
+            if active
+                && let Some(live) = live_claude
+                && let Some(credential) = live.credential.as_ref()
+                && live
+                    .identity()
+                    .is_some_and(|identity| identity == record.identity())
+                && let Ok(file) = SlotFile::from_value(&stored)
+            {
+                return Ok(Some(
+                    SlotFile::new(credential, file.oauth_account).to_value(),
+                ));
+            }
+            Ok(Some(stored))
+        }
     }
-    credentials::read(store, slot)
 }
 
 /// `<path>.<pid>.tmp` beside the target, 0600, fsync, rename. The parent is a
@@ -521,7 +572,7 @@ fn parse_envelope(bytes: &[u8]) -> Result<ParsedEnvelope> {
         return Err(CcswError::transfer("export file must be a JSON object"));
     };
     let version = root.get("version");
-    if version.and_then(Value::as_f64) != Some(FORMAT_VERSION as f64) {
+    if version.and_then(Value::as_f64) != Some(1.0) {
         return Err(CcswError::transfer(format!(
             "unsupported export version: {} (expected 1)",
             python_repr(version)
@@ -834,37 +885,39 @@ mod tests {
     }
 
     #[test]
-    fn export_skips_claude_slots() {
+    fn export_includes_claude_slots() {
         let (dir, store) = mixed_store();
         let path = dir.path().join("out.ccsw");
         let report =
             export_accounts(&store.paths, ExportTarget::File(path.clone()), None, false).unwrap();
-        assert_eq!(report.written, 1);
-        assert_eq!(
-            report.notices[0],
-            "Skipped 1 Claude Code account(s): export covers Codex accounts only in this release."
-        );
+        assert_eq!(report.written, 2);
+        assert_eq!(report.notices.len(), 1, "{:?}", report.notices);
         let numbers: Vec<u64> = report.envelope["accounts"]
             .as_array()
             .unwrap()
             .iter()
             .map(|a| a["number"].as_u64().unwrap())
             .collect();
-        assert_eq!(numbers, [1]);
+        assert_eq!(numbers, [1, 2]);
+        assert_eq!(report.envelope["accounts"][1]["provider"], "claude");
         let written = fs::read_to_string(&path).unwrap();
-        assert!(!written.contains("claude@example.com"));
-        assert!(!written.contains("claudeAiOauth"));
+        assert!(written.contains("claude@example.com"));
+        // A snapshot without `oauthAccount` is still exported as stored.
+        assert_eq!(
+            report.envelope["accounts"][1]["credentials"],
+            json!({"claudeAiOauth": {"accessToken": "cat"}})
+        );
 
         let only_claude = dir.path().join("claude.ccsw");
-        let err = export_accounts(
+        let report = export_accounts(
             &store.paths,
             ExportTarget::File(only_claude.clone()),
             Some("2"),
             false,
         )
-        .unwrap_err();
-        assert_eq!(err.type_name(), "TransferError");
-        assert!(!only_claude.exists(), "nothing was written");
+        .unwrap();
+        assert_eq!(report.written, 1);
+        assert!(only_claude.exists());
     }
 
     #[test]
