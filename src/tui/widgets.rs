@@ -121,8 +121,9 @@ pub fn account_card(
     if let Some(note) = age_note(acc.usage.age_s) {
         header.push_span(Span::styled(format!("   {note}"), p.muted_style()));
     }
-    if let Some(cards) = reset_cards_text(reset_credits(&acc.usage)) {
-        header.push_span(Span::styled(format!("   {cards}"), p.bold_ok()));
+    if let Some(cards) = reset_cards_spans(reset_credits(&acc.usage), p) {
+        header.push_span(Span::raw("   "));
+        header.spans.extend(cards);
     }
     let mut lines = vec![header];
     let usage = &acc.usage;
@@ -207,6 +208,16 @@ fn reset_credits(usage: &UsageEntry) -> Option<u32> {
     usage.last_good.as_ref().and_then(|last| last.reset_credits)
 }
 
+/// `♥ 2` as spans: a red heart and the green count.
+fn reset_cards_spans(count: Option<u32>, p: &Palette) -> Option<Vec<Span<'static>>> {
+    let text = reset_cards_text(count)?;
+    let (heart, count) = text.split_once(' ')?;
+    Some(vec![
+        Span::styled(heart.to_string(), p.bold_crit()),
+        Span::styled(format!(" {count}"), p.bold_ok()),
+    ])
+}
+
 /// The one-line form used for inactive accounts on the dashboard:
 /// ` 2  work@acme.dev  [personal]   5h 92% · 7d 63% (ahead) · Fable (!)`.
 pub fn mini_line(acc: &AccountSnapshot, now: f64, p: &Palette) -> Line<'static> {
@@ -264,8 +275,8 @@ pub fn mini_line(acc: &AccountSnapshot, now: f64, p: &Palette) -> Line<'static> 
         }
         parts.push(part);
     }
-    if let Some(cards) = reset_cards_text(reset_credits(usage)) {
-        parts.push(vec![Span::styled(cards, p.bold_ok())]);
+    if let Some(cards) = reset_cards_spans(reset_credits(usage), p) {
+        parts.push(cards);
     }
     if parts.is_empty() {
         line.push_span(Span::styled("usage unknown", p.muted_style()));
@@ -546,7 +557,7 @@ mod tests {
         let lines = account_card(&acc, 100, Some(90.0), now, p);
         assert_eq!(
             text(&lines[0]),
-            " 2  john.doe@gmail.com  [Personal]   ● active   · 6m ago   ♠ 2"
+            " 2  john.doe@gmail.com  [Personal]   ● active   · 6m ago   ♥ 2"
         );
         assert_eq!(lines.len(), 3, "no 7d row without a weekly window");
         let five = text(&lines[1]);
@@ -618,7 +629,7 @@ mod tests {
         let lines = account_card(&credits, 100, None, now, p);
         assert_eq!(
             text(&lines[0]),
-            " 7  c@y.z  [personal]   ♠ 2",
+            " 7  c@y.z  [personal]   ♥ 2",
             "reset cards close the header line"
         );
         let cards = lines[0].spans.last().unwrap();
@@ -679,7 +690,7 @@ mod tests {
         let line = mini_line(&acc, now, p);
         assert_eq!(
             text(&line),
-            " 2  work@acme.dev  [personal]   5h 92% · 7d 63% (ahead) · Fable (!) · ♠ 2"
+            " 2  work@acme.dev  [personal]   5h 92% · 7d 63% (ahead) · Fable (!) · ♥ 2"
         );
         let cards = line.spans.last().unwrap();
         assert_eq!(cards.style.fg, Some(p.ok), "green");

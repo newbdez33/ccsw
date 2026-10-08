@@ -196,17 +196,26 @@ fn dashboard_active_card_minis_menu_and_footer() {
     let (header_y, header) = find_row(&rows, "john.doe@gmail.com");
     assert_eq!(
         header,
-        "    2  john.doe@gmail.com  [Personal]   ● active   · 6m ago   ♠ 2"
+        "    2  john.doe@gmail.com  [Personal]   ● active   · 6m ago   ♥ 2"
     );
     let dot = col(header, '●');
     assert_eq!(fg(&buf, dot, header_y), DARK.accent);
-    let cards = col(header, '♠');
-    assert_eq!(fg(&buf, cards, header_y), DARK.ok, "reset cards are green");
+    let heart = col(header, '♥');
+    assert_eq!(
+        fg(&buf, heart, header_y),
+        DARK.crit,
+        "the reset-card heart is red"
+    );
+    assert_eq!(
+        fg(&buf, heart + 2, header_y),
+        DARK.ok,
+        "the reset-card count is green"
+    );
     assert!(
-        buf[(cards, header_y as u16)]
+        buf[(heart + 2, header_y as u16)]
             .modifier
             .contains(Modifier::BOLD),
-        "reset cards are bold"
+        "the reset-card count is bold"
     );
 
     let (five_y, five) = find_row(&rows, "5h    ");
@@ -242,7 +251,7 @@ fn dashboard_active_card_minis_menu_and_footer() {
     let (alice_y, alice) = find_row(&rows, "alice@corp.io");
     assert_eq!(
         alice,
-        "    1  alice@corp.io  [Acme]   5h 12% · 7d 40% · ♠ 1"
+        "    1  alice@corp.io  [Acme]   5h 12% · 7d 40% · ♥ 1"
     );
     assert_eq!(alice_y, header_y - 2);
     let pct = alice.find("12%").unwrap() as u16;
@@ -830,7 +839,7 @@ fn mixed_roster_shows_a_section_per_provider() {
     assert!(spend.ends_with("$12.50 / $50.00"), "{spend}");
     let (_, work) = find_row(&rows, "bob@work.com");
     assert_eq!(
-        work, "    7  bob@work.com  [Work]   5h 3% · 7d 22% · ♠ 1",
+        work, "    7  bob@work.com  [Work]   5h 3% · 7d 22% · ♥ 1",
         "a Claude account's limit resets show like Codex's"
     );
 

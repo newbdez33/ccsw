@@ -3,6 +3,13 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Changed
+
+- Reset cards are drawn as a red heart with a green count (`♥ 2`) instead of
+  an all-green spade.
+
 ## v0.7.2 — 2026-10-08
 
 ### Changed

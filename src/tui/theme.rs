@@ -145,9 +145,14 @@ impl Palette {
         Style::new().fg(self.accent).add_modifier(Modifier::BOLD)
     }
 
-    /// Bold `ok` green: the reset cards an account still has.
+    /// Bold `ok` green: the count of reset cards an account still has.
     pub fn bold_ok(&self) -> Style {
         Style::new().fg(self.ok).add_modifier(Modifier::BOLD)
+    }
+
+    /// Bold `crit` red: the reset-card heart.
+    pub fn bold_crit(&self) -> Style {
+        Style::new().fg(self.crit).add_modifier(Modifier::BOLD)
     }
 
     pub fn bold_fg(&self) -> Style {
