@@ -5,7 +5,7 @@
 //! by a fake in tests, and it never fetches usage itself: every measurement
 //! comes from [`crate::collect::run_pass`], the same pass `list` takes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -378,6 +378,7 @@ pub struct Engine<'a> {
     provider: Provider,
     settings: AutoSwitchSettings,
     models: Vec<String>,
+    model_warning_pending: bool,
     dry_run: bool,
     sink: Box<dyn FnMut(&Event) + 'a>,
     clock: Box<dyn Fn() -> f64 + 'a>,
@@ -411,6 +412,7 @@ impl<'a> Engine<'a> {
             security: &SystemSecurity,
             provider,
             settings,
+            model_warning_pending: models.iter().any(|m| !m.eq_ignore_ascii_case("all")),
             models,
             dry_run,
             sink: Box::new(sink),
@@ -569,6 +571,11 @@ impl<'a> Engine<'a> {
             fetch_errors,
             windows,
         });
+
+        let in_pass: Vec<u32> = std::iter::once(current)
+            .chain(candidates.iter().copied())
+            .collect();
+        self.warn_unknown_models(&entries, &in_pass);
 
         if api_key && !self.settings.include_api_key_accounts {
             self.no_switch("active-api-key", "API-key accounts have no quota to watch");
@@ -822,6 +829,50 @@ impl<'a> Engine<'a> {
                 .extend(more.token_persist_failures);
         }
         Ok(collected)
+    }
+
+    /// cswap's typo guard: once per run, on the first tick where every slot in
+    /// the pass that is not an API-key account has a readable usage dict, warn
+    /// about configured model names that no scoped window reports. `all` never
+    /// warns, and the check never fetches.
+    fn warn_unknown_models(&mut self, entries: &BTreeMap<u32, UsageEntry>, slots: &[u32]) {
+        if !self.model_warning_pending {
+            return;
+        }
+        let wanted: Vec<String> = self
+            .models
+            .iter()
+            .filter(|m| !m.eq_ignore_ascii_case("all"))
+            .cloned()
+            .collect();
+        if wanted.is_empty() {
+            self.model_warning_pending = false;
+            return;
+        }
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for slot in slots {
+            let entry = entries.get(slot);
+            if entry.and_then(|e| e.sentinel) == Some(UsageSentinel::ApiKey) {
+                continue;
+            }
+            let Some(usage) = entry.and_then(UsageEntry::decision_value) else {
+                return; // not every slot is readable yet: try again next tick
+            };
+            seen.extend(usage.scoped.iter().map(|w| w.name.to_ascii_lowercase()));
+        }
+        self.model_warning_pending = false;
+        let missing: Vec<String> = wanted
+            .into_iter()
+            .filter(|m| !seen.contains(&m.to_ascii_lowercase()))
+            .collect();
+        if !missing.is_empty() {
+            self.emit(Event::ConfigWarning {
+                message: format!(
+                    "autoswitch.model: {} matches no account's usage windows — only the 5h/7d limits are being watched for it (typo?)",
+                    missing.join(",")
+                ),
+            });
+        }
     }
 
     fn cooldown_remaining(&self, state: &AutoSwitchState, now: f64) -> Option<f64> {
@@ -2838,5 +2889,111 @@ mod tests {
         );
         assert!(String::from_utf8_lossy(&out).contains("\"event\":\"switch\""));
         assert!(claude.fake.switches.is_empty(), "dry-run");
+    }
+    fn usage_with_pool(five_hour: f64, pool: &str) -> NormalizedUsage {
+        let mut u = usage(five_hour, 10.0, None);
+        u.scoped = vec![crate::model::ScopedWindow {
+            name: pool.to_string(),
+            pct: 10.0,
+            resets_at: None,
+        }];
+        u
+    }
+
+    fn config_warnings(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::ConfigWarning { message } => Some(message.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn model_typo_warns_once_and_known_names_never_do() {
+        let mut fixture = Fixture::claude(&[1, 2]);
+        fixture.seed(1, usage_with_pool(50.0, "Fable"));
+        fixture.seed(2, usage_with_pool(10.0, "Fable"));
+
+        // A typo warns exactly once per run, and the engine keeps watching 5h/7d.
+        let mut settings = defaults();
+        settings.model = Some("Fabel".into());
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let sink_log = log.clone();
+        {
+            let mut engine = Engine::new(
+                &mut fixture.fake,
+                Provider::Claude,
+                settings,
+                true,
+                move |event| sink_log.borrow_mut().push(event.clone()),
+            );
+            assert_eq!(engine.tick(), TickOutcome::NoAction, "50% < 90%");
+            assert_eq!(engine.tick(), TickOutcome::NoAction);
+        }
+        let events = log.borrow().clone();
+        assert_eq!(
+            config_warnings(&events),
+            vec![
+                "autoswitch.model: Fabel matches no account's usage windows — only the 5h/7d limits are being watched for it (typo?)"
+                    .to_string()
+            ],
+            "{events:?}"
+        );
+        assert_eq!(
+            kinds(&events)[..2],
+            ["poll", "config-warning"],
+            "the warning follows the first poll"
+        );
+
+        // A known name, `all`, and a mixed list warn only for the unknown part.
+        for (model, expected) in [
+            ("Fable", Vec::<String>::new()),
+            ("all", Vec::new()),
+            ("FABLE,all", Vec::new()),
+            ("Fable,Opus", vec!["autoswitch.model: Opus matches no account's usage windows — only the 5h/7d limits are being watched for it (typo?)".to_string()]),
+        ] {
+            let mut settings = defaults();
+            settings.model = Some(model.into());
+            let (_, events) = tick(&mut fixture, settings, true);
+            assert_eq!(config_warnings(&events), expected, "model = {model}");
+        }
+
+        // An unreadable slot defers the check instead of guessing.
+        let mut fixture = Fixture::claude(&[1, 2]);
+        fixture.seed(1, usage_with_pool(50.0, "Fable"));
+        fixture.seed_failure(2, "http-500");
+        let mut settings = defaults();
+        settings.model = Some("Fabel".into());
+        let (_, events) = tick(&mut fixture, settings, true);
+        assert!(config_warnings(&events).is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn model_typo_waits_for_readable_usage_then_warns() {
+        let mut fixture = Fixture::claude(&[1, 2]);
+        fixture.seed(1, usage_with_pool(50.0, "Fable"));
+        fixture.seed(2, usage_with_pool(10.0, "Fable"));
+        // A cached measurement cannot make missing credentials readable.
+        credentials::write(&fixture.fake.store, 2, &json!({})).unwrap();
+        let mut settings = defaults();
+        settings.model = Some("Fabel".into());
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let sink_log = log.clone();
+        let mut engine = Engine::new(
+            &mut fixture.fake,
+            Provider::Claude,
+            settings,
+            true,
+            move |event| sink_log.borrow_mut().push(event.clone()),
+        );
+        assert_eq!(engine.tick(), TickOutcome::NoAction);
+        assert!(config_warnings(&log.borrow()).is_empty());
+        credentials::write(engine.facade.store(), 2, &claude_slot(2)).unwrap();
+        assert_eq!(engine.tick(), TickOutcome::NoAction);
+        assert_eq!(config_warnings(&log.borrow()).len(), 1);
+        assert_eq!(engine.tick(), TickOutcome::NoAction);
+        assert_eq!(config_warnings(&log.borrow()).len(), 1);
     }
 }
