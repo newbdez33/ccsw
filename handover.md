@@ -10,7 +10,8 @@
 - export/import 第四阶段已通过 PR #5 合并并发布 `v0.7.0`；README 刷新为 PR #6。
 - Claude reset card（`cedar_ember` 限额重置）显示已实现，版本设为 `v0.7.1`；用量请求改以 `claude-cli/<本机版本> (external, cli) ccsw/<版本>` 身份发送。
 - 仪表盘菜单改为 cswap 的优先级：账号面板完整显示，菜单拿剩余行数并随光标滚动，但最少保留面包屑和光标行（cswap 可缩到零行）。PR #8，版本 `v0.7.2`；发版清单核对时本机 Claude Code 仍为 2.1.294，`FALLBACK_CLI_VERSION` 未变。
-- 当前工作区为 `hraesvelg`；当前分支为 `newbdez33/dashboard-menu-scroll`。
+- reset card 图标改为红心加绿色数字（`♥ 2`）；卡片和 mini 行按终端宽度折行（cswap 的 Rich 折行规则：按空格断行、超长词硬切、续行从卡片首列开始）。分支 `newbdez33/tui-wrap-and-heart`，走 PR 流程。
+- 当前工作区为 `hraesvelg`；当前分支为 `newbdez33/tui-wrap-and-heart`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换
