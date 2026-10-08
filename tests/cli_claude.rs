@@ -381,6 +381,29 @@ fn claude_usage_rows_refresh_and_the_active_login_is_never_refreshed() {
         0,
         "the active login belongs to Claude Code"
     );
+    // The usage request presents as the Claude Code CLI and asks for the
+    // limit-reset block; the one spendable grant lands in the cache as a reset card.
+    let agents = mock.claude_usage_agents();
+    assert!(!agents.is_empty());
+    for agent in &agents {
+        assert!(
+            agent.starts_with("claude-cli/") && agent.contains(" (external, cli) ccsw/"),
+            "{agent}"
+        );
+    }
+    let cache = support::read_json(&cli.ccsw_home.join("cache").join("usage.json"));
+    fn first_reset_credits(value: &serde_json::Value) -> Option<u64> {
+        match value {
+            serde_json::Value::Object(map) => map
+                .get("lastGood")
+                .and_then(|good| good.get("reset_credits"))
+                .and_then(serde_json::Value::as_u64)
+                .or_else(|| map.values().find_map(first_reset_credits)),
+            serde_json::Value::Array(items) => items.iter().find_map(first_reset_credits),
+            _ => None,
+        }
+    }
+    assert_eq!(first_reset_credits(&cache), Some(1), "{cache}");
 
     // Make one the live login (fresh) and leave two inactive with a dead bearer: 401 → refresh → retry.
     cli.write_claude_live_with(

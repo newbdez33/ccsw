@@ -7,8 +7,9 @@
 - 用户已完成旧安装和数据的手动迁移，并确认可用。不实现首次启动迁移，不保留旧环境变量别名，不使用 `purge` 迁移。
 - Claude 自动切换第二阶段已通过 PR #3 合并并发布 `v0.5.0`。
 - Claude session 第三阶段已通过 PR #4 合并并发布 `v0.6.0`。
-- export/import 第四阶段已实现，版本设为 `v0.7.0`；按 PR → CI → squash merge → 标签发布流程交付。
-- 当前工作区为 `hraesvelg`；本阶段分支为 `newbdez33/phase4-implementation`。
+- export/import 第四阶段已通过 PR #5 合并并发布 `v0.7.0`；README 刷新为 PR #6。
+- Claude reset card（`cedar_ember` 限额重置）显示已实现，版本设为 `v0.7.1`；用量请求改以 `claude-cli/<本机版本> (external, cli) ccsw/<版本>` 身份发送。
+- 当前工作区为 `hraesvelg`；本阶段分支为 `newbdez33/claude-reset-cards`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换
@@ -71,6 +72,7 @@ env -u CODEX_HOME cargo test --all
 ```
 
 - 宿主环境设置了 `CODEX_HOME`，测试前必须移除该变量。
+- 发版清单：把 `src/claude/usage.rs` 的 `FALLBACK_CLI_VERSION` 更新为当前 Claude Code 版本（本机 `readlink ~/.local/bin/claude` 或 `npm view @anthropic-ai/claude-code version`），再改 `Cargo.toml` 版本与 CHANGELOG。
 - MSRV 为 Rust 1.88，edition 为 2024。
 - 测试使用临时目录、假 CLI 和本地 mock，禁止访问真实 Keychain 或真实账号数据。
 - 不进入或改名主仓库及 Orca 工作区目录；不新建 worktree，不重写历史，不使用裸 `git stash` / `pop`。

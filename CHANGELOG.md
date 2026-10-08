@@ -3,6 +3,24 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.7.1 — 2026-10-08
+
+### Added
+
+- Claude Code accounts show their saved limit resets (`/limit-reset` grants) as
+  the same green `♠ n` the dashboard uses for Codex reset credits. Claude usage
+  requests ask for the `cedar_ember` block and count the grants that are not
+  paused, have started and have not ended.
+
+### Changed
+
+- Claude usage requests identify as the installed Claude Code
+  (`claude-cli/<version> (external, cli) ccsw/<version>`), the only client
+  Anthropic lists the grants for. The version is read from the `claude`
+  executable's install layout (native installer, Homebrew cask or npm) without
+  starting it; `FALLBACK_CLI_VERSION` in `src/claude/usage.rs` stands in
+  otherwise and is bumped at every release.
+
 ## v0.7.0 — 2026-10-08
 
 ### Added
