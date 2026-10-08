@@ -391,3 +391,10 @@ The source and full MIT notice are recorded in README and NOTICE.
   entries without a provider remain Codex mappings.
 - `run --require-session` refuses the default-login fast path. `env --unset` clears both
   home variables, or just the selected provider's variable.
+- Reserve the profile under the store lock before launch. A fingerprint consume lock
+  coordinates preparation, token refresh and account mutations, including duplicate slots.
+- A new backup generation invalidates old profile credentials after its sessions close.
+  Preflight all affected profiles before account moves or purge; purge removes managed
+  hashed Keychain items and preserves default and external items.
+- `env` prepares a profile without a persistent reservation. Direct CLI launches rely on
+  native PID records; use `run` for protection throughout startup.

@@ -4,7 +4,7 @@ claude-swap — Copyright (c) 2026 Onur Cetinkol — MIT License
   https://github.com/realiti4/claude-swap
   Command grammar, dashboard design, settings/roster/export conventions.
   Session profiles and credential/process guards are adapted from session.py,
-  credentials.py and process_detection.py at commit
+  credentials.py, process_detection.py and switcher.py at commit
   3a4e5c14873eb5b32f182d55c68da98ac8c0db45.
 
 codex-switch — Copyright (c) xjoker — MIT License

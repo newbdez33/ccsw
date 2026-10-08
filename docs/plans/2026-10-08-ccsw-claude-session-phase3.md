@@ -73,3 +73,19 @@ Files: README, handover, changelog, spec, package version and lockfile.
 - Obtain one independent whole-branch review. Fix important findings with a failing regression test, then rerun the suite.
 - Create a normal PR, wait for all CI, squash merge the verified head, tag and publish the merged commit.
 - Verify release artifacts and checksums. Remove only this task's temporary files.
+
+## Implementation validation
+
+Tasks 1–3 are complete. One independent whole-branch review found five important
+ownership issues. Regression tests first reproduced each issue; one fix pass added
+atomic launch reservations, fingerprint consume locks, mutation preflight, stale
+profile invalidation, and managed Keychain cleanup. Duplicate slots share one
+mutation lock. No minor findings were deferred.
+
+The final local gates pass: 484 tests, formatting, Clippy with warnings denied,
+a locked build, and eight isolated CLI smoke checks. Tests use temporary homes,
+fake CLI and Keychain implementations, and local HTTP servers.
+
+Decisions: preserve POSIX exec and reconcile on later commands; conservatively
+inspect managed PID records; use the provided checkout and temporary ledger;
+clear both provider homes for a bare `env --unset`.

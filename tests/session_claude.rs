@@ -190,3 +190,44 @@ fn sharing_manifest_cannot_remove_a_path_outside_the_profile() {
     prepare_profile(&store, &roster, 2, ShareOptions::default()).unwrap();
     assert!(outside.is_symlink());
 }
+
+#[test]
+fn planning_a_launch_reserves_the_profile_until_launch_is_dropped() {
+    use ccsw::session::{HostEnv, RunTarget, plan_launch};
+    let (dir, store, roster) = fixture();
+    let host = HostEnv {
+        claude: Some(dir.path().join("fake-claude")),
+        ..HostEnv::default()
+    };
+    let launch = plan_launch(
+        &store,
+        &roster,
+        &host,
+        RunTarget::Slot(2),
+        vec![],
+        ShareOptions::default(),
+        false,
+    )
+    .unwrap();
+    let profile = store.paths.session_dir(2, "session@example.com");
+    assert!(!ccsw::claude::session::is_quiescent(&profile));
+    drop(launch);
+    assert!(ccsw::claude::session::is_quiescent(&profile));
+}
+
+#[test]
+fn a_stale_roster_cannot_seed_a_replacement_accounts_credentials() {
+    let (_dir, store, old_roster) = fixture();
+    let mut new_roster = old_roster.clone();
+    let mut replacement = AccountRecord::new("replacement@example.com");
+    replacement.provider = Provider::Claude;
+    replacement.organization_uuid = "other-org".into();
+    new_roster.add_record(2, replacement);
+    roster::write(&store.paths, &new_roster).unwrap();
+    let mut fresh = credentials::read(&store, 2).unwrap().unwrap();
+    fresh["oauthAccount"] =
+        json!({"emailAddress": "replacement@example.com", "organizationUuid": "other-org"});
+    credentials::write(&store, 2, &fresh).unwrap();
+    assert!(prepare_profile(&store, &old_roster, 2, ShareOptions::default()).is_err());
+    assert!(!store.paths.session_dir(2, "session@example.com").exists());
+}

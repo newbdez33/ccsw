@@ -29,6 +29,10 @@ All notable changes to `ccsw` are recorded here. The format follows
   do not read or change the default managed API-key item.
 - Check the file credential-store setting only for commands that use Codex.
 - Limit sharing manifest cleanup to known shared item names.
+- Reserve session profiles before launch and coordinate token consumption with
+  in-flight refreshes, including duplicate credentials in other slots.
+- Invalidate stale profiles after a new login, preflight both slots before an
+  account move, and remove managed profile Keychain items during a safe purge.
 
 ## v0.5.0 — 2026-10-08
 

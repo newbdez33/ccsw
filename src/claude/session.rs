@@ -1,6 +1,7 @@
 //! Managed profile credentials. A running profile owns its refresh token.
 //!
-//! Ported from claude-swap's session.py and process_detection.py at 3a4e5c1.
+//! Ported from claude-swap's session.py, process_detection.py and switcher.py
+//! at 3a4e5c1.
 //! Copyright (c) 2026 Onur Cetinkol. MIT license; see NOTICE.
 
 use std::fs;
@@ -13,10 +14,11 @@ use unicode_normalization::UnicodeNormalization;
 use super::credentials::{ClaudeCredential, CredentialKind, OauthAccount, SlotFile};
 use super::keychain::{Keychain, SecurityCli, account_name};
 use crate::errors::{CcswError, Result};
-use crate::fsutil::{read_json, write_json_private};
+use crate::fsutil::{FileLock, read_json, write_json_private};
 use crate::model::AccountRecord;
 use crate::provider::Provider;
 use crate::store::{Store, credentials, ensure_private_dir};
+use std::time::Duration;
 
 pub const SHARED_ITEMS: &[&str] = &[
     "settings.json",
@@ -177,6 +179,9 @@ pub(crate) fn reconcile_locked(
         return Ok(());
     }
     let profile = store.paths.session_dir(slot, &record.email);
+    if is_stale(store, slot, &profile)? {
+        return Ok(());
+    }
     let Some(incoming) = read(store, &profile, cli)? else {
         return Ok(());
     };
@@ -190,6 +195,9 @@ pub(crate) fn reconcile_locked(
         return Ok(());
     };
     let stored = SlotFile::from_value(&saved)?;
+    if !matches_record(&stored, record) {
+        return Err(failure(&profile, "stored credential identity changed"));
+    }
     if incoming.credential.is_newer_than(&stored.credential) {
         credentials::write(store, slot, &incoming.to_value())?;
     }
@@ -224,83 +232,280 @@ pub(crate) fn current(
     Ok(value)
 }
 
+/// cswap's consume lock, keyed by fingerprint so duplicate slots coordinate too.
+/// The caller retains it through token persistence or profile reservation.
+pub(crate) fn consume_lock(
+    store: &Store,
+    credential: &ClaudeCredential,
+    timeout: Duration,
+) -> Result<FileLock> {
+    let fingerprint = credential
+        .fingerprint()
+        .ok_or_else(|| CcswError::session("The credential has no fingerprint."))?;
+    let path = store
+        .paths
+        .credentials_dir()
+        .join(format!(".consume-{}.lock", fingerprint.replace(':', "-")));
+    FileLock::acquire(&path, timeout)
+}
+
+pub(crate) fn mutation_lock(store: &Store, slot: u32) -> Result<Option<FileLock>> {
+    Ok(mutation_locks(store, [slot])?.pop())
+}
+
+pub(crate) fn mutation_locks(
+    store: &Store,
+    slots: impl IntoIterator<Item = u32>,
+) -> Result<Vec<FileLock>> {
+    // Mutation callers already hold the store lock. Never wait here for a
+    // consumer that needs that lock to persist its result.
+    let mut seen = std::collections::BTreeSet::new();
+    let mut locks = Vec::new();
+    for slot in slots {
+        let Some(value) = credentials::read(store, slot)? else {
+            continue;
+        };
+        let file = SlotFile::from_value(&value)?;
+        if seen.insert(file.credential.fingerprint()) {
+            locks.push(
+                consume_lock(store, &file.credential, Duration::ZERO).map_err(|_| {
+                    CcswError::session(
+                        "A credential refresh is in progress; retry the account change.",
+                    )
+                })?,
+            );
+        }
+    }
+    Ok(locks)
+}
+
+fn stale_marker(profile: &Path) -> PathBuf {
+    profile.parent().expect("profile parent").join(format!(
+        ".{}.ccsw-stale-credentials",
+        profile.file_name().expect("profile name").to_string_lossy()
+    ))
+}
+
+fn is_stale(store: &Store, slot: u32, profile: &Path) -> Result<bool> {
+    let Some(marker) = read_json(&stale_marker(profile)).map_err(|err| failure(profile, err))?
+    else {
+        return Ok(false);
+    };
+    let expected = marker
+        .get("fingerprint")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| failure(profile, "invalid stale marker"))?;
+    let stored = credentials::read(store, slot)?.and_then(|v| SlotFile::from_value(&v).ok());
+    Ok(stored
+        .and_then(|file| file.credential.fingerprint())
+        .as_deref()
+        == Some(expected))
+}
+
+/// Port of cswap's deferred invalidation. Write the marker before the backup:
+/// if that write fails, its fingerprint does not match and the profile survives.
+pub(crate) fn mark_backup_replacement(
+    store: &Store,
+    slot: u32,
+    record: &AccountRecord,
+    incoming: &serde_json::Value,
+) -> Result<()> {
+    if record.provider != Provider::Claude {
+        return Ok(());
+    }
+    let profile = store.paths.session_dir(slot, &record.email);
+    if !profile.exists() {
+        return Ok(());
+    }
+    let next = SlotFile::from_value(incoming)?.credential.fingerprint();
+    let previous = credentials::read(store, slot)?
+        .and_then(|v| SlotFile::from_value(&v).ok())
+        .and_then(|f| f.credential.fingerprint());
+    if next != previous {
+        write_json_private(&stale_marker(&profile), &json!({"fingerprint": next}))
+            .map_err(|err| failure(&profile, err))?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) struct LaunchReservation {
+    marker: PathBuf,
+}
+
+impl Drop for LaunchReservation {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.marker);
+    }
+}
+
+fn mark_launch(profile: &Path) -> Result<LaunchReservation> {
+    let marker = profile
+        .join(".ccsw-launches")
+        .join(format!("{}.json", std::process::id()));
+    write_json_private(&marker, &json!({"pid": std::process::id()}))
+        .map_err(|err| failure(profile, err))?;
+    Ok(LaunchReservation { marker })
+}
+
 pub(crate) fn prepare(
     store: &Store,
     slot: u32,
     record: &AccountRecord,
     cli: &dyn SecurityCli,
-) -> Result<PathBuf> {
-    let profile = store.paths.session_dir(slot, &record.email);
-    let _lock = store.lock()?;
-    reconcile_locked(store, slot, record, cli)?;
-    let stored = credentials::read(store, slot)?
-        .ok_or_else(|| failure(&profile, "stored credentials are missing"))?;
-    let file = SlotFile::from_value(&stored)?;
-    if !matches!(
-        file.credential.kind(),
-        CredentialKind::OAuth | CredentialKind::SetupToken
-    ) {
-        return Err(failure(
-            &profile,
-            "session mode requires an OAuth login or setup token",
-        ));
-    }
-    if !is_quiescent(&profile) {
-        let current = current(store, slot, record, cli)?
-            .ok_or_else(|| failure(&profile, "a running session has no readable credentials"))?;
-        if file.credential.is_newer_than(&current.credential) {
-            return Err(failure(
-                &profile,
-                "stored credentials changed; close the running session before starting another",
+    opts: crate::session::ShareOptions,
+    launch: bool,
+) -> Result<crate::session::Prepared> {
+    // Waiting for a refresh can advance the backup generation. Retry with its
+    // new fingerprint before taking the store lock; never POST under that lock.
+    for _ in 0..3 {
+        let snapshot = credentials::read(store, slot)?
+            .ok_or_else(|| CcswError::session("Stored credentials are missing."))?;
+        let snapshot = SlotFile::from_value(&snapshot)?;
+        let _consume = consume_lock(store, &snapshot.credential, FileLock::DEFAULT_TIMEOUT)?;
+        let _store = store.lock()?;
+        if let Some(roster) = crate::store::roster::read(&store.paths)?
+            && !roster.record(slot).is_some_and(|current| {
+                current.provider == record.provider && current.identity() == record.identity()
+            })
+        {
+            return Err(CcswError::session(
+                "The account changed while preparing the profile; retry.",
             ));
         }
-        return Ok(profile);
+        let profile = store.paths.session_dir(slot, &record.email);
+        if is_stale(store, slot, &profile)? {
+            require_quiescent(&profile)?;
+            if store.paths.keychain_enabled {
+                Keychain::new(cli)
+                    .delete_password(
+                        &keychain_service(&profile.to_string_lossy()),
+                        &account_name(),
+                    )
+                    .map_err(|err| failure(&profile, err))?;
+            }
+            match fs::remove_file(profile.join(".credentials.json")) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(failure(&profile, err)),
+            }
+            fs::remove_file(stale_marker(&profile)).map_err(|err| failure(&profile, err))?;
+        }
+        reconcile_locked(store, slot, record, cli)?;
+        let saved = credentials::read(store, slot)?
+            .ok_or_else(|| failure(&profile, "stored credentials are missing"))?;
+        let file = SlotFile::from_value(&saved)?;
+        if !matches_record(&file, record) {
+            return Err(failure(
+                &profile,
+                "stored credential identity changed; retry",
+            ));
+        }
+        if file.credential.fingerprint() != snapshot.credential.fingerprint() {
+            continue;
+        }
+        if !matches!(
+            file.credential.kind(),
+            CredentialKind::OAuth | CredentialKind::SetupToken
+        ) {
+            return Err(failure(
+                &profile,
+                "session mode requires an OAuth login or setup token",
+            ));
+        }
+        let current = current(store, slot, record, cli)?;
+        let same = current.as_ref().is_some_and(|current| {
+            current.credential.fingerprint() == file.credential.fingerprint()
+        });
+        if !is_quiescent(&profile) && !same {
+            return Err(failure(
+                &profile,
+                "stored credentials changed or are unreadable; close the running session before starting another",
+            ));
+        }
+        if !same {
+            seed(store, &profile, &file, cli)?;
+        }
+        let notices = crate::session::sync_claude_sharing(store, &profile, opts)?;
+        let reservation = if launch {
+            Some(mark_launch(&profile)?)
+        } else {
+            None
+        };
+        return Ok(crate::session::Prepared {
+            slot,
+            email: record.email.clone(),
+            profile,
+            notices,
+            reservation,
+        });
     }
-    // cswap reuses the existing profile when it holds the same generation.
-    if current(store, slot, record, cli)?
-        .is_some_and(|current| current.credential.fingerprint() == file.credential.fingerprint())
-    {
-        return Ok(profile);
-    }
+    Err(CcswError::session(
+        "Credentials changed repeatedly while preparing the session; retry.",
+    ))
+}
+
+fn seed(store: &Store, profile: &Path, file: &SlotFile, cli: &dyn SecurityCli) -> Result<()> {
     ensure_private_dir(&store.paths.sessions_dir())?;
-    ensure_private_dir(&profile)?;
-    // Keychain shadows the plaintext seed. Refuse on failure rather than
-    // silently launching with a stale credential.
+    ensure_private_dir(profile)?;
     if store.paths.keychain_enabled {
         Keychain::new(cli)
             .delete_password(
                 &keychain_service(&profile.to_string_lossy()),
                 &account_name(),
             )
-            .map_err(|err| failure(&profile, err))?;
+            .map_err(|err| failure(profile, err))?;
     }
-    write_json_private(&profile.join(".credentials.json"), &file.credential.0)
-        .map_err(|err| failure(&profile, err))?;
     let config_path = if profile.join(".config.json").exists() {
         profile.join(".config.json")
     } else {
         profile.join(".claude.json")
     };
     let mut config = read_json(&config_path)
-        .map_err(|err| failure(&profile, err))?
+        .map_err(|err| failure(profile, err))?
         .unwrap_or_else(|| json!({}));
     let object = config
         .as_object_mut()
-        .ok_or_else(|| failure(&profile, "session config is not an object"))?;
-    object.insert("oauthAccount".into(), file.oauth_account.0);
+        .ok_or_else(|| failure(profile, "session config is not an object"))?;
+    object.insert("oauthAccount".into(), file.oauth_account.0.clone());
     object.insert("hasCompletedOnboarding".into(), json!(true));
     object.entry("theme").or_insert_with(|| json!("dark"));
-    write_json_private(&config_path, &config).map_err(|err| failure(&profile, err))?;
-    Ok(profile)
+    write_json_private(&profile.join(".credentials.json"), &file.credential.0)
+        .map_err(|err| failure(profile, err))?;
+    write_json_private(&config_path, &config).map_err(|err| failure(profile, err))?;
+    Ok(())
 }
 
-pub(crate) fn mark_launch(profile: &Path) -> Result<PathBuf> {
-    let marker = profile
-        .join(".ccsw-launches")
-        .join(format!("{}.json", std::process::id()));
-    write_json_private(&marker, &json!({"pid": std::process::id()}))
-        .map_err(|err| failure(profile, err))?;
-    Ok(marker)
+pub(crate) fn delete_keychain(store: &Store, profile: &Path, cli: &dyn SecurityCli) -> Result<()> {
+    if store.paths.keychain_enabled {
+        Keychain::new(cli)
+            .delete_password(
+                &keychain_service(&profile.to_string_lossy()),
+                &account_name(),
+            )
+            .map_err(|err| failure(profile, err))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn materialize_slot(
+    store: &Store,
+    slot: u32,
+    profile: &Path,
+    cli: &dyn SecurityCli,
+) -> Result<()> {
+    if is_stale(store, slot, profile)? {
+        let value = credentials::read(store, slot)?
+            .ok_or_else(|| failure(profile, "stored credentials are missing"))?;
+        let file = SlotFile::from_value(&value)?;
+        write_json_private(&profile.join(".credentials.json"), &file.credential.0)
+            .map_err(|err| failure(profile, err))?;
+        delete_keychain(store, profile, cli)?;
+        fs::remove_file(stale_marker(profile)).map_err(|err| failure(profile, err))?;
+        Ok(())
+    } else {
+        materialize(store, profile, cli)
+    }
 }
 
 /// Retain rotated Keychain credentials in the file before moving or removing a
@@ -469,7 +674,15 @@ mod tests {
         let fresh = json!({"claudeAiOauth": {"accessToken": "new", "refreshToken": "new-rt", "expiresAt": 2000}}).to_string();
         let cli = MemoryKeychain::default();
         cli.0.borrow_mut().insert(service.clone(), fresh.clone());
-        prepare(&store, 2, &record, &cli).unwrap();
+        prepare(
+            &store,
+            2,
+            &record,
+            &cli,
+            crate::session::ShareOptions::default(),
+            false,
+        )
+        .unwrap();
         assert_eq!(
             credentials::read(&store, 2).unwrap().unwrap()["claudeAiOauth"]["refreshToken"],
             "new-rt"
@@ -483,7 +696,17 @@ mod tests {
         store.paths.keychain_enabled = true;
         let (record, profile) = seed(&store);
         let before = fs::read(profile.join(".credentials.json")).unwrap();
-        assert!(prepare(&store, 2, &record, &FakeSecurity { failing: true }).is_err());
+        assert!(
+            prepare(
+                &store,
+                2,
+                &record,
+                &FakeSecurity { failing: true },
+                crate::session::ShareOptions::default(),
+                false
+            )
+            .is_err()
+        );
         assert_eq!(fs::read(profile.join(".credentials.json")).unwrap(), before);
     }
 

@@ -206,6 +206,12 @@ Windows also captures them after the child exits. A running profile cannot be
 switched into the default login, removed, or moved. Unreadable credentials or PID
 records block those operations until they can be checked. If `/login` changes a
 profile's identity, save that login separately before reusing its original slot.
+`run` reserves the profile before the CLI starts and waits for any in-flight
+credential refresh. `env` only prepares the profile and prints shell commands;
+it does not reserve the shell. After a direct CLI launch, ownership checks depend
+on the CLI's PID records. Prefer `run` when other commands can change the account.
+Saving a new login invalidates the old profile credentials after its sessions
+close. `purge` also refuses running profiles and removes their managed Keychain items.
 
 ### Dashboard (TUI)
 

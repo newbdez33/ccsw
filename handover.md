@@ -34,10 +34,13 @@
 - 同一目录可映射两种 provider；旧映射文件按 Codex 读取。`unmap DIR PROVIDER` 只删除一个，省略 provider 删除两个。
 - Claude profile 使用独立配置目录和按原始路径哈希的 Keychain 项；共享默认目录的设置、指令与扩展，可选择合并并共享历史。
 - 保留 POSIX `exec`：在后续命令中回收轮换凭据；Windows 在子进程退出后也回收。只采纳身份匹配且更新的 token。
-- 运行中的 profile 和相同 token 副本不被刷新；切换、删除、移动前检查会话占用。凭据或 PID 记录不可读时保守拒绝。
+- 运行中的 profile 和相同 token 副本不被刷新；从准备到启动持有预约，网络刷新通过凭据指纹锁协调。切换、删除、移动和 purge 前检查会话占用，多个槽位共用凭据时只锁一次。凭据或 PID 记录不可读时保守拒绝。
+- 重新登录后将旧 profile 标为失效，避免它覆盖新备份；会话退出后再替换。purge 清理托管 profile 的 Keychain 项，不影响默认或外部 profile。
+- `env` 仅准备配置和输出命令，不预约整个 shell；直接启动 CLI 后依赖其 PID 记录。需要完整启动保护时使用 `run`。
 - 同账号默认登录保留直接启动行为；`--require-session` 可拒绝该路径。`env --unset` 清除两种 home，指定 provider 可只清除一个。
 - 自定义 Claude home 不读写默认 OAuth Keychain 项或默认托管 API-key 项。
-- 本机门禁：475 项测试、Clippy、格式和锁定依赖构建通过，8 项隔离 CLI smoke 通过；跨平台结果以本次 PR 和 Actions 为准。
+- 独立审查的五项重要问题均已补充失败回归测试并修复，无延期小问题。最终验证和跨平台结果以本次 PR 和 Actions 为准。
+- 最终本机门禁：484 项测试、Clippy、格式和锁定依赖构建通过，8 项隔离 CLI smoke 通过。
 
 ## 后续阶段
 

@@ -242,6 +242,7 @@ impl RunTarget {
 /// A profile ready for launch.
 #[derive(Debug)]
 pub struct Prepared {
+    pub(crate) reservation: Option<crate::claude::session::LaunchReservation>,
     pub slot: u32,
     pub email: String,
     pub profile: PathBuf,
@@ -258,6 +259,16 @@ pub fn prepare_profile(
     slot: u32,
     opts: ShareOptions,
 ) -> Result<Prepared> {
+    prepare_profile_inner(store, roster, slot, opts, false)
+}
+
+fn prepare_profile_inner(
+    store: &Store,
+    roster: &Roster,
+    slot: u32,
+    opts: ShareOptions,
+    launch: bool,
+) -> Result<Prepared> {
     if opts.share_history && cfg!(windows) {
         return Err(CcswError::session(SHARE_HISTORY_WINDOWS));
     }
@@ -265,26 +276,14 @@ pub fn prepare_profile(
         .record(slot)
         .ok_or_else(|| CcswError::AccountNotFound(format!("Account-{slot} does not exist")))?;
     if record.provider == Provider::Claude {
-        let profile = crate::claude::session::prepare(
+        return crate::claude::session::prepare(
             store,
             slot,
             record,
             &crate::claude::keychain::SystemSecurity,
-        )?;
-        let notices = sync_sharing_items(
-            &profile,
-            &store.paths.claude_default_home,
             opts,
-            crate::claude::session::SHARED_ITEMS,
-            crate::claude::session::HISTORY_ITEMS,
-            true,
-        )?;
-        return Ok(Prepared {
-            slot,
-            email: record.email.clone(),
-            profile,
-            notices,
-        });
+            launch,
+        );
     }
     let profile = store.paths.session_dir(slot, &record.email);
     let mut notices = Vec::new();
@@ -321,6 +320,7 @@ pub fn prepare_profile(
     }
     notices.extend(sync_sharing(&profile, &source, opts)?);
     Ok(Prepared {
+        reservation: None,
         slot,
         email: record.email.clone(),
         profile,
@@ -363,6 +363,21 @@ fn manifest_items(profile: &Path) -> Vec<String> {
 /// prune items the manifest lists that are no longer active. Returns notices.
 pub fn sync_sharing(profile: &Path, source: &Path, opts: ShareOptions) -> Result<Vec<String>> {
     sync_sharing_items(profile, source, opts, SHARED_ITEMS, HISTORY_ITEMS, false)
+}
+
+pub(crate) fn sync_claude_sharing(
+    store: &Store,
+    profile: &Path,
+    opts: ShareOptions,
+) -> Result<Vec<String>> {
+    sync_sharing_items(
+        profile,
+        &store.paths.claude_default_home,
+        opts,
+        crate::claude::session::SHARED_ITEMS,
+        crate::claude::session::HISTORY_ITEMS,
+        true,
+    )
 }
 
 fn sync_sharing_items(
@@ -515,6 +530,7 @@ fn copy_recursive(src: &Path, dest: &Path) -> io::Result<()> {
 
 /// A launch ready to exec: the child command plus the lines to print first.
 pub struct Launch {
+    reservation: Option<crate::claude::session::LaunchReservation>,
     pub command: Command,
     pub notices: Vec<String>,
     /// The profile slot when the child runs in session mode.
@@ -570,6 +586,7 @@ pub fn plan_launch(
                 command,
                 notices: notice.into_iter().collect(),
                 session: None,
+                reservation: None,
             });
         }
         RunTarget::Slot(slot) => slot,
@@ -596,6 +613,7 @@ pub fn plan_launch(
                 command,
                 notices,
                 session: None,
+                reservation: None,
             });
         }
         Some(preset) => notices.push(printer::yellowed(&format!(
@@ -603,7 +621,7 @@ pub fn plan_launch(
         ))),
         None => {}
     }
-    let prepared = prepare_profile(store, roster, slot, opts)?;
+    let prepared = prepare_profile_inner(store, roster, slot, opts, true)?;
     notices.extend(prepared.notices);
     let overrides = host.overrides(provider);
     if !overrides.is_empty() {
@@ -628,6 +646,7 @@ pub fn plan_launch(
         command,
         notices,
         session: Some((slot, prepared.profile)),
+        reservation: prepared.reservation,
     })
 }
 
@@ -637,25 +656,20 @@ pub fn exec_or_wait(store: &Store, mut launch: Launch) -> Result<i32> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // The fold-back happens at the next bootstrap: exec never returns.
-        let marker = mark_launch_if_needed(store, &launch)?;
+        // The reservation survives exec; this PID becomes the child.
+        let _ = store;
         let err = launch.command.exec();
-        if let Some(marker) = marker {
-            let _ = fs::remove_file(marker);
-        }
+        drop(launch.reservation.take());
         Err(CcswError::session(format!(
             "could not launch the selected CLI: {err}"
         )))
     }
     #[cfg(not(unix))]
     {
-        let marker = mark_launch_if_needed(store, &launch)?;
         let status = launch.command.status().map_err(|err| {
             CcswError::session(format!("could not launch the selected CLI: {err}"))
         })?;
-        if let Some(marker) = marker {
-            let _ = fs::remove_file(marker);
-        }
+        drop(launch.reservation.take());
         if let Some((slot, profile)) = &launch.session
             && let Err(err) = fold_back_provider(store, *slot, profile)
         {
@@ -663,20 +677,6 @@ pub fn exec_or_wait(store: &Store, mut launch: Launch) -> Result<i32> {
         }
         Ok(status.code().unwrap_or(1))
     }
-}
-
-fn mark_launch_if_needed(store: &Store, launch: &Launch) -> Result<Option<PathBuf>> {
-    let Some((slot, profile)) = &launch.session else {
-        return Ok(None);
-    };
-    let roster = crate::store::roster::read_or_empty(&store.paths)?;
-    if roster
-        .record(*slot)
-        .is_some_and(|r| r.provider == Provider::Claude)
-    {
-        return crate::claude::session::mark_launch(profile).map(Some);
-    }
-    Ok(None)
 }
 
 #[cfg(not(unix))]
