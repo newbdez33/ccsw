@@ -655,6 +655,22 @@ fn export_claude_active_prefers_the_live_login_only_when_it_matches() {
     // Another identity (same email, other org) is ignored.
     write_claude_live(&fx, &live("crt-z"), &config("c@example.com", "org-z"));
     assert_eq!(refresh(&export(&fx), 1), "crt-c");
+    // The same identity but another credential kind (Claude Code moved to a
+    // managed key while `oauthAccount` lingered) keeps the stored OAuth login.
+    let mut key_config = config("c@example.com", "org-c");
+    key_config["primaryApiKey"] = json!("sk-ant-api03-live");
+    write_claude_live(
+        &fx,
+        &json!({"mcpOAuth": {"srv": {"accessToken": "m"}}}),
+        &key_config,
+    );
+    let value = export(&fx);
+    assert_eq!(refresh(&value, 1), "crt-c");
+    assert!(
+        value["accounts"][1]["credentials"]
+            .get("primaryApiKey")
+            .is_none()
+    );
     // Garbage live files are ignored.
     fs::write(fx.paths.claude_credentials_file(), "nope").unwrap();
     assert_eq!(refresh(&export(&fx), 1), "crt-c");
@@ -1570,6 +1586,30 @@ fn import_keeps_v1_ccsw_envelopes_codex_and_defaults_v2_providers() {
     import_value(&fx, &v1, false).unwrap();
     assert_eq!(roster_of(&fx).record(1).unwrap().provider, Provider::Codex);
     assert_eq!(roster_of(&fx).active_account_number, Some(1));
+
+    // An explicit `provider` in a v1 file is honoured (ccsw never wrote one).
+    let fx = fixture();
+    let v1 = envelope(
+        vec![json!({
+            "number": 1, "provider": "claude", "email": "c@example.com",
+            "organizationUuid": "org-c",
+            "credentials": {"claudeAiOauth": {"accessToken": "a", "refreshToken": "r"}}
+        })],
+        None,
+    );
+    import_value(&fx, &v1, false).unwrap();
+    assert_eq!(roster_of(&fx).record(1).unwrap().provider, Provider::Claude);
+    assert_eq!(
+        slot_creds(&fx, 1)["oauthAccount"]["emailAddress"],
+        "c@example.com"
+    );
+    let mut bad = v1.clone();
+    bad["accounts"][0]["provider"] = json!("gemini");
+    let err = import_value(&fx, &bad, false).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "provider for c@example.com must be \"codex\" or \"claude\", got 'gemini'"
+    );
 
     // v2 without `provider` means Codex, as in the roster.
     let fx = fixture();

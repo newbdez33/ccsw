@@ -406,7 +406,9 @@ The source and full MIT notice are recorded in README and NOTICE.
   locally. cswap's `activeAccountNumber` seeds the Claude side, `0` meaning unset.
 - Flavor is decided from the root: `version` 2; `version` 1 with `ccswVersion` or
   `cswitchVersion` is a ccsw v1 file (Codex); `version` 1 with `swapVersion` alone is a
-  cswap file (Claude). A v2 account without `provider` is Codex, as in the roster.
+  cswap file (Claude). An entry without `provider` takes the flavor's default (Codex for
+  ccsw files, as in the roster); an explicit `provider` is honoured in every flavor. The
+  active Claude login is exported only when its credential kind matches the snapshot.
 - Claude entries keep only the login part of `credentials`; `oauthAccount` comes from the
   slot file, else `config.oauthAccount`, else the entry's own fields. Credentials without
   a login (`claudeAiOauth` / `primaryApiKey`) are refused. Claude emails are lowercased,

@@ -325,8 +325,10 @@ pub fn export_accounts(
 
 /// The active slot of each provider exports the live login when it is the same
 /// identity (the freshest tokens); everything else comes from the stored
-/// snapshot. A Claude live login contributes its login part only; the slot's
-/// stored `oauthAccount` stays.
+/// snapshot. A Claude live login contributes its login part only, and only
+/// when it is the same kind of credential as the snapshot (Claude Code can
+/// move to a managed key while `oauthAccount` lingers); the slot's stored
+/// `oauthAccount` stays.
 fn export_credentials(
     store: &Store,
     roster: &Roster,
@@ -360,6 +362,7 @@ fn export_credentials(
                     .identity()
                     .is_some_and(|identity| identity == record.identity())
                 && let Ok(file) = SlotFile::from_value(&stored)
+                && credential.kind() == file.credential.kind()
             {
                 return Ok(Some(
                     SlotFile::new(credential, file.oauth_account).to_value(),
@@ -410,9 +413,11 @@ fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
 enum Flavor {
     /// `version: 2` — `provider` per account (absent means Codex).
     V2,
-    /// `version: 1` with `ccswVersion` / `cswitchVersion`: every account is Codex.
+    /// `version: 1` with `ccswVersion` / `cswitchVersion`: accounts are Codex
+    /// unless an entry says otherwise (ccsw never wrote `provider` in v1).
     CcswV1,
-    /// `version: 1` from cswap (`swapVersion`, no ccsw marker): every account is Claude.
+    /// `version: 1` from cswap (`swapVersion`, no ccsw marker): accounts are
+    /// Claude unless an entry says otherwise.
     Cswap,
 }
 
@@ -717,18 +722,17 @@ fn validate_entries(
                 )));
             }
         };
-        let provider = match flavor {
-            Flavor::CcswV1 => Provider::Codex,
-            Flavor::Cswap => Provider::Claude,
-            Flavor::V2 => match entry.get("provider") {
-                None | Some(Value::Null) => Provider::Codex,
-                Some(value) => serde_json::from_value::<Provider>(value.clone()).map_err(|_| {
-                    CcswError::transfer(format!(
-                        "provider for {email} must be \"codex\" or \"claude\", got {}",
-                        python_repr(Some(value))
-                    ))
-                })?,
+        let provider = match entry.get("provider") {
+            None | Some(Value::Null) => match flavor {
+                Flavor::V2 | Flavor::CcswV1 => Provider::Codex,
+                Flavor::Cswap => Provider::Claude,
             },
+            Some(value) => serde_json::from_value::<Provider>(value.clone()).map_err(|_| {
+                CcswError::transfer(format!(
+                    "provider for {email} must be \"codex\" or \"claude\", got {}",
+                    python_repr(Some(value))
+                ))
+            })?,
         };
         // Claude identities are lowercase everywhere (`OauthAccount::identity`).
         let email = match provider {
