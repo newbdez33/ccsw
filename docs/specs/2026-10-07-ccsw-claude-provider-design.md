@@ -398,3 +398,21 @@ The source and full MIT notice are recorded in README and NOTICE.
   hashed Keychain items and preserves default and external items.
 - `env` prepares a profile without a persistent reservation. Direct CLI launches rely on
   native PID records; use `run` for protection throughout startup.
+
+## Phase 4 implementation notes (2026-10-08)
+
+- The envelope adds `activeByProvider` (the roster's name, §5) beside
+  `activeAccountNumber`; import seeds each provider's active slot only when it is unset
+  locally. cswap's `activeAccountNumber` seeds the Claude side, `0` meaning unset.
+- Flavor is decided from the root: `version` 2; `version` 1 with `ccswVersion` or
+  `cswitchVersion` is a ccsw v1 file (Codex); `version` 1 with `swapVersion` alone is a
+  cswap file (Claude). A v2 account without `provider` is Codex, as in the roster.
+- Claude entries keep only the login part of `credentials`; `oauthAccount` comes from the
+  slot file, else `config.oauthAccount`, else the entry's own fields. Credentials without
+  a login (`claudeAiOauth` / `primaryApiKey`) are refused. Claude emails are lowercased,
+  the identity rule of `OauthAccount::identity`.
+- Export reconciles session-profile tokens (`claude::session::reconcile`) before reading a
+  Claude snapshot and reports a failed reconcile as a warning while exporting the snapshot.
+- Import overwrite of a Claude slot takes the fingerprint consume lock, writes the stale
+  profile marker and warns about a live profile instead of refusing; an unparseable stored
+  snapshot is refused (uncertain ownership).

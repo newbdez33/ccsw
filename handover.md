@@ -6,8 +6,9 @@
 - 改名已通过 PR #1 合并；PR #2 完成 `v0.4.0` 发布。四个平台的归档和校验文件已验证。
 - 用户已完成旧安装和数据的手动迁移，并确认可用。不实现首次启动迁移，不保留旧环境变量别名，不使用 `purge` 迁移。
 - Claude 自动切换第二阶段已通过 PR #3 合并并发布 `v0.5.0`。
-- Claude session 第三阶段已实现，版本设为 `v0.6.0`；按 PR → CI → squash merge → 标签发布流程交付。
-- 当前工作区为 `cabezon`；本阶段分支为 `newbdez33/claude-session-phase3`。
+- Claude session 第三阶段已通过 PR #4 合并并发布 `v0.6.0`。
+- export/import 第四阶段已实现，版本设为 `v0.7.0`；按 PR → CI → squash merge → 标签发布流程交付。
+- 当前工作区为 `hraesvelg`；本阶段分支为 `newbdez33/hraesvelg`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换
@@ -42,11 +43,22 @@
 - 独立审查的五项重要问题均已补充失败回归测试并修复，无延期小问题。最终验证和跨平台结果以本次 PR 和 Actions 为准。
 - 最终本机门禁：484 项测试、Clippy、格式和锁定依赖构建通过，8 项隔离 CLI smoke 通过。
 
+## 已完成：export/import v2 与 `.cswap` 导入
+
+- 计划：`docs/plans/2026-10-08-ccsw-claude-transfer-phase4.md`，三项任务均完成。
+- 规格：`docs/specs/2026-10-07-ccsw-claude-provider-design.md` §11 及文末第四阶段实现说明。
+- 导出写 `version: 2`：每个账号带 `provider`，根对象新增 `activeByProvider`（与 roster 同名），`activeAccountNumber` 仍为 Codex 活跃槽位；Claude 凭据即槽位文件对象。活跃 Claude 账号身份匹配时导出实时登录的 token 部分，导出前先回收 session profile 中轮换的 token。
+- 导入按根对象判断来源：`version` 2；`version` 1 且带 `ccswVersion`/`cswitchVersion` 为旧 ccsw 文件（全部 Codex）；`version` 1 仅带 `swapVersion` 为 cswap 文件（全部 Claude）。v2 条目缺少 `provider` 视为 Codex。
+- Claude 条目只保留凭据的登录部分；`oauthAccount` 依次取自槽位文件、`config.oauthAccount`、条目自身字段；无登录内容的凭据拒绝导入；邮箱统一小写（与 `OauthAccount::identity` 一致），避免后续 `add claude` 产生重复槽位。
+- 身份匹配为 `(provider, email, organizationUuid)`；同邮箱同组织在两个 provider 下是两个账号。
+- 覆盖 Claude 槽位时取指纹 consume 锁、写 profile 失效标记，profile 运行中只警告不拒绝；存储快照不可解析时拒绝覆盖。
+- 两种 provider 的实时登录被写入时各自给出 `Note:` 提示。
+- 测试：库级 roundtrip 覆盖混合导出、cswap `--full` 形态、v1/v2 兼容、异常条目、profile 失效标记与实时登录提示；二进制级覆盖混合 roundtrip 与 stdin 导入 cswap。
+
 ## 后续阶段
 
-- 第四阶段：export/import v2 和 `.cswap` 导入，尚未实现。
+- 无已规划的后续阶段。
 - 首次快照加载前进入自动视图会显示 OFF；等待加载后重新进入即可。
-- 第四阶段需要单独规划；本次不包含自动迁移。
 
 ## 工作约定
 

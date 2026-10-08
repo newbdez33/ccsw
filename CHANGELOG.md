@@ -3,6 +3,26 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.7.0 — 2026-10-08
+
+### Added
+
+- Export and import both providers. The `.ccsw` envelope is version 2: every
+  account carries `provider`, `activeByProvider` records each provider's active
+  slot and Claude credentials are the stored slot file. The active Claude login
+  is exported from the live backend when it matches, and session-profile
+  rotations are folded into the slot first.
+- Import `cswap` exports (`swapVersion` without a ccsw marker): accounts become
+  Claude Code accounts, `config.oauthAccount` is kept, a bare `sk-ant-api…`
+  credential becomes a managed key and emails take the lowercase Claude identity.
+- Version-1 `.ccsw` files still import as Codex accounts.
+
+### Changed
+
+- Overwriting a Claude slot on import coordinates with in-flight refreshes,
+  marks its session profile stale and warns when that profile is live.
+- Exports from this release are version 2; earlier releases cannot import them.
+
 ## v0.6.0 — 2026-10-08
 
 ### Added
