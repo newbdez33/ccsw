@@ -505,7 +505,8 @@ fn watch_screen_title_status_arming_and_stay() {
 
 #[test]
 fn auto_screen_badge_summary_candidates_log_and_threshold() {
-    let mut app = app_with(TuiStart::Dashboard);
+    let mut app = App::new(TuiStart::Dashboard, ThemeName::Dark, 90.0, None);
+    app.apply_snapshot(mixed_fixture(), 1, NOW);
     assert_eq!(
         app.handle_key(key(KeyCode::Char('g')), NOW),
         vec![Command::OpenAuto]
@@ -522,14 +523,13 @@ fn auto_screen_badge_summary_candidates_log_and_threshold() {
     );
     let buf = render(&mut app, 100, 30, NOW);
     let rows = screen_rows(&buf);
-    let (_, header) = find_row(&rows, "john.doe@gmail.com");
+    let (_, header) = find_row(&rows, "bob@gmail.com");
+    assert!(header.starts_with("    6  bob@gmail.com"), "{header}");
+    assert!(header.contains("● active"), "{header}");
     assert!(
-        header.starts_with("    2  john.doe@gmail.com  [Personal]   ● active"),
-        "{header}"
-    );
-    assert!(
-        rows.iter().all(|r| !r.contains("alice@corp.io  [Acme]")),
-        "no minis on the auto panel"
+        rows.iter()
+            .all(|r| !r.contains("john.doe@gmail.com") && !r.contains("alice@corp.io")),
+        "no Codex account on the auto view"
     );
     let (five_y, five) = find_row(&rows, "5h    ");
     assert!(
@@ -546,18 +546,16 @@ fn auto_screen_badge_summary_candidates_log_and_threshold() {
     assert_eq!(buf[(badge_x, badge_y as u16)].bg, DARK.panel);
     assert_eq!(buf[(badge_x, badge_y as u16)].fg, DARK.warn);
     let (next_y, _) = find_row(&rows, "Next best");
-    assert_eq!(rows[next_y + 1], "     1  alice@corp.io   40% used");
-    assert_eq!(
-        rows[next_y + 2],
-        "     4  api-key-4@token.local  API key (no quota)"
-    );
-    assert_eq!(
-        rows[next_y + 3],
-        "     5  expired@x.y  token expired — refresh deferred this pass; retries automatically"
-    );
     assert!(
-        rows.iter().all(|r| !r.contains("john.doe@company.com")),
-        "disabled accounts are not candidates"
+        rows[next_y + 1].starts_with("     7  bob@work.com"),
+        "{}",
+        rows[next_y + 1]
+    );
+    assert!(rows[next_y + 1].ends_with("% used"), "{}", rows[next_y + 1]);
+    assert!(
+        rows.get(next_y + 2).is_none_or(|r| !r.contains("@")),
+        "bob@work.com is the only candidate: {:?}",
+        rows.get(next_y + 2)
     );
     let (_, started) = find_row(&rows, "engine started");
     assert!(
@@ -609,7 +607,9 @@ fn auto_screen_badge_summary_candidates_log_and_threshold() {
     app.handle_key(key(KeyCode::Char('l')), NOW);
     let rows = screen_rows(&render(&mut app, 100, 30, NOW));
     let (title_y, _) = find_row(&rows, "Go live");
-    assert!(rows[title_y + 2].contains("Go live? ccsw will switch your active account"));
+    assert!(
+        rows[title_y + 2].contains("Go live? ccsw will switch your active Claude Code account")
+    );
     assert!(
         rows.iter()
             .any(|r| r.contains("(Same behavior as running `ccsw auto` in a terminal.)"))
@@ -807,4 +807,25 @@ fn mixed_roster_shows_a_section_per_provider() {
         app.handle_key(key(KeyCode::Char('b')), NOW),
         vec![Command::Action(Action::SwitchBest(Provider::Claude))]
     );
+}
+
+#[test]
+fn auto_view_without_a_claude_account_shows_the_notice_and_starts_no_engine() {
+    let mut app = app_with(TuiStart::Dashboard);
+    let commands = app.open_auto(AutoSwitchSettings::default(), NOW);
+    assert_eq!(
+        commands,
+        vec![Command::Refresh { full: false }],
+        "no engine: {commands:?}"
+    );
+    let rows = screen_rows(&render(&mut app, 100, 30, NOW));
+    assert!(rows.iter().any(|r| r.contains(" OFF ")), "{rows:?}");
+    assert!(
+        rows.iter().any(|r| r.contains(
+            "— no Claude Code account: auto-switch covers Claude Code only (ccsw add claude) —"
+        )),
+        "{rows:?}"
+    );
+    let commands = app.handle_key(key(KeyCode::Char('l')), NOW);
+    assert!(commands.is_empty(), "Go live is inert: {commands:?}");
 }
