@@ -8,6 +8,7 @@ use clap::Parser;
 use crate::autoswitch::root_guard;
 use crate::errors::Result;
 use crate::model::Roster;
+use crate::provider::Provider;
 use crate::session::{self, EnvPlan, EnvRequest, HostEnv, ShareOptions, Shell};
 use crate::store::{Store, roster};
 
@@ -21,17 +22,20 @@ const RUN_EPILOG: &str = "Examples:
 #[derive(Debug, Parser)]
 #[command(
     name = "ccsw run",
-    about = "[EXPERIMENTAL] Launch Codex as a stored account in this terminal only (the default login and other terminals are unaffected).",
+    about = "[EXPERIMENTAL] Launch the selected CLI as a stored account in this terminal only (the default login and other terminals are unaffected).",
     after_help = RUN_EPILOG,
     disable_version_flag = true
 )]
 struct RunArgs {
-    /// Account to run (number or email). Omit to use the current directory's mapping (see `ccsw map`).
+    /// Account or provider to run (number, email, codex or claude). Omit to use the current directory's mapping (see `ccsw map`).
     account: Option<String>,
-    /// Don't share AGENTS.md/prompts/skills from the Codex home into the session profile (and remove previously shared items)
+    /// Refuse the plain default-login fast path
+    #[arg(long)]
+    require_session: bool,
+    /// Don't share settings and instructions from the provider home into the session profile (and remove previously shared items)
     #[arg(long)]
     no_share: bool,
-    /// Share conversation history (sessions/ and history.jsonl) from the Codex home into the session profile, so every account sees one unified history. --no-share-history restores per-account history (the default). Not supported on Windows.
+    /// Share conversation history from the provider home into the session profile, so every account sees one unified history. --no-share-history restores per-account history (the default). Not supported on Windows.
     #[arg(long, overrides_with = "no_share_history")]
     share_history: bool,
     #[arg(long, overrides_with = "share_history", hide = true)]
@@ -50,10 +54,10 @@ struct RunArgs {
 struct EnvArgs {
     /// Account to prepare (number or email). Omit to use the current directory's mapping.
     account: Option<String>,
-    /// Don't share AGENTS.md/prompts/skills into the session profile
+    /// Don't share settings and instructions into the session profile
     #[arg(long)]
     no_share: bool,
-    /// Share sessions/ and history.jsonl into the session profile (not on Windows)
+    /// Share conversation history into the session profile (not on Windows)
     #[arg(long)]
     share_history: bool,
     /// Shell dialect of the printed lines
@@ -98,6 +102,9 @@ struct MapArgs {
 struct UnmapArgs {
     /// Directory to unmap (default: current directory)
     path: Option<PathBuf>,
+    /// Remove only this provider (codex or claude)
+    #[arg(value_parser = ["codex", "claude"])]
+    provider: Option<String>,
     /// Enable debug logging
     #[arg(long)]
     debug: bool,
@@ -160,11 +167,19 @@ pub fn run_cmd(argv: Vec<String>) -> i32 {
         share_history: args.share_history,
     };
     let planned = (|| -> Result<(Store, session::Launch)> {
-        let (store, roster) = open_store(true)?;
+        let (store, roster) = open_store(false)?;
         let host = HostEnv::detect();
         let target =
             session::resolve_run_target(&store, &roster, args.account.as_deref(), &cwd()?)?;
-        let launch = session::plan_launch(&store, &roster, &host, target, tail, opts)?;
+        let launch = session::plan_launch(
+            &store,
+            &roster,
+            &host,
+            target,
+            tail,
+            opts,
+            args.require_session,
+        )?;
         Ok((store, launch))
     })();
     let (store, launch) = match planned {
@@ -185,7 +200,12 @@ pub fn env_cmd(argv: Vec<String>) -> i32 {
         Ok(args) => args,
         Err(code) => return code,
     };
-    if args.unset && args.account.is_some() {
+    if args.unset
+        && args
+            .account
+            .as_deref()
+            .is_some_and(|s| Provider::parse_selector(s).is_none())
+    {
         eprintln!("ccsw env: error: --unset does not take a NUM|EMAIL|ALIAS argument");
         return 2;
     }
@@ -202,7 +222,7 @@ pub fn env_cmd(argv: Vec<String>) -> i32 {
         let (store, roster) = if args.unset {
             (Store::from_env()?, Roster::empty())
         } else {
-            open_store(true)?
+            open_store(false)?
         };
         let host = if args.unset {
             HostEnv::default()
@@ -282,7 +302,12 @@ pub fn unmap_cmd(argv: Vec<String>) -> i32 {
     enable_debug(args.debug);
     let line = (|| -> Result<String> {
         let store = Store::from_env()?;
-        session::unmap(&store, args.path.as_deref(), &cwd()?)
+        session::unmap(
+            &store,
+            args.path.as_deref(),
+            &cwd()?,
+            args.provider.as_deref().and_then(Provider::parse_selector),
+        )
     })();
     match line {
         Ok(line) => {

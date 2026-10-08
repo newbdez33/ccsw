@@ -184,6 +184,7 @@ impl Cli {
         }
         cmd.env("PATH", path)
             .env("HOME", self.root.path())
+            .env("USERPROFILE", self.root.path())
             .env("CCSW_HOME", &self.ccsw_home)
             .env("CODEX_HOME", &self.codex_home)
             .env(

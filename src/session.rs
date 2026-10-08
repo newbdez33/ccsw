@@ -32,7 +32,7 @@ pub const MANIFEST_NAME: &str = ".ccsw-shared.json";
 pub const SCRUBBED_ENV: &[&str] = &["OPENAI_API_KEY", "CODEX_API_KEY"];
 
 pub const CODEX_MISSING: &str = "'codex' was not found on PATH. Install the Codex CLI first.";
-pub const CLAUDE_SESSION_LATER: &str = "Session mode for Claude Code accounts arrives in a later release; use `ccsw switch <slot>` for now.";
+pub const CLAUDE_MISSING: &str = "'claude' was not found on PATH. Install Claude Code first.";
 pub const SHARE_HISTORY_WINDOWS: &str = "--share-history is not supported on Windows yet: sharing uses re-synced copies there, which would fork the history instead of sharing it.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,14 +57,21 @@ pub struct HostEnv {
     pub codex_home_preset: Option<String>,
     pub set_vars: Vec<String>,
     pub codex: Option<PathBuf>,
+    pub claude: Option<PathBuf>,
+    pub claude_home_preset: Option<String>,
 }
 
 impl HostEnv {
     pub fn detect() -> Self {
         Self {
             codex_home_preset: std::env::var("CODEX_HOME").ok().filter(|v| !v.is_empty()),
+            claude_home_preset: std::env::var("CLAUDE_CONFIG_DIR")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            claude: command_on_path("claude"),
             set_vars: SCRUBBED_ENV
                 .iter()
+                .chain(crate::claude::session::SCRUBBED_ENV)
                 .filter(|name| std::env::var_os(name).is_some())
                 .map(|name| name.to_string())
                 .collect(),
@@ -72,10 +79,30 @@ impl HostEnv {
         }
     }
 
-    fn codex(&self) -> Result<&Path> {
-        self.codex
+    fn executable(&self, provider: Provider) -> Result<&Path> {
+        let (executable, message) = match provider {
+            Provider::Codex => (&self.codex, CODEX_MISSING),
+            Provider::Claude => (&self.claude, CLAUDE_MISSING),
+        };
+        executable
             .as_deref()
-            .ok_or_else(|| CcswError::session(CODEX_MISSING))
+            .ok_or_else(|| CcswError::session(message))
+    }
+
+    fn preset(&self, provider: Provider) -> Option<&str> {
+        match provider {
+            Provider::Codex => self.codex_home_preset.as_deref(),
+            Provider::Claude => self.claude_home_preset.as_deref(),
+        }
+    }
+
+    fn overrides(&self, provider: Provider) -> Vec<&str> {
+        let names = auth_overrides(provider);
+        self.set_vars
+            .iter()
+            .map(String::as_str)
+            .filter(|name| names.contains(name))
+            .collect()
     }
 }
 
@@ -93,15 +120,18 @@ pub fn source_home(store: &Store) -> PathBuf {
     }
 }
 
-/// Session mode is Codex-only in this release: refuse a Claude Code slot.
-fn codex_slot(roster: &Roster, slot: u32) -> Result<u32> {
-    if roster
-        .record(slot)
-        .is_some_and(|r| r.provider == Provider::Claude)
-    {
-        return Err(CcswError::session(CLAUDE_SESSION_LATER));
+fn home_variable(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Codex => "CODEX_HOME",
+        Provider::Claude => "CLAUDE_CONFIG_DIR",
     }
-    Ok(slot)
+}
+
+fn auth_overrides(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Codex => SCRUBBED_ENV,
+        Provider::Claude => crate::claude::session::SCRUBBED_ENV,
+    }
 }
 
 /// The account a directory maps to.
@@ -115,10 +145,15 @@ pub enum MappedAccount {
     Slot(u32),
 }
 
-pub fn mapped_account(store: &Store, roster: &Roster, cwd: &Path) -> MappedAccount {
-    match MappingStore::load(&store.paths).resolve(Provider::Codex, cwd) {
+pub fn mapped_account(
+    store: &Store,
+    roster: &Roster,
+    cwd: &Path,
+    provider: Provider,
+) -> MappedAccount {
+    match MappingStore::load(&store.paths).resolve(provider, cwd) {
         None => MappedAccount::None,
-        Some((_, identity)) => match roster.find_slot(Provider::Codex, &identity) {
+        Some((_, identity)) => match roster.find_slot(provider, &identity) {
             Some(slot) => MappedAccount::Slot(slot),
             None => MappedAccount::Removed {
                 email: identity.email,
@@ -132,6 +167,7 @@ pub fn mapped_account(store: &Store, roster: &Roster, cwd: &Path) -> MappedAccou
 pub enum RunTarget {
     /// Plain `codex`, env untouched; `notice` explains why.
     Default {
+        provider: Provider,
         notice: Option<String>,
     },
     Slot(u32),
@@ -143,24 +179,64 @@ pub fn resolve_run_target(
     account: Option<&str>,
     cwd: &Path,
 ) -> Result<RunTarget> {
-    if let Some(identifier) = account {
-        let slot = codex_slot(roster, resolve_slot(roster, identifier)?)?;
-        return Ok(RunTarget::Slot(slot));
+    let selected = account.and_then(Provider::parse_selector);
+    if let Some(identifier) = account.filter(|_| selected.is_none()) {
+        return Ok(RunTarget::Slot(resolve_slot(roster, identifier)?));
     }
-    Ok(match mapped_account(store, roster, cwd) {
+    let provider = match selected {
+        Some(provider) => provider,
+        None => {
+            let mappings = MappingStore::load(&store.paths);
+            let mapped: Vec<_> = Provider::ALL
+                .into_iter()
+                .filter(|p| mappings.resolve(*p, cwd).is_some())
+                .collect();
+            let providers: Vec<_> = if mapped.is_empty() {
+                Provider::ALL
+                    .into_iter()
+                    .filter(|p| !roster.slots_of(*p).is_empty())
+                    .collect()
+            } else {
+                mapped
+            };
+            match providers.as_slice() {
+                [] => Provider::Codex,
+                [provider] => *provider,
+                _ => {
+                    return Err(CcswError::session(
+                        "Choose a provider: ccsw run codex or ccsw run claude (or pass an account).",
+                    ));
+                }
+            }
+        }
+    };
+    Ok(match mapped_account(store, roster, cwd, provider) {
         MappedAccount::Slot(slot) => RunTarget::Slot(slot),
         MappedAccount::Removed { email } => RunTarget::Default {
+            provider,
             notice: Some(printer::yellowed(&format!(
                 "Mapped account {email} no longer exists — launching the default account."
             ))),
         },
         MappedAccount::None => RunTarget::Default {
+            provider,
             notice: Some(printer::dimmed(&format!(
                 "No account mapped for {} — launching the default account.",
                 cwd.display()
             ))),
         },
     })
+}
+
+impl RunTarget {
+    pub fn provider(&self, roster: &Roster) -> Result<Provider> {
+        match self {
+            Self::Default { provider, .. } => Ok(*provider),
+            Self::Slot(slot) => roster.record(*slot).map(|r| r.provider).ok_or_else(|| {
+                CcswError::AccountNotFound(format!("Account-{slot} does not exist"))
+            }),
+        }
+    }
 }
 
 /// A profile ready for launch.
@@ -195,11 +271,19 @@ pub fn prepare_profile(
             record,
             &crate::claude::keychain::SystemSecurity,
         )?;
+        let notices = sync_sharing_items(
+            &profile,
+            &store.paths.claude_default_home,
+            opts,
+            crate::claude::session::SHARED_ITEMS,
+            crate::claude::session::HISTORY_ITEMS,
+            true,
+        )?;
         return Ok(Prepared {
             slot,
             email: record.email.clone(),
             profile,
-            notices: Vec::new(),
+            notices,
         });
     }
     let profile = store.paths.session_dir(slot, &record.email);
@@ -278,14 +362,30 @@ fn manifest_items(profile: &Path) -> Vec<String> {
 /// Link (copy on Windows) the active items from `source` into the profile and
 /// prune items the manifest lists that are no longer active. Returns notices.
 pub fn sync_sharing(profile: &Path, source: &Path, opts: ShareOptions) -> Result<Vec<String>> {
+    sync_sharing_items(profile, source, opts, SHARED_ITEMS, HISTORY_ITEMS, false)
+}
+
+fn sync_sharing_items(
+    profile: &Path,
+    source: &Path,
+    opts: ShareOptions,
+    shared_items: &[&str],
+    history_items: &[&str],
+    merge_history: bool,
+) -> Result<Vec<String>> {
     let mut active: Vec<&str> = Vec::new();
     if opts.share {
-        active.extend(SHARED_ITEMS);
+        active.extend(shared_items);
     }
     if opts.share_history && !cfg!(windows) {
-        active.extend(HISTORY_ITEMS);
+        active.extend(history_items);
     }
-    let previous = manifest_items(profile);
+    let previous: Vec<_> = manifest_items(profile)
+        .into_iter()
+        .filter(|item| {
+            shared_items.contains(&item.as_str()) || history_items.contains(&item.as_str())
+        })
+        .collect();
     let session_err =
         |path: &Path, err: &io::Error| fsutil::io_error(CcswError::Session, path, err);
 
@@ -293,7 +393,11 @@ pub fn sync_sharing(profile: &Path, source: &Path, opts: ShareOptions) -> Result
         .iter()
         .filter(|item| !active.contains(&item.as_str()))
     {
-        remove_shared(&profile.join(item)).map_err(|err| session_err(&profile.join(item), &err))?;
+        let dest = profile.join(item);
+        if history_items.contains(&item.as_str()) && dest.exists() && !dest.is_symlink() {
+            continue;
+        }
+        remove_shared(&dest).map_err(|err| session_err(&dest, &err))?;
     }
 
     let mut notices = Vec::new();
@@ -301,7 +405,25 @@ pub fn sync_sharing(profile: &Path, source: &Path, opts: ShareOptions) -> Result
     for item in active {
         let src = source.join(item);
         let dest = profile.join(item);
+        if merge_history && history_items.contains(&item) && !cfg!(windows) {
+            if dest.exists() && !dest.is_symlink() && !crate::claude::session::is_quiescent(profile)
+            {
+                notices.push(printer::dimmed(&format!(
+                    "Not sharing {item} yet: another session is using this profile."
+                )));
+                continue;
+            }
+            if let Err(err) = crate::claude::session::prepare_history_share(&src, &dest) {
+                notices.push(printer::yellowed(&format!(
+                    "Not sharing {item}: could not merge existing history ({err})."
+                )));
+                continue;
+            }
+        }
         if !src.exists() {
+            if previous.iter().any(|name| name == item) {
+                remove_shared(&dest).map_err(|err| session_err(&dest, &err))?;
+            }
             continue;
         }
         match fs::symlink_metadata(&dest) {
@@ -425,14 +547,24 @@ pub fn plan_launch(
     target: RunTarget,
     tail: Vec<String>,
     opts: ShareOptions,
+    require_session: bool,
 ) -> Result<Launch> {
-    let codex = host.codex()?;
+    let provider = target.provider(roster)?;
+    let executable = host.executable(provider)?;
+    if provider == Provider::Codex {
+        store.paths.validate_credential_store()?;
+    }
     if opts.share_history && cfg!(windows) {
         return Err(CcswError::session(SHARE_HISTORY_WINDOWS));
     }
     let slot = match target {
-        RunTarget::Default { notice } => {
-            let mut command = Command::new(codex);
+        RunTarget::Default { notice, .. } => {
+            if require_session {
+                return Err(CcswError::session(
+                    "No mapped account for an isolated session; pass an account.",
+                ));
+            }
+            let mut command = Command::new(executable);
             command.args(&tail);
             return Ok(Launch {
                 command,
@@ -442,46 +574,56 @@ pub fn plan_launch(
         }
         RunTarget::Slot(slot) => slot,
     };
-    let record = roster
-        .record(slot)
-        .ok_or_else(|| CcswError::AccountNotFound(format!("Account-{slot} does not exist")))?;
+    let record = roster.record(slot).expect("target was checked");
+    if provider == Provider::Claude && record.is_api_key() {
+        return Err(CcswError::session(
+            "Session mode requires an OAuth login or setup token.",
+        ));
+    }
     let mut notices = Vec::new();
-    match &host.codex_home_preset {
-        None => {
-            if collect::live_login(store, roster).slot() == Some(slot) {
-                notices.push(format!(
-                    "Account-{slot} ({}) is already the active default login — launching codex directly.",
-                    record.email
+    let variable = home_variable(provider);
+    match host.preset(provider) {
+        None if collect::live_login_for(store, roster, provider).slot() == Some(slot) => {
+            if require_session {
+                return Err(CcswError::session(
+                    "This account is the active default login; --require-session refuses the plain launch. Select a different account for an isolated session.",
                 ));
-                let mut command = Command::new(codex);
-                command.args(&tail);
-                return Ok(Launch {
-                    command,
-                    notices,
-                    session: None,
-                });
             }
+            notices.push(format!("Account-{slot} ({}) is already the active default login — launching {provider} directly.", record.email));
+            let mut command = Command::new(executable);
+            command.args(&tail);
+            return Ok(Launch {
+                command,
+                notices,
+                session: None,
+            });
         }
         Some(preset) => notices.push(printer::yellowed(&format!(
-            "CODEX_HOME is already set ({preset}); overriding it for this launch."
+            "{variable} is already set ({preset}); overriding it for this launch."
         ))),
+        None => {}
     }
     let prepared = prepare_profile(store, roster, slot, opts)?;
     notices.extend(prepared.notices);
-    if !host.set_vars.is_empty() {
+    let overrides = host.overrides(provider);
+    if !overrides.is_empty() {
         notices.push(printer::yellowed(&format!(
-            "Ignoring {} for this session — it would override the selected account inside Codex.",
-            host.set_vars.join(", ")
+            "Ignoring {} for this session — it would override the selected account inside {}.",
+            overrides.join(", "),
+            provider.tool_name()
         )));
     }
     notices.push(launching_line(slot, &prepared.email));
-    let argv = embedded_codex_argv(codex_supports_no_daemon(codex), tail);
-    let mut command = Command::new(codex);
+    let argv = match provider {
+        Provider::Codex => embedded_codex_argv(codex_supports_no_daemon(executable), tail),
+        Provider::Claude => tail,
+    };
+    let mut command = Command::new(executable);
     command.args(argv);
-    for name in SCRUBBED_ENV {
+    for name in auth_overrides(provider) {
         command.env_remove(name);
     }
-    command.env("CODEX_HOME", &prepared.profile);
+    command.env(variable, &prepared.profile);
     Ok(Launch {
         command,
         notices,
@@ -496,23 +638,61 @@ pub fn exec_or_wait(store: &Store, mut launch: Launch) -> Result<i32> {
     {
         use std::os::unix::process::CommandExt;
         // The fold-back happens at the next bootstrap: exec never returns.
-        let _ = store;
+        let marker = mark_launch_if_needed(store, &launch)?;
         let err = launch.command.exec();
-        Err(CcswError::session(format!("could not launch codex: {err}")))
+        if let Some(marker) = marker {
+            let _ = fs::remove_file(marker);
+        }
+        Err(CcswError::session(format!(
+            "could not launch the selected CLI: {err}"
+        )))
     }
     #[cfg(not(unix))]
     {
-        let status = launch
-            .command
-            .status()
-            .map_err(|err| CcswError::session(format!("could not launch codex: {err}")))?;
+        let marker = mark_launch_if_needed(store, &launch)?;
+        let status = launch.command.status().map_err(|err| {
+            CcswError::session(format!("could not launch the selected CLI: {err}"))
+        })?;
+        if let Some(marker) = marker {
+            let _ = fs::remove_file(marker);
+        }
         if let Some((slot, profile)) = &launch.session
-            && let Err(err) = fold_back(store, *slot, profile)
+            && let Err(err) = fold_back_provider(store, *slot, profile)
         {
             tracing::warn!("could not fold the session's tokens back into Account-{slot}: {err}");
         }
         Ok(status.code().unwrap_or(1))
     }
+}
+
+fn mark_launch_if_needed(store: &Store, launch: &Launch) -> Result<Option<PathBuf>> {
+    let Some((slot, profile)) = &launch.session else {
+        return Ok(None);
+    };
+    let roster = crate::store::roster::read_or_empty(&store.paths)?;
+    if roster
+        .record(*slot)
+        .is_some_and(|r| r.provider == Provider::Claude)
+    {
+        return crate::claude::session::mark_launch(profile).map(Some);
+    }
+    Ok(None)
+}
+
+#[cfg(not(unix))]
+fn fold_back_provider(store: &Store, slot: u32, profile: &Path) -> Result<()> {
+    let roster = crate::store::roster::read_or_empty(&store.paths)?;
+    if let Some(record) = roster.record(slot)
+        && record.provider == Provider::Claude
+    {
+        return crate::claude::session::reconcile(
+            store,
+            slot,
+            record,
+            &crate::claude::keychain::SystemSecurity,
+        );
+    }
+    fold_back(store, slot, profile).map(|_| ())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -542,11 +722,16 @@ impl Shell {
     }
 
     pub fn export_line(self, dir: &Path) -> String {
+        self.export_provider(Provider::Codex, dir)
+    }
+
+    pub fn export_provider(self, provider: Provider, dir: &Path) -> String {
         let value = self.quote(&dir.to_string_lossy());
+        let name = home_variable(provider);
         match self {
-            Self::Sh => format!("export CODEX_HOME={value}"),
-            Self::Fish => format!("set -gx CODEX_HOME {value}"),
-            Self::Pwsh => format!("$env:CODEX_HOME = {value}"),
+            Self::Sh => format!("export {name}={value}"),
+            Self::Fish => format!("set -gx {name} {value}"),
+            Self::Pwsh => format!("$env:{name} = {value}"),
         }
     }
 
@@ -595,32 +780,40 @@ pub fn plan_env(
         opts,
     } = request;
     if unset {
+        let providers =
+            match account {
+                Some(text) => vec![Provider::parse_selector(text).ok_or_else(|| {
+                    CcswError::session("--unset accepts only a provider selector.")
+                })?],
+                None => Provider::ALL.to_vec(),
+            };
         return Ok(EnvPlan::Lines {
-            lines: vec![shell.unset_line("CODEX_HOME")],
+            lines: providers
+                .into_iter()
+                .map(|p| shell.unset_line(home_variable(p)))
+                .collect(),
             notices: Vec::new(),
         });
     }
-    let slot = match account {
-        Some(identifier) => codex_slot(roster, resolve_slot(roster, identifier)?)?,
-        None => match mapped_account(store, roster, cwd) {
-            MappedAccount::Slot(slot) => slot,
-            MappedAccount::Removed { email } => {
-                return Err(CcswError::session(format!(
-                    "Nothing to prepare an environment for (the mapped account {email} no longer exists). Pass an account (ccsw env <NUM|EMAIL|ALIAS>), map this directory (ccsw map <NUM|EMAIL|ALIAS>), or clear a pinned profile with ccsw env --unset."
-                )));
-            }
-            MappedAccount::None => {
-                return Err(CcswError::session(format!(
-                    "Nothing to prepare an environment for (no account given and no mapping for {}). Pass an account (ccsw env <NUM|EMAIL|ALIAS>), map this directory (ccsw map <NUM|EMAIL|ALIAS>), or clear a pinned profile with ccsw env --unset.",
-                    cwd.display()
-                )));
-            }
-        },
+    let slot = match resolve_run_target(store, roster, account, cwd)? {
+        RunTarget::Slot(slot) => slot,
+        RunTarget::Default { .. } => {
+            return Err(CcswError::session(format!(
+                "Nothing to prepare an environment for (no account given and no mapping for {}, or the mapped account no longer exists). Pass an account (ccsw env <NUM|EMAIL|ALIAS>), map this directory (ccsw map <NUM|EMAIL|ALIAS>), or clear a pinned profile with ccsw env --unset.",
+                cwd.display()
+            )));
+        }
     };
     let record = roster
         .record(slot)
         .ok_or_else(|| CcswError::AccountNotFound(format!("Account-{slot} does not exist")))?;
-    if host.codex_home_preset.is_none() && collect::live_login(store, roster).slot() == Some(slot) {
+    let provider = record.provider;
+    if provider == Provider::Codex {
+        store.paths.validate_credential_store()?;
+    }
+    if host.preset(provider).is_none()
+        && collect::live_login_for(store, roster, provider).slot() == Some(slot)
+    {
         return Ok(EnvPlan::Note(format!(
             "Account-{slot} ({}) is the active default login — an unpinned shell already uses it; nothing exported.",
             record.email
@@ -628,11 +821,11 @@ pub fn plan_env(
     }
     let prepared = prepare_profile(store, roster, slot, opts)?;
     let mut lines: Vec<String> = host
-        .set_vars
+        .overrides(provider)
         .iter()
         .map(|name| shell.unset_line(name))
         .collect();
-    lines.push(shell.export_line(&prepared.profile));
+    lines.push(shell.export_provider(provider, &prepared.profile));
     let mut notices = prepared.notices;
     notices.push(format!(
         "Prepared Account-{slot} ({}) {}",
@@ -654,7 +847,7 @@ pub fn map(
     let Some(identifier) = account else {
         return Ok(list_mappings(&mappings, roster));
     };
-    let slot = codex_slot(roster, resolve_slot(roster, identifier)?)?;
+    let slot = resolve_slot(roster, identifier)?;
     let record = roster
         .record(slot)
         .ok_or_else(|| CcswError::AccountNotFound(format!("Account-{slot} does not exist")))?;
@@ -719,11 +912,16 @@ fn list_mappings(mappings: &MappingStore, roster: &Roster) -> Vec<String> {
 }
 
 /// `unmap [PATH]`: the line to print.
-pub fn unmap(store: &Store, path: Option<&Path>, cwd: &Path) -> Result<String> {
+pub fn unmap(
+    store: &Store,
+    path: Option<&Path>,
+    cwd: &Path,
+    provider: Option<Provider>,
+) -> Result<String> {
     let mut mappings = MappingStore::load(&store.paths);
     let target = path.map_or_else(|| cwd.to_path_buf(), Path::to_path_buf);
     let normalized = MappingStore::normalize_path(&target);
-    if mappings.remove(&target, None) {
+    if mappings.remove(&target, provider) {
         mappings.save()?;
         Ok(format!(
             "{} {}",
@@ -792,44 +990,26 @@ mod tests {
         (dir, store, roster)
     }
 
-    fn assert_claude_refused(err: CcswError) {
-        assert_eq!(err.type_name(), "SessionError");
+    #[test]
+    fn mixed_targets_accept_accounts_and_require_a_provider_for_defaults() {
+        let (dir, store, roster) = mixed_roster();
         assert_eq!(
-            err.to_string(),
-            "Session mode for Claude Code accounts arrives in a later release; use `ccsw switch <slot>` for now."
+            resolve_run_target(&store, &roster, Some("2"), dir.path()).unwrap(),
+            RunTarget::Slot(2)
         );
-    }
-
-    #[test]
-    fn run_refuses_a_claude_slot() {
-        let (dir, store, roster) = mixed_roster();
-        let err = resolve_run_target(&store, &roster, Some("2"), dir.path()).unwrap_err();
-        assert_claude_refused(err);
-        assert!(!store.paths.sessions_dir().exists(), "nothing was written");
-    }
-
-    #[test]
-    fn env_refuses_a_claude_slot() {
-        let (dir, store, roster) = mixed_roster();
-        let request = EnvRequest {
-            account: Some("2"),
-            cwd: dir.path(),
-            shell: Shell::Sh,
-            unset: false,
-            opts: ShareOptions::default(),
-        };
-        let err = plan_env(&store, &roster, &HostEnv::default(), request).unwrap_err();
-        assert_claude_refused(err);
-        assert!(!store.paths.sessions_dir().exists(), "nothing was written");
-    }
-
-    #[test]
-    fn map_refuses_a_claude_slot() {
-        let (dir, store, roster) = mixed_roster();
-        let err = map(&store, &roster, Some("2"), None, dir.path()).unwrap_err();
-        assert_claude_refused(err);
-        assert!(!store.paths.mappings_file().exists(), "nothing was written");
-        assert!(MappingStore::load(&store.paths).is_empty());
+        assert!(resolve_run_target(&store, &roster, None, dir.path()).is_err());
+        assert!(matches!(
+            resolve_run_target(&store, &roster, Some("claude"), dir.path()).unwrap(),
+            RunTarget::Default {
+                provider: Provider::Claude,
+                ..
+            }
+        ));
+        map(&store, &roster, Some("2"), None, dir.path()).unwrap();
+        assert_eq!(
+            resolve_run_target(&store, &roster, None, dir.path()).unwrap(),
+            RunTarget::Slot(2)
+        );
     }
 
     #[test]

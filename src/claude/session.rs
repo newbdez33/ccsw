@@ -28,6 +28,7 @@ pub const SHARED_ITEMS: &[&str] = &[
 ];
 pub const HISTORY_ITEMS: &[&str] = &["projects", "history.jsonl"];
 pub const SCRUBBED_ENV: &[&str] = &[
+    "CLAUDE_SECURESTORAGE_CONFIG_DIR",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -318,6 +319,93 @@ pub(crate) fn materialize(store: &Store, profile: &Path, cli: &dyn SecurityCli) 
             .map_err(|err| failure(profile, err))?;
     }
     Ok(())
+}
+
+/// Port of cswap's _prepare_history_share / _merge_history_into_source.
+/// Merge before linking so enabling shared history keeps existing transcripts.
+pub(crate) fn prepare_history_share(source: &Path, destination: &Path) -> std::io::Result<()> {
+    if destination.exists() && !destination.is_symlink() {
+        merge_history(source, destination)?;
+    }
+    if !source.exists() {
+        private_directory(source.parent().expect("history has a parent"))?;
+        if source.extension().is_some_and(|ext| ext == "jsonl") {
+            crate::fsutil::atomic_write_private(source, b"")?;
+        } else {
+            private_directory(source)?;
+        }
+    }
+    Ok(())
+}
+
+fn private_directory(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            private_directory(parent)?;
+        }
+        fs::create_dir(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(())
+}
+
+fn merge_history(source: &Path, destination: &Path) -> std::io::Result<()> {
+    if destination.is_dir() {
+        private_directory(source)?;
+        let mut entries = fs::read_dir(destination)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let target = source.join(entry.file_name());
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                merge_history(&target, &path)?;
+            } else if target.exists() {
+                // Transcript names are UUIDs: upstream keeps the first copy.
+                fs::remove_file(path)?;
+            } else if fs::rename(&path, &target).is_err() {
+                fs::copy(&path, &target)?;
+                fs::remove_file(path)?;
+            }
+        }
+        fs::remove_dir(destination)
+    } else {
+        use std::collections::HashSet;
+        use std::io::Write;
+        let existing = match fs::read_to_string(source) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => return Err(err),
+        };
+        let mut known: HashSet<_> = existing.lines().map(str::to_string).collect();
+        let incoming = fs::read_to_string(destination)?;
+        let added: Vec<_> = incoming
+            .lines()
+            .filter(|line| !line.is_empty() && known.insert((*line).to_string()))
+            .collect();
+        if !added.is_empty() {
+            private_directory(source.parent().expect("history has a parent"))?;
+            let mut options = fs::OpenOptions::new();
+            options.create(true).append(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(source)?;
+            if !existing.is_empty() && !existing.ends_with('\n') {
+                writeln!(file)?;
+            }
+            for line in added {
+                writeln!(file, "{line}")?;
+            }
+            file.sync_all()?;
+        }
+        fs::remove_file(destination)
+    }
 }
 
 #[cfg(test)]

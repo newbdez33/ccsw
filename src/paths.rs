@@ -30,6 +30,8 @@ pub struct Paths {
     pub codex_home: PathBuf,
     /// `$CLAUDE_CONFIG_DIR`, default `~/.claude`.
     pub claude_home: PathBuf,
+    /// Source of shared customizations, independent of a pinned session.
+    pub claude_default_home: PathBuf,
     /// Exact exported value; Keychain hashing must retain trailing slashes and Unicode.
     pub claude_config_dir_raw: Option<String>,
     /// Defined-but-empty selects the default secure store.
@@ -103,6 +105,7 @@ impl Paths {
             backup_root,
             codex_home,
             claude_home,
+            claude_default_home: user_home.join(".claude"),
             claude_config_dir_raw,
             claude_secure_storage_dir: None,
             claude_config_base,

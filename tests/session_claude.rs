@@ -104,3 +104,89 @@ fn does_not_overwrite_a_running_profile_or_capture_a_different_identity() {
         "rt-old"
     );
 }
+
+#[test]
+fn shares_default_customizations_and_prunes_only_manifest_items() {
+    let (dir, store, roster) = fixture();
+    let source = dir.path().join(".claude");
+    std::fs::create_dir_all(source.join("skills")).unwrap();
+    std::fs::write(source.join("settings.json"), "{\"theme\":\"dark\"}").unwrap();
+    std::fs::write(source.join("CLAUDE.md"), "Use small functions.\n").unwrap();
+    let prepared = prepare_profile(&store, &roster, 2, ShareOptions::default()).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(prepared.profile.join("CLAUDE.md")).unwrap(),
+        "Use small functions.\n"
+    );
+    assert!(prepared.profile.join("skills").is_dir());
+    std::fs::write(prepared.profile.join("local.txt"), "keep").unwrap();
+    prepare_profile(
+        &store,
+        &roster,
+        2,
+        ShareOptions {
+            share: false,
+            share_history: false,
+        },
+    )
+    .unwrap();
+    assert!(!prepared.profile.join("CLAUDE.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(prepared.profile.join("local.txt")).unwrap(),
+        "keep"
+    );
+    assert!(source.join("CLAUDE.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn history_share_merges_existing_history_before_linking() {
+    let (dir, store, roster) = fixture();
+    let profile = store.paths.session_dir(2, "session@example.com");
+    let source = dir.path().join(".claude");
+    std::fs::create_dir_all(profile.join("projects/work")).unwrap();
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        profile.join("projects/work/conversation.jsonl"),
+        "{\"message\":1}\n",
+    )
+    .unwrap();
+    std::fs::write(profile.join("history.jsonl"), "one\ntwo\n").unwrap();
+    std::fs::write(source.join("history.jsonl"), "one\n").unwrap();
+    prepare_profile(
+        &store,
+        &roster,
+        2,
+        ShareOptions {
+            share: false,
+            share_history: true,
+        },
+    )
+    .unwrap();
+    assert!(profile.join("projects").is_symlink());
+    assert!(profile.join("history.jsonl").is_symlink());
+    assert_eq!(
+        std::fs::read_to_string(source.join("history.jsonl")).unwrap(),
+        "one\ntwo\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("projects/work/conversation.jsonl")).unwrap(),
+        "{\"message\":1}\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sharing_manifest_cannot_remove_a_path_outside_the_profile() {
+    let (dir, store, roster) = fixture();
+    let profile = store.paths.session_dir(2, "session@example.com");
+    std::fs::create_dir_all(&profile).unwrap();
+    let outside = store.paths.sessions_dir().join("outside");
+    std::os::unix::fs::symlink(dir.path().join("target"), &outside).unwrap();
+    write_json_private(
+        &profile.join(".ccsw-shared.json"),
+        &json!({"items": ["../outside"]}),
+    )
+    .unwrap();
+    prepare_profile(&store, &roster, 2, ShareOptions::default()).unwrap();
+    assert!(outside.is_symlink());
+}
