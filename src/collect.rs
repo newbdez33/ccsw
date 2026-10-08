@@ -144,14 +144,20 @@ pub fn live_login(store: &Store, roster: &Roster) -> CurrentAccount {
 
 /// The slot whose credentials are `provider`'s live login.
 pub fn live_login_for(store: &Store, roster: &Roster, provider: Provider) -> CurrentAccount {
-    match provider {
-        Provider::Codex => live_login(store, roster),
-        Provider::Claude => claude_live_login(store, roster),
-    }
+    live_login_for_with(store, roster, provider, &SystemSecurity)
 }
 
-fn claude_live_login(store: &Store, roster: &Roster) -> CurrentAccount {
-    claude_live_login_with(store, roster, &SystemSecurity)
+/// [`live_login_for`] with an injected `security` (tests).
+pub(crate) fn live_login_for_with(
+    store: &Store,
+    roster: &Roster,
+    provider: Provider,
+    cli: &dyn SecurityCli,
+) -> CurrentAccount {
+    match provider {
+        Provider::Codex => live_login(store, roster),
+        Provider::Claude => claude_live_login_with(store, roster, cli),
+    }
 }
 
 fn claude_live_login_with(store: &Store, roster: &Roster, cli: &dyn SecurityCli) -> CurrentAccount {
@@ -473,7 +479,7 @@ pub fn run_pass(store: &Store, roster: &Roster, opts: CollectOptions<'_>) -> Res
     run_pass_with(store, roster, opts, &SystemSecurity)
 }
 
-fn run_pass_with(
+pub(crate) fn run_pass_with(
     store: &Store,
     roster: &Roster,
     opts: CollectOptions<'_>,
@@ -944,7 +950,7 @@ pub fn refresh_slot(store: &Store, roster: &Roster, slot: u32, force: bool) -> R
     refresh_slot_with(store, roster, slot, force, &SystemSecurity)
 }
 
-fn refresh_slot_with(
+pub(crate) fn refresh_slot_with(
     store: &Store,
     roster: &Roster,
     slot: u32,

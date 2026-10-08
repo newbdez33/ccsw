@@ -357,3 +357,30 @@ mod tests {
         assert!(!account_name().is_empty());
     }
 }
+
+/// Fakes shared by the engine tests: no process is spawned.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::io;
+
+    use super::{CliOutput, SecurityCli};
+
+    /// A `security` that is either empty (every item "not found", rc 44) or
+    /// broken (every call fails, as a locked or missing Keychain does).
+    pub(crate) struct FakeSecurity {
+        pub failing: bool,
+    }
+
+    impl SecurityCli for FakeSecurity {
+        fn run(&self, _args: &[String], _stdin_line: Option<&str>) -> io::Result<CliOutput> {
+            if self.failing {
+                Err(io::Error::other("keychain locked"))
+            } else {
+                Ok(CliOutput {
+                    status: 44,
+                    stdout: String::new(),
+                })
+            }
+        }
+    }
+}

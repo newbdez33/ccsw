@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use serde_json::{Map, Value, json};
 
+use crate::claude::keychain::{SecurityCli, SystemSecurity};
 use crate::collect::{self, CollectMode, CollectOptions, Collected, RefreshStatus};
 use crate::errors::Result;
 use crate::model::{AccountRef, CurrentAccount, Roster, format_iso, now_iso, now_unix};
@@ -356,8 +357,19 @@ impl TickOutcome {
     }
 }
 
+/// The sentinels under which the active account is held rather than counted
+/// unhealthy: an expired token Claude Code refreshes on its next use, or a
+/// Keychain that cannot be read right now.
+fn held_sentinel(entry: Option<&UsageEntry>) -> Option<UsageSentinel> {
+    match entry.and_then(|e| e.sentinel) {
+        Some(s @ (UsageSentinel::TokenExpired | UsageSentinel::KeychainUnavailable)) => Some(s),
+        _ => None,
+    }
+}
+
 pub struct Engine<'a> {
     facade: &'a mut dyn AutoFacade,
+    security: &'a dyn SecurityCli,
     provider: Provider,
     settings: AutoSwitchSettings,
     models: Vec<String>,
@@ -391,6 +403,7 @@ impl<'a> Engine<'a> {
         let models = settings.model_names();
         Self {
             facade,
+            security: &SystemSecurity,
             provider,
             settings,
             models,
@@ -404,6 +417,13 @@ impl<'a> Engine<'a> {
             idle_hold_slow: false,
             active_next_poll_at: None,
         }
+    }
+
+    /// Replace the Keychain client (tests).
+    #[cfg(test)]
+    fn with_security(mut self, security: &'a dyn SecurityCli) -> Self {
+        self.security = security;
+        self
     }
 
     /// The provider this engine rotates.
@@ -572,20 +592,22 @@ impl<'a> Engine<'a> {
                 }
             }
             None => {
-                let idle = entries.get(&current).and_then(|e| e.sentinel)
-                    == Some(UsageSentinel::TokenExpired);
-                if idle {
+                if let Some(held) = held_sentinel(entries.get(&current)) {
                     let since = *self.idle_hold_since.get_or_insert(now);
-                    if now - since <= IDLE_HOLD_MAX_S {
+                    if held == UsageSentinel::KeychainUnavailable || now - since <= IDLE_HOLD_MAX_S
+                    {
                         self.unhealthy_ticks = 0;
                         self.idle_hold_slow = true;
-                        self.no_switch(
-                            "active-idle",
+                        let detail = if held == UsageSentinel::KeychainUnavailable {
+                            "keychain unavailable; holding until Claude Code's login is readable"
+                                .to_string()
+                        } else {
                             format!(
                                 "token expired while {} is idle; resumes on next use",
                                 self.provider.tool_name()
-                            ),
-                        );
+                            )
+                        };
+                        self.no_switch("active-idle", detail);
                         return Ok(TickOutcome::NoAction);
                     }
                     tracing::warn!(
@@ -705,7 +727,13 @@ impl<'a> Engine<'a> {
             if self.dry_run {
                 return self.perform(target, &target_email, trigger, &active_ref);
             }
-            match collect::refresh_slot(self.facade.store(), &roster, target, false) {
+            match collect::refresh_slot_with(
+                self.facade.store(),
+                &roster,
+                target,
+                false,
+                self.security,
+            ) {
                 RefreshStatus::Ok | RefreshStatus::NotNeeded => {
                     return self.perform(target, &target_email, trigger, &active_ref);
                 }
@@ -744,12 +772,13 @@ impl<'a> Engine<'a> {
         // Protect a login changed outside this tick without fetching or
         // refreshing the other provider's accounts.
         let mut actives = vec![active];
-        if let Some(slot) = collect::live_login_for(store, roster, self.provider).slot()
+        if let Some(slot) =
+            collect::live_login_for_with(store, roster, self.provider, self.security).slot()
             && !actives.contains(&slot)
         {
             actives.push(slot);
         }
-        let mut collected = collect::run_pass(
+        let mut collected = collect::run_pass_with(
             store,
             roster,
             CollectOptions {
@@ -759,17 +788,18 @@ impl<'a> Engine<'a> {
                 threshold,
                 models,
             },
+            self.security,
         )?;
         let active_entry = collected.entries.get(&active);
         let active_headroom = entry_headroom(&collected.entries, active, models);
-        let idle = active_entry.and_then(|e| e.sentinel) == Some(UsageSentinel::TokenExpired);
+        let idle = held_sentinel(active_entry).is_some();
         let escalate = !candidates.is_empty()
             && match active_headroom {
                 None => !idle,
                 Some(h) => 100.0 - h >= threshold - ESCALATION_MARGIN_PCT,
             };
         if escalate {
-            let more = collect::run_pass(
+            let more = collect::run_pass_with(
                 store,
                 roster,
                 CollectOptions {
@@ -779,6 +809,7 @@ impl<'a> Engine<'a> {
                     threshold,
                     models,
                 },
+                self.security,
             )?;
             collected.entries = more.entries;
             collected
@@ -2254,6 +2285,66 @@ mod tests {
         assert_eq!(engine.tick(), TickOutcome::Switched);
         drop(engine);
         assert_eq!(fixture.fake.switches, vec![2]);
+    }
+
+    #[test]
+    fn keychain_unavailable_active_holds_like_token_expired() {
+        use crate::claude::keychain::test_support::FakeSecurity;
+        let mut fixture = Fixture::claude(&[1, 2]);
+        // The Keychain is the live backend and cannot be read; nothing on disk
+        // covers the login, so the active slot reports `keychain unavailable`.
+        fixture.fake.store.paths.keychain_enabled = true;
+        {
+            let paths = &fixture.fake.store.paths;
+            std::fs::create_dir_all(&paths.claude_home).unwrap();
+            crate::fsutil::write_json_private(
+                &paths.claude_global_config_file(),
+                &json!({"oauthAccount": {
+                    "emailAddress": "a1@example.com", "accountUuid": "u1",
+                    "organizationUuid": "a1", "organizationName": null
+                }}),
+            )
+            .unwrap();
+        }
+        fixture.seed(2, usage(20.0, 10.0, None));
+        let mut settings = defaults();
+        settings.unhealthy_ticks = 1;
+        let security = FakeSecurity { failing: true };
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let sink_log = log.clone();
+        let outcome = {
+            let clock = Rc::new(RefCell::new(0.0));
+            let clock_ref = clock.clone();
+            let mut engine = Engine::new(
+                &mut fixture.fake,
+                Provider::Claude,
+                settings,
+                false,
+                move |event| sink_log.borrow_mut().push(event.clone()),
+            )
+            .with_security(&security)
+            .with_clock(move || *clock_ref.borrow());
+            assert_eq!(engine.tick(), TickOutcome::NoAction);
+            *clock.borrow_mut() = IDLE_HOLD_MAX_S + 1.0;
+            engine.tick()
+        };
+        let events = log.borrow().clone();
+        assert_eq!(outcome, TickOutcome::NoAction);
+        assert!(
+            matches!(&events[0], Event::Poll { headroom, .. } if headroom.get(&1) == Some(&None)),
+            "the active account's usage is unknown: {events:?}"
+        );
+        assert_eq!(
+            no_switch_reason(&events),
+            Some((
+                "active-idle".into(),
+                "keychain unavailable; holding until Claude Code's login is readable".into()
+            ))
+        );
+        assert!(
+            fixture.fake.switches.is_empty(),
+            "a cool candidate is not switched in while the login is unreadable"
+        );
     }
 
     #[test]
