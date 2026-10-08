@@ -995,7 +995,7 @@ impl Switcher {
             self.remove_session_dir(target, &occupant.email);
             roster.remove_slot(target);
             let mut mappings = MappingStore::load(&self.store.paths);
-            let pruned = mappings.prune(&occupant.identity());
+            let pruned = mappings.prune(occupant.provider, &occupant.identity());
             if pruned > 0 {
                 mappings.save()?;
                 self.say(Line::dimmed(format!(
@@ -1145,7 +1145,7 @@ impl Switcher {
             format!(" {}", account_label(slot, &record.email)),
         ));
         let mut mappings = MappingStore::load(&self.store.paths);
-        let pruned = mappings.prune(&record.identity());
+        let pruned = mappings.prune(record.provider, &record.identity());
         if pruned > 0 {
             mappings.save()?;
             self.say(Line::dimmed(format!(
@@ -2764,6 +2764,7 @@ mod tests {
         f.switcher.add_account(Provider::Codex, None, None).unwrap();
         let mut mappings = MappingStore::load(&f.switcher.store.paths);
         mappings.set(
+            Provider::Codex,
             Path::new("/tmp/proj"),
             &Identity::new("a@example.com", "acct-1"),
         );

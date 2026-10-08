@@ -116,7 +116,7 @@ pub enum MappedAccount {
 }
 
 pub fn mapped_account(store: &Store, roster: &Roster, cwd: &Path) -> MappedAccount {
-    match MappingStore::load(&store.paths).resolve(cwd) {
+    match MappingStore::load(&store.paths).resolve(Provider::Codex, cwd) {
         None => MappedAccount::None,
         Some((_, identity)) => match roster.find_slot(Provider::Codex, &identity) {
             Some(slot) => MappedAccount::Slot(slot),
@@ -652,7 +652,7 @@ pub fn map(
             target.display()
         )));
     }
-    let previous = mappings.set(&target, &record.identity());
+    let previous = mappings.set(record.provider, &target, &record.identity());
     mappings.save()?;
     let mut line = format!(
         "{} {} → Account-{slot} ({})",
@@ -678,9 +678,9 @@ fn list_mappings(mappings: &MappingStore, roster: &Roster) -> Vec<String> {
         ];
     }
     let mut lines = vec![printer::bolded("Directory mappings:")];
-    for (path, identity) in mappings.entries() {
+    for (path, provider, identity) in mappings.entries() {
         let arrow = printer::dimmed("→");
-        let line = match roster.find_slot(Provider::Codex, &identity) {
+        let line = match roster.find_slot(provider, &identity) {
             Some(slot) => {
                 let tag = roster
                     .record(slot)
@@ -709,7 +709,7 @@ pub fn unmap(store: &Store, path: Option<&Path>, cwd: &Path) -> Result<String> {
     let mut mappings = MappingStore::load(&store.paths);
     let target = path.map_or_else(|| cwd.to_path_buf(), Path::to_path_buf);
     let normalized = MappingStore::normalize_path(&target);
-    if mappings.remove(&target) {
+    if mappings.remove(&target, None) {
         mappings.save()?;
         Ok(format!(
             "{} {}",
