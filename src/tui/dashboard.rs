@@ -53,7 +53,14 @@ pub struct MenuLevel {
 pub struct DashboardScreen {
     levels: Vec<MenuLevel>,
     cursor: usize,
+    /// First entry shown when the menu block is shorter than the menu.
+    scroll: usize,
 }
+
+/// Fewest rows the menu block keeps when the accounts panel squeezes it: the
+/// breadcrumb and the cursor row, so Enter never fires on an entry you cannot
+/// see.
+const MENU_MIN_ROWS: usize = 2;
 
 impl Default for DashboardScreen {
     fn default() -> Self {
@@ -87,6 +94,7 @@ impl DashboardScreen {
         Self {
             levels: vec![root_menu()],
             cursor: 0,
+            scroll: 0,
         }
     }
 
@@ -117,6 +125,7 @@ impl DashboardScreen {
             .iter()
             .position(|e| e.id != MenuId::Header)
             .unwrap_or(0);
+        self.scroll = 0;
         self.levels.push(level);
     }
 
@@ -125,6 +134,7 @@ impl DashboardScreen {
         if self.levels.len() > 1 {
             self.levels.pop();
             self.cursor = 0;
+            self.scroll = 0;
             true
         } else {
             false
@@ -134,6 +144,7 @@ impl DashboardScreen {
     fn pop_to_root(&mut self) {
         self.levels.truncate(1);
         self.cursor = 0;
+        self.scroll = 0;
     }
 
     fn move_cursor(&mut self, delta: i64) {
@@ -319,13 +330,43 @@ impl DashboardScreen {
         }
     }
 
-    /// The menu block: breadcrumb, blank, one row per entry.
-    pub fn menu_lines(&self, p: &Palette) -> Vec<Line<'static>> {
-        let mut lines = vec![
-            Line::from(Span::styled(self.breadcrumb(), p.muted_style())),
-            Line::default(),
-        ];
-        for (i, entry) in self.entries().iter().enumerate() {
+    /// The menu block in at most `rows` lines, never fewer than
+    /// `MENU_MIN_ROWS`: the breadcrumb, a blank when there is room, then the
+    /// entries scrolled so the cursor (and a section header right above it)
+    /// stays visible.
+    pub fn menu_lines(&mut self, rows: usize, p: &Palette) -> Vec<Line<'static>> {
+        let len = self.entries().len();
+        let rows = rows.clamp(MENU_MIN_ROWS, (len + 2).max(MENU_MIN_ROWS));
+        let spacer = rows > MENU_MIN_ROWS;
+        let visible = rows - 1 - usize::from(spacer);
+        let header_above = self.cursor > 0
+            && self
+                .entries()
+                .get(self.cursor - 1)
+                .is_some_and(|e| e.id == MenuId::Header);
+        let top = if header_above {
+            self.cursor - 1
+        } else {
+            self.cursor
+        };
+        if top < self.scroll {
+            self.scroll = top;
+        }
+        if self.cursor >= self.scroll + visible {
+            self.scroll = self.cursor + 1 - visible;
+        }
+        self.scroll = self.scroll.min(len.saturating_sub(visible));
+        let mut lines = vec![Line::from(Span::styled(self.breadcrumb(), p.muted_style()))];
+        if spacer {
+            lines.push(Line::default());
+        }
+        for (i, entry) in self
+            .entries()
+            .iter()
+            .enumerate()
+            .skip(self.scroll)
+            .take(visible)
+        {
             if entry.id == MenuId::Header {
                 lines.push(Line::from(Span::styled(
                     format!("  {}", entry.label),
@@ -550,11 +591,104 @@ mod tests {
             dash.handle_key(key(KeyCode::Char('q')), None, ThemeName::Dark),
             vec![Effect::Quit]
         );
-        let lines = dash.menu_lines(&crate::tui::theme::DARK);
+        let lines = dash.menu_lines(usize::MAX, &crate::tui::theme::DARK);
         let text =
             |i: usize| -> String { lines[i].spans.iter().map(|s| s.content.as_ref()).collect() };
         assert_eq!(text(0), "menu");
         assert_eq!(text(2), "▌ Switch account…");
         assert_eq!(text(3), "  Watch accounts");
+    }
+
+    fn texts(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn menu_window_scrolls_to_keep_the_cursor_visible() {
+        let p = &crate::tui::theme::DARK;
+        let mut dash = DashboardScreen::new();
+        assert_eq!(
+            dash.menu_lines(usize::MAX, p).len(),
+            10,
+            "breadcrumb, blank, eight entries"
+        );
+        assert_eq!(
+            texts(&dash.menu_lines(5, p)),
+            [
+                "menu",
+                "",
+                "▌ Switch account…",
+                "  Watch accounts",
+                "  Auto-switch view"
+            ]
+        );
+        dash.handle_key(key(KeyCode::End), None, ThemeName::Dark);
+        assert_eq!(
+            texts(&dash.menu_lines(5, p)),
+            ["menu", "", "  Remove account…", "  Theme…", "▌ Quit"]
+        );
+        dash.handle_key(key(KeyCode::Char('k')), None, ThemeName::Dark);
+        assert_eq!(
+            texts(&dash.menu_lines(5, p)),
+            ["menu", "", "  Remove account…", "▌ Theme…", "  Quit"],
+            "moving inside the window does not scroll"
+        );
+        dash.handle_key(key(KeyCode::Home), None, ThemeName::Dark);
+        assert_eq!(texts(&dash.menu_lines(5, p))[2], "▌ Switch account…");
+        dash.handle_key(key(KeyCode::End), None, ThemeName::Dark);
+        assert_eq!(
+            texts(&dash.menu_lines(2, p)),
+            ["menu", "▌ Quit"],
+            "two rows: breadcrumb and cursor, no spacer"
+        );
+        assert_eq!(
+            texts(&dash.menu_lines(0, p)),
+            ["menu", "▌ Quit"],
+            "never fewer than two rows"
+        );
+    }
+
+    #[test]
+    fn menu_window_restarts_per_level_and_reveals_the_header_above_the_cursor() {
+        let p = &crate::tui::theme::DARK;
+        let snap = sample();
+        let mut dash = DashboardScreen::new();
+        dash.handle_key(key(KeyCode::End), None, ThemeName::Dark);
+        dash.menu_lines(4, p);
+        dash.cursor = 4;
+        dash.handle_key(key(KeyCode::Enter), Some(&snap), ThemeName::Dark);
+        assert_eq!(
+            texts(&dash.menu_lines(4, p)),
+            [
+                "menu › disable / enable",
+                "",
+                "  codex",
+                "▌ 1  a@x.y   → disable"
+            ]
+        );
+        dash.handle_key(key(KeyCode::End), Some(&snap), ThemeName::Dark);
+        assert_eq!(
+            texts(&dash.menu_lines(4, p)),
+            [
+                "menu › disable / enable",
+                "",
+                "  3  c@x.y  (disabled)   → enable",
+                "▌ ← back"
+            ]
+        );
+        dash.handle_key(key(KeyCode::Char('k')), Some(&snap), ThemeName::Dark);
+        assert_eq!(
+            texts(&dash.menu_lines(4, p)),
+            [
+                "menu › disable / enable",
+                "",
+                "  claude",
+                "▌ 3  c@x.y  (disabled)   → enable"
+            ],
+            "the section header scrolls in above its first entry"
+        );
     }
 }

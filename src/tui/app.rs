@@ -820,7 +820,7 @@ fn rule(width: usize, p: &Palette) -> Line<'static> {
 }
 
 fn draw_dashboard(
-    dash: &DashboardScreen,
+    dash: &mut DashboardScreen,
     snapshot: Option<&AccountsSnapshot>,
     threshold: Option<f64>,
     area: Rect,
@@ -838,24 +838,28 @@ fn draw_dashboard(
         now,
         p,
     );
-    let menu = dash.menu_lines(p);
-    let fixed = menu.len() + 5;
-    let max_panel = (area.height as usize).saturating_sub(fixed).max(1);
-    panel.truncate(max_panel);
+    // Blank above the panel; blank, rule and blank above the menu.
+    const CHROME: usize = 4;
+    let height = area.height as usize;
+    // The panel keeps its full height: the menu takes what is left and
+    // scrolls, giving up rows down to its minimum before the panel is cut.
+    let spare = height.saturating_sub(CHROME + panel.len());
+    let menu = dash.menu_lines(spare, p);
+    panel.truncate(height.saturating_sub(CHROME + menu.len()));
     let mut lines: Vec<Line<'static>> = vec![Line::default()];
     lines.extend(panel.into_iter().map(|l| indent(l, 3)));
     lines.push(Line::default());
     lines.push(rule(width, p));
     lines.push(Line::default());
     for (i, line) in menu.into_iter().enumerate() {
-        let line = match i {
-            0 => indent(line, 3),
-            1 => line,
-            _ => {
-                let highlighted = line.style.bg.is_some();
-                let line = indent(line, 1);
-                if highlighted { fill(line, width) } else { line }
-            }
+        let line = if i == 0 {
+            indent(line, 3)
+        } else if line.spans.is_empty() {
+            line
+        } else {
+            let highlighted = line.style.bg.is_some();
+            let line = indent(line, 1);
+            if highlighted { fill(line, width) } else { line }
         };
         lines.push(line);
     }
