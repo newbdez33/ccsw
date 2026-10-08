@@ -65,12 +65,12 @@ pub fn credits_text(credits: Option<&Credits>) -> Option<String> {
     }
 }
 
-/// `♠ 2`: the rate-limit reset cards left; `None` when there are none or
+/// `♥ 2`: the rate-limit reset cards left; `None` when there are none or
 /// the API did not say.
 pub fn reset_cards_text(count: Option<u32>) -> Option<String> {
     count
         .filter(|count| *count > 0)
-        .map(|count| format!("♠ {count}"))
+        .map(|count| format!("♥ {count}"))
 }
 
 /// One bar row: `suffix` is the short form, `suffix_full` adds the reset clock.
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn reset_cards_icon() {
         assert_eq!(reset_cards_text(None), None);
-        assert_eq!(reset_cards_text(Some(2)), Some("♠ 2".into()));
+        assert_eq!(reset_cards_text(Some(2)), Some("♥ 2".into()));
         assert_eq!(
             reset_cards_text(Some(0)),
             None,

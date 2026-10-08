@@ -3,6 +3,15 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.7.3 — 2026-10-09
+
+### Changed
+
+- Reset cards are drawn as a red heart with a green count (`♥ 2`) instead of
+  an all-green spade.
+- Account cards and one-line summaries wrap at the terminal width instead of
+  being cut off at the right edge, as in `cswap`.
+
 ## v0.7.2 — 2026-10-08
 
 ### Changed

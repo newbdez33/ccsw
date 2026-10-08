@@ -196,17 +196,26 @@ fn dashboard_active_card_minis_menu_and_footer() {
     let (header_y, header) = find_row(&rows, "john.doe@gmail.com");
     assert_eq!(
         header,
-        "    2  john.doe@gmail.com  [Personal]   ● active   · 6m ago   ♠ 2"
+        "    2  john.doe@gmail.com  [Personal]   ● active   · 6m ago   ♥ 2"
     );
     let dot = col(header, '●');
     assert_eq!(fg(&buf, dot, header_y), DARK.accent);
-    let cards = col(header, '♠');
-    assert_eq!(fg(&buf, cards, header_y), DARK.ok, "reset cards are green");
+    let heart = col(header, '♥');
+    assert_eq!(
+        fg(&buf, heart, header_y),
+        DARK.crit,
+        "the reset-card heart is red"
+    );
+    assert_eq!(
+        fg(&buf, heart + 2, header_y),
+        DARK.ok,
+        "the reset-card count is green"
+    );
     assert!(
-        buf[(cards, header_y as u16)]
+        buf[(heart + 2, header_y as u16)]
             .modifier
             .contains(Modifier::BOLD),
-        "reset cards are bold"
+        "the reset-card count is bold"
     );
 
     let (five_y, five) = find_row(&rows, "5h    ");
@@ -242,7 +251,7 @@ fn dashboard_active_card_minis_menu_and_footer() {
     let (alice_y, alice) = find_row(&rows, "alice@corp.io");
     assert_eq!(
         alice,
-        "    1  alice@corp.io  [Acme]   5h 12% · 7d 40% · ♠ 1"
+        "    1  alice@corp.io  [Acme]   5h 12% · 7d 40% · ♥ 1"
     );
     assert_eq!(alice_y, header_y - 2);
     let pct = alice.find("12%").unwrap() as u16;
@@ -257,11 +266,15 @@ fn dashboard_active_card_minis_menu_and_footer() {
     assert_eq!(fg(&buf, ninety_six, work_y), DARK.crit);
     let (_, key_row) = find_row(&rows, "api-key-4@token.local");
     assert!(key_row.ends_with("   API key (no quota)"), "{key_row}");
-    let (_, expired_row) = find_row(&rows, "expired@x.y");
+    let (expired_y, expired_row) = find_row(&rows, "expired@x.y");
     assert!(
-        expired_row
-            .ends_with("   token expired — refresh deferred this pass; retries automatically"),
+        expired_row.ends_with("   token expired — refresh deferred this pass; retries"),
         "{expired_row}"
+    );
+    assert_eq!(
+        rows[expired_y + 1],
+        "   automatically",
+        "the 96-column note wraps at the 92-column card width"
     );
 
     let (menu_y, _) = find_row(&rows, "   menu");
@@ -282,7 +295,7 @@ fn dashboard_active_card_minis_menu_and_footer() {
 #[test]
 fn dashboard_keeps_every_account_and_scrolls_the_menu_when_the_terminal_is_short() {
     let mut app = app_with(TuiStart::Dashboard);
-    let rows = screen_rows(&render(&mut app, 100, 20, NOW));
+    let rows = screen_rows(&render(&mut app, 110, 20, NOW));
     find_row(&rows, "expired@x.y");
     assert_eq!(rows[14], "   menu");
     assert_eq!(rows[15], "");
@@ -296,7 +309,7 @@ fn dashboard_keeps_every_account_and_scrolls_the_menu_when_the_terminal_is_short
     assert!(!rows.iter().any(|r| r == "   Quit"), "{}", rows.join("\n"));
 
     app.handle_key(key(KeyCode::End), NOW);
-    let rows = screen_rows(&render(&mut app, 100, 20, NOW));
+    let rows = screen_rows(&render(&mut app, 110, 20, NOW));
     find_row(&rows, "expired@x.y");
     assert_eq!(rows[16], "   Remove account…");
     assert_eq!(rows[17], "   Theme…");
@@ -306,7 +319,7 @@ fn dashboard_keeps_every_account_and_scrolls_the_menu_when_the_terminal_is_short
 #[test]
 fn dashboard_menu_never_shrinks_below_the_breadcrumb_and_cursor_row() {
     let mut app = app_with(TuiStart::Dashboard);
-    let rows = screen_rows(&render(&mut app, 100, 16, NOW));
+    let rows = screen_rows(&render(&mut app, 110, 16, NOW));
     assert_eq!(rows[13], "   menu");
     assert_eq!(rows[14], " ▌ Switch account…");
     assert_eq!(
@@ -318,6 +331,28 @@ fn dashboard_menu_never_shrinks_below_the_breadcrumb_and_cursor_row() {
         !rows.iter().any(|r| r.contains("expired@x.y")),
         "the panel gives up its last row instead:\n{}",
         rows.join("\n")
+    );
+}
+
+#[test]
+fn dashboard_wraps_long_rows_on_a_narrow_terminal() {
+    let mut app = app_with(TuiStart::Dashboard);
+    let rows = screen_rows(&render(&mut app, 60, 40, NOW));
+    let (header_y, header) = find_row(&rows, "john.doe@gmail.com");
+    assert_eq!(
+        header,
+        "    2  john.doe@gmail.com  [Personal]   ● active   · 6m"
+    );
+    assert_eq!(
+        rows[header_y + 1],
+        "   ago   ♥ 2",
+        "continuation rows keep the panel indent"
+    );
+    let (expired_y, expired) = find_row(&rows, "expired@x.y");
+    assert_eq!(expired, "    5  expired@x.y  [personal]   token expired —");
+    assert_eq!(
+        rows[expired_y + 1],
+        "   refresh deferred this pass; retries automatically"
     );
 }
 
@@ -830,7 +865,7 @@ fn mixed_roster_shows_a_section_per_provider() {
     assert!(spend.ends_with("$12.50 / $50.00"), "{spend}");
     let (_, work) = find_row(&rows, "bob@work.com");
     assert_eq!(
-        work, "    7  bob@work.com  [Work]   5h 3% · 7d 22% · ♠ 1",
+        work, "    7  bob@work.com  [Work]   5h 3% · 7d 22% · ♥ 1",
         "a Claude account's limit resets show like Codex's"
     );
 

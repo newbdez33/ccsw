@@ -23,7 +23,7 @@ pub const RESETS_QUERY: &str = "cedar_ember=1";
 /// The Claude Code version the request claims when the installed one cannot be
 /// read from the `claude` executable. Release checklist: set it to the current
 /// Claude Code release, since the server refuses the reset block to old clients.
-pub const FALLBACK_CLI_VERSION: &str = "2.1.294";
+pub const FALLBACK_CLI_VERSION: &str = "2.1.295";
 
 /// The usage endpoint only lists limit resets for the Claude Code CLI surface,
 /// so the request identifies as the installed Claude Code, then as ccsw.

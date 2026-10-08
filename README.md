@@ -126,7 +126,7 @@ Usage is fetched on demand (the active account plus one other account per comman
 cached for three minutes, so run `ccsw list` again to fill in the remaining rows.
 Claude rows add a `$$` line for extra-usage spend and per-model windows such as
 `Fable: 62%`. The dashboard shows an account's saved limit resets (Codex's reset credits,
-Claude Code's `/limit-reset` grants) as a green `♠ n`. Anthropic lists those grants only
+Claude Code's `/limit-reset` grants) as a red heart with a green count (`♥ n`). Anthropic lists those grants only
 for the Claude Code CLI, so Claude usage requests identify as the installed Claude Code
 (`claude-cli/<version> (external, cli) ccsw/<version>`, the version read from the `claude`
 on your `PATH`).
@@ -228,7 +228,8 @@ ccsw watch    # straight to the live monitor
 The dashboard shows the active account as a card with 5h, 7d and per-model bars, the
 other accounts as one-line summaries, and the menu; when the terminal is short the
 accounts stay whole and the menu scrolls, keeping its title and the highlighted entry
-in view. The dashboard, switch and watch screens list a `codex` section and then a `claude` section when both are present; `ccsw watch` shows every account
+in view. Rows wider than the terminal wrap onto the next line, as in `cswap`. The
+dashboard, switch and watch screens list a `codex` section and then a `claude` section when both are present; `ccsw watch` shows every account
 as a live card. Both are pictured at the top of this page.
 
 ### Other commands
