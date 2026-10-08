@@ -18,6 +18,7 @@ use crate::collect::{self, CollectMode, CollectOptions, Collected, RefreshStatus
 use crate::errors::Result;
 use crate::model::{AccountRef, CurrentAccount, Roster, format_iso, now_iso, now_unix};
 use crate::printer;
+use crate::provider::Provider;
 use crate::store::poll_policy::{
     ESCALATION_MARGIN_PCT, EXHAUSTED_INTERVAL_S, RESET_SLACK_S, URGENT_INTERVAL_S,
 };
@@ -147,7 +148,7 @@ impl Event {
     /// `{"schemaVersion": 1, "event": kind, "ts": now, …}`.
     pub fn to_json(&self) -> Value {
         let mut map = Map::new();
-        map.insert("schemaVersion".into(), json!(crate::model::SCHEMA_VERSION));
+        map.insert("schemaVersion".into(), json!(1));
         map.insert("event".into(), json!(self.kind()));
         map.insert("ts".into(), json!(now_iso()));
         match self {
@@ -490,9 +491,15 @@ impl<'a> Engine<'a> {
             email: email.clone(),
         };
         let store = self.facade.store();
+        // Phase 1: the engine rotates Codex accounts only.
         let candidates: Vec<u32> = roster
             .switchable_slots(|slot| credentials::exists(store, slot))
             .into_iter()
+            .filter(|slot| {
+                roster
+                    .record(*slot)
+                    .is_some_and(|r| r.provider == Provider::Codex)
+            })
             .filter(|slot| *slot != current && !quarantined.contains(slot))
             .collect();
 
@@ -726,12 +733,25 @@ impl<'a> Engine<'a> {
         let threshold = self.settings.threshold;
         let store = self.facade.store();
         let models = &self.models;
+        // Every live login is an active slot, whatever its provider, so the
+        // pass never treats the live Claude login as a refreshable candidate.
+        let mut actives = vec![active];
+        for provider in Provider::ALL {
+            if roster.slots_of(provider).is_empty() {
+                continue;
+            }
+            if let Some(slot) = collect::live_login_for(store, roster, provider).slot()
+                && !actives.contains(&slot)
+            {
+                actives.push(slot);
+            }
+        }
         let mut collected = collect::run_pass(
             store,
             roster,
             CollectOptions {
                 mode: CollectMode::Scheduled,
-                active: Some(active),
+                actives: actives.clone(),
                 candidates,
                 threshold,
                 models,
@@ -751,7 +771,7 @@ impl<'a> Engine<'a> {
                 roster,
                 CollectOptions {
                     mode: CollectMode::Escalation,
-                    active: Some(active),
+                    actives,
                     candidates,
                     threshold,
                     models,
@@ -1302,6 +1322,7 @@ mod tests {
     use crate::model::{
         AccountKind, AccountRecord, Identity, NormalizedUsage, SwitchOutcome, WindowUsage,
     };
+    use crate::provider::Provider;
     use crate::store::temp_store;
     use crate::store::usage_store::{FetchRecord, UsageStore};
     use std::cell::RefCell;
@@ -1350,6 +1371,7 @@ mod tests {
             }
             Ok(SwitchOutcome {
                 switched,
+                provider: Provider::Codex,
                 from,
                 to: Some(AccountRef {
                     number: Some(slot),
@@ -1999,6 +2021,34 @@ mod tests {
         assert!(state.last_switch_at.unwrap() >= fixture.now);
         assert_eq!(state.last_switch_to.as_deref(), Some("3"));
         assert_eq!(state.last_switch_from, Some(1));
+    }
+
+    #[test]
+    fn a_claude_record_is_never_a_candidate() {
+        use crate::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
+        let mut fixture = Fixture::new(&[1, 2, 3]);
+        let record = fixture.fake.roster.record_mut(3).unwrap();
+        record.provider = Provider::Claude;
+        let credential = ClaudeCredential::from_value(json!({"claudeAiOauth": {
+            "accessToken": "cat", "refreshToken": "crt", "expiresAt": FAR * 1000,
+            "scopes": ["user:inference"]
+        }}));
+        let slot_file = SlotFile::new(&credential, OauthAccount::synthesized("a3@example.com"));
+        credentials::write(&fixture.fake.store, 3, &slot_file.to_value()).unwrap();
+        fixture.seed(1, usage(95.0, 10.0, None));
+        fixture.seed(2, usage(40.0, 10.0, None));
+        fixture.seed(3, usage(5.0, 5.0, None));
+
+        let (outcome, events) = tick(&mut fixture, defaults(), true);
+        assert_eq!(outcome, TickOutcome::Switched);
+        let Event::Poll { headroom, .. } = &events[0] else {
+            panic!("poll event");
+        };
+        assert!(!headroom.contains_key(&3), "the Claude slot is not ranked");
+        assert!(matches!(
+            &events[1],
+            Event::Switch { to: Some(to), .. } if to.number == Some(2)
+        ));
     }
 
     #[test]

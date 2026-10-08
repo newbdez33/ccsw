@@ -19,6 +19,7 @@ use crate::errors::{CswitchError, Result};
 use crate::model::{AccountKind, AccountRecord, Identity, Roster, now_iso, now_unix};
 use crate::paths::Paths;
 use crate::printer;
+use crate::provider::Provider;
 use crate::store::usage_store::{AUTH_DEAD_STRIKES, UsageStore};
 use crate::store::{Store, alias_owner, credentials, normalize_alias, resolve_identifier, roster};
 
@@ -197,9 +198,24 @@ pub fn export_accounts(
         ],
         None => roster.sorted_slots(),
     };
+    // The archive format carries Codex accounts only in this release.
+    let (slots, claude): (Vec<u32>, Vec<u32>) = slots.into_iter().partition(|slot| {
+        roster
+            .record(*slot)
+            .is_none_or(|r| r.provider == Provider::Codex)
+    });
     let live = AuthJson::read(&paths.live_auth_file()).ok().flatten();
 
     let mut notices = Vec::new();
+    if !claude.is_empty() {
+        notice(
+            &mut notices,
+            format!(
+                "Skipped {} Claude Code account(s): export covers Codex accounts only in this release.",
+                claude.len()
+            ),
+        );
+    }
     let mut skipped = Vec::new();
     let mut accounts = Vec::new();
     for slot in slots {
@@ -225,6 +241,9 @@ pub fn export_accounts(
                 skipped.push(slot);
             }
         }
+    }
+    if accounts.is_empty() && skipped.is_empty() {
+        return Err(CswitchError::transfer("no exportable accounts"));
     }
     if accounts.is_empty() {
         return Err(CswitchError::transfer(
@@ -372,7 +391,7 @@ pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Resu
         let identity = entry.record.identity();
         let email = identity.email.clone();
         let envelope_active = envelope.active == Some(u64::from(entry.number));
-        let (slot, outcome) = match roster.find_slot(&identity) {
+        let (slot, outcome) = match roster.find_slot(Provider::Codex, &identity) {
             Some(slot) if force => (slot, Outcome::Overwrote),
             Some(slot) if slot_token_dead(&usage, &store, slot, &identity, now) => {
                 (slot, Outcome::Replaced)
@@ -689,7 +708,7 @@ fn strike_state(
 fn live_login_slot(paths: &Paths, store: &Store, roster: &Roster) -> Option<u32> {
     let live = AuthJson::read(&paths.live_auth_file()).ok().flatten()?;
     if let Some(identity) = live.identity() {
-        return roster.find_slot(&identity);
+        return roster.find_slot(Provider::Codex, &identity);
     }
     let key = live.api_key()?;
     roster.sequence.iter().copied().find(|slot| {
@@ -799,6 +818,59 @@ mod tests {
         assert_eq!(expand_tilde("~/b.cswitch"), home.join("b.cswitch"));
         assert_eq!(expand_tilde("~x/b"), PathBuf::from("~x/b"));
         assert_eq!(expand_tilde("/tmp/b"), PathBuf::from("/tmp/b"));
+    }
+
+    /// Slot 1 is a Codex account, slot 2 a Claude Code one; both have credentials.
+    fn mixed_store() -> (tempfile::TempDir, Store) {
+        let (dir, store) = crate::store::temp_store();
+        let mut roster = Roster::empty();
+        roster.add_record(1, AccountRecord::new("codex@example.com"));
+        let mut claude = AccountRecord::new("claude@example.com");
+        claude.provider = Provider::Claude;
+        roster.add_record(2, claude);
+        roster::write(&store.paths, &roster).unwrap();
+        credentials::write(
+            &store,
+            1,
+            &json!({"auth_mode": "apikey", "OPENAI_API_KEY": "sk-x"}),
+        )
+        .unwrap();
+        credentials::write(&store, 2, &json!({"claudeAiOauth": {"accessToken": "cat"}})).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn export_skips_claude_slots() {
+        let (dir, store) = mixed_store();
+        let path = dir.path().join("out.cswitch");
+        let report =
+            export_accounts(&store.paths, ExportTarget::File(path.clone()), None, false).unwrap();
+        assert_eq!(report.written, 1);
+        assert_eq!(
+            report.notices[0],
+            "Skipped 1 Claude Code account(s): export covers Codex accounts only in this release."
+        );
+        let numbers: Vec<u64> = report.envelope["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["number"].as_u64().unwrap())
+            .collect();
+        assert_eq!(numbers, [1]);
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("claude@example.com"));
+        assert!(!written.contains("claudeAiOauth"));
+
+        let only_claude = dir.path().join("claude.cswitch");
+        let err = export_accounts(
+            &store.paths,
+            ExportTarget::File(only_claude.clone()),
+            Some("2"),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err.type_name(), "TransferError");
+        assert!(!only_claude.exists(), "nothing was written");
     }
 
     #[test]

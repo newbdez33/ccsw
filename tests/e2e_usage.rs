@@ -136,10 +136,10 @@ fn list_renders_real_usage_rows_and_serves_the_cache() {
     assert_eq!(run.status, 0);
     assert_eq!(run.stderr, "");
     let payload = run.json();
-    assert_eq!(payload["active"]["number"], 1);
-    assert_eq!(payload["active"]["managed"], true);
-    assert_eq!(payload["active"]["usageStatus"], "ok");
-    assert_eq!(payload["active"]["usage"]["fiveHour"]["pct"], 35.0);
+    assert_eq!(payload["active"]["codex"]["number"], 1);
+    assert_eq!(payload["active"]["codex"]["managed"], true);
+    assert_eq!(payload["active"]["codex"]["usageStatus"], "ok");
+    assert_eq!(payload["active"]["codex"]["usage"]["fiveHour"]["pct"], 35.0);
     assert_eq!(payload["totalManagedAccounts"], 4);
 
     let run = cli.run(&["status"]);
@@ -197,7 +197,7 @@ fn best_and_next_available_use_real_headroom() {
     assert_eq!(payload["strategy"], "best");
     assert_eq!(
         payload["to"],
-        json!({"number": 3, "email": "carol@example.com"})
+        json!({"number": 3, "email": "carol@example.com", "provider": "codex"})
     );
     assert_eq!(cli.live()["tokens"]["access_token"], POOL);
 
@@ -355,7 +355,7 @@ fn refresh_of_an_inactive_account_rotates_only_its_slot() {
 fn log_file_is_created_lazily_in_the_backup_root() {
     let cli = Cli::new();
     let run = cli.run(&["status"]);
-    assert_eq!(run.stdout, "Status: No active Codex account\n");
+    assert_eq!(run.stdout, "Status: No active Codex or Claude account\n");
     assert!(
         !cli.cswitch_home.exists(),
         "a no-op run creates neither the store nor the log"

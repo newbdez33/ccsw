@@ -9,12 +9,14 @@ pub mod errors;
 pub mod fsutil;
 pub mod model;
 pub mod paths;
+pub mod provider;
 pub mod usage_math;
 
 pub mod jsonout;
 pub mod logging;
 pub mod printer;
 
+pub mod claude;
 pub mod codex;
 pub mod store;
 

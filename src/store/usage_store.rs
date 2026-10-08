@@ -47,6 +47,7 @@ pub enum UsageSentinel {
     TokenExpired,
     ApiKey,
     ReloginNeeded,
+    KeychainUnavailable,
 }
 
 impl UsageSentinel {
@@ -61,6 +62,7 @@ impl UsageSentinel {
             Self::ReloginNeeded => {
                 "re-login needed — refresh token dead; log in with Codex, then run: cswitch add"
             }
+            Self::KeychainUnavailable => "keychain unavailable — locked or in use; try again",
         }
     }
 
@@ -71,6 +73,7 @@ impl UsageSentinel {
             Self::TokenExpired => "token_expired",
             Self::ApiKey => "api_key",
             Self::ReloginNeeded => "relogin_required",
+            Self::KeychainUnavailable => "keychain_unavailable",
         }
     }
 }
@@ -579,6 +582,7 @@ mod tests {
         let paths = Paths::from_values(
             Some(dir.path().join("store")),
             Some(dir.path().join("codex")),
+            None,
             dir.path(),
         )
         .unwrap();
@@ -627,6 +631,18 @@ mod tests {
         let mut entry = Row::default().entry(NOW);
         f(&mut entry);
         entry
+    }
+
+    #[test]
+    fn keychain_sentinel_wording() {
+        assert_eq!(
+            UsageSentinel::KeychainUnavailable.label(),
+            "keychain unavailable — locked or in use; try again"
+        );
+        assert_eq!(
+            UsageSentinel::KeychainUnavailable.usage_status(),
+            "keychain_unavailable"
+        );
     }
 
     #[test]

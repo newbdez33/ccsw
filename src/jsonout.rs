@@ -1,14 +1,16 @@
-//! `--json` payload builders (cswap schemaVersion 1, with additive Codex fields).
+//! `--json` payload builders (schemaVersion 2: cswap's schema plus `provider` on rows and
+//! switch references, a per-provider `active` map, and additive Codex fields).
 
 use serde_json::{Map, Value, json};
 
 use crate::errors::CswitchError;
 use crate::model::{
-    AccountRecord, CurrentAccount, NormalizedUsage, SCHEMA_VERSION, SwitchOutcome, WindowUsage,
-    format_iso,
+    AccountRecord, ActiveSlots, CurrentAccount, NormalizedUsage, SCHEMA_VERSION, SwitchOutcome,
+    WindowUsage, format_iso,
 };
 use crate::printer::countdown_and_clock;
 use crate::store::usage_store::UsageEntry;
+use crate::switcher::ProviderStatus;
 use crate::usage_math::{compute_pace, parse_reset, projected_exhaustion_ts, will_last_to_reset};
 
 fn one_decimal(value: f64) -> f64 {
@@ -81,6 +83,17 @@ pub fn usage_projection(usage: &NormalizedUsage, fetched_at: Option<f64>, now: i
             json!({"balance": credits.balance, "unlimited": credits.unlimited}),
         );
     }
+    if let Some(spend) = &usage.spend {
+        let mut value = Map::new();
+        value.insert("used".into(), json!(spend.used));
+        value.insert("limit".into(), json!(spend.limit));
+        value.insert("pct".into(), json!(spend.pct));
+        value.insert("currency".into(), json!(spend.currency));
+        if let Some(resets_at) = &spend.resets_at {
+            value.insert("resetsAt".into(), json!(resets_at));
+        }
+        out.insert("spend".into(), Value::Object(value));
+    }
     Value::Object(out)
 }
 
@@ -102,6 +115,7 @@ fn row_fields(
 ) -> Map<String, Value> {
     let mut row = Map::new();
     row.insert("number".into(), json!(slot));
+    row.insert("provider".into(), json!(record.provider.as_str()));
     row.insert("email".into(), json!(record.email));
     row.insert("organizationName".into(), json!(record.organization_name));
     row.insert("organizationUuid".into(), json!(record.organization_uuid));
@@ -171,10 +185,11 @@ pub fn account_row(
     Value::Object(row)
 }
 
-pub fn list_payload(active: Option<u32>, rows: Vec<Value>, warnings: &[String]) -> Value {
+pub fn list_payload(actives: &ActiveSlots, rows: Vec<Value>, warnings: &[String]) -> Value {
     let mut payload = json!({
         "schemaVersion": SCHEMA_VERSION,
-        "activeAccountNumber": active,
+        "activeAccountNumber": actives.codex,
+        "active": actives,
         "accounts": rows,
     });
     if !warnings.is_empty() {
@@ -183,35 +198,39 @@ pub fn list_payload(active: Option<u32>, rows: Vec<Value>, warnings: &[String]) 
     payload
 }
 
-/// `status --json`: `active` is null, `{email, managed: false}`, or the managed row.
-pub fn status_payload(
-    current: &CurrentAccount,
-    managed: Option<(&AccountRecord, &UsageEntry)>,
-    total: usize,
-    now: i64,
-) -> Value {
-    match (current, managed) {
-        (CurrentAccount::NoLogin, _) => json!({"schemaVersion": SCHEMA_VERSION, "active": null}),
-        (CurrentAccount::Managed { slot, .. }, Some((record, entry))) => {
-            let mut row = row_fields(*slot, record, entry, now);
-            row.insert("managed".into(), json!(true));
-            json!({
-                "schemaVersion": SCHEMA_VERSION,
-                "active": Value::Object(row),
-                "totalManagedAccounts": total,
-            })
-        }
-        (current, _) => json!({
-            "schemaVersion": SCHEMA_VERSION,
-            "active": {"email": current.email().unwrap_or(""), "managed": false},
-        }),
+/// `status --json`: one entry per provider under `active`: null, `{email, managed: false}`,
+/// or the managed row (with `managed: true`).
+pub fn status_payload(statuses: &[ProviderStatus], total: usize, now: i64) -> Value {
+    let mut active = Map::new();
+    for status in statuses {
+        let value = match (&status.current, &status.row) {
+            (CurrentAccount::NoLogin, _) => Value::Null,
+            (CurrentAccount::Managed { slot, .. }, Some(row)) => {
+                let mut fields = row_fields(*slot, &row.record, &row.usage, now);
+                fields.insert("managed".into(), json!(true));
+                Value::Object(fields)
+            }
+            (current, _) => json!({"email": current.email().unwrap_or(""), "managed": false}),
+        };
+        active.insert(status.provider.as_str().to_string(), value);
     }
+    json!({
+        "schemaVersion": SCHEMA_VERSION,
+        "active": Value::Object(active),
+        "totalManagedAccounts": total,
+    })
 }
 
 /// `switch --json`; `models` is `(names, source)` when a model list was in effect.
 pub fn switch_payload(outcome: &SwitchOutcome, models: Option<(&[String], &str)>) -> Value {
     let mut payload = serde_json::to_value(outcome).unwrap_or_else(|_| json!({}));
     payload["schemaVersion"] = json!(SCHEMA_VERSION);
+    let provider = json!(outcome.provider.as_str());
+    for key in ["from", "to"] {
+        if let Some(reference) = payload.get_mut(key).filter(|v| v.is_object()) {
+            reference["provider"] = provider.clone();
+        }
+    }
     if let Some((names, source)) = models
         && !names.is_empty()
     {
@@ -238,8 +257,10 @@ pub fn render_document(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AccountRef, Credits, ScopedWindow};
+    use crate::model::{AccountRef, ActiveSlots, Credits, ScopedWindow};
+    use crate::provider::Provider;
     use crate::store::usage_store::UsageSentinel;
+    use crate::switcher::{AccountRow, ProviderStatus};
 
     const NOW: i64 = 1_790_000_000; // 2026-09-21T14:13:20Z
 
@@ -284,6 +305,7 @@ mod tests {
             limited: false,
             plan_type: Some("pro".into()),
             reset_credits: None,
+            spend: None,
         }
     }
 
@@ -305,6 +327,19 @@ mod tests {
             value["credits"],
             json!({"balance": 12.5, "unlimited": false})
         );
+        let mut with_spend = usage();
+        with_spend.spend = Some(crate::model::Spend {
+            used: 7.29,
+            limit: 50.0,
+            pct: 14.58,
+            currency: "USD".into(),
+            resets_at: Some(format_iso(NOW + 86_400)),
+        });
+        let value = usage_projection(&with_spend, Some(NOW as f64), NOW);
+        assert_eq!(
+            value["spend"],
+            json!({"used": 7.29, "limit": 50.0, "pct": 14.58, "currency": "USD", "resetsAt": format_iso(NOW + 86_400)})
+        );
         assert!(
             usage_projection(&NormalizedUsage::default(), None, NOW)
                 .as_object()
@@ -324,6 +359,7 @@ mod tests {
         let fresh = entry(Some(usage()), Some(10.0));
         let row = account_row(2, &record, &fresh, true, NOW);
         assert_eq!(row["number"], 2);
+        assert_eq!(row["provider"], "codex");
         assert_eq!(row["isOrganization"], true);
         assert_eq!(row["accountId"], "acct-1");
         assert_eq!(row["planType"], "pro");
@@ -359,36 +395,82 @@ mod tests {
 
     #[test]
     fn payload_shapes() {
-        let list = list_payload(None, vec![], &[]);
+        let list = list_payload(&ActiveSlots::default(), vec![], &[]);
         assert_eq!(
             list,
-            json!({"schemaVersion": 1, "activeAccountNumber": null, "accounts": []})
+            json!({"schemaVersion": 2, "activeAccountNumber": null, "active": {"codex": null, "claude": null}, "accounts": []})
         );
-        let list = list_payload(Some(1), vec![json!({"number": 1})], &["w".to_string()]);
+        let mut actives = ActiveSlots::default();
+        actives.set(Provider::Codex, Some(1));
+        actives.set(Provider::Claude, Some(5));
+        let list = list_payload(&actives, vec![json!({"number": 1})], &["w".to_string()]);
         assert_eq!(list["activeAccountNumber"], 1);
+        assert_eq!(list["active"], json!({"codex": 1, "claude": 5}));
         assert_eq!(list["warnings"], json!(["w"]));
 
+        let none = [
+            ProviderStatus {
+                provider: Provider::Codex,
+                current: CurrentAccount::NoLogin,
+                row: None,
+            },
+            ProviderStatus {
+                provider: Provider::Claude,
+                current: CurrentAccount::NoLogin,
+                row: None,
+            },
+        ];
         assert_eq!(
-            status_payload(&CurrentAccount::NoLogin, None, 0, NOW),
-            json!({"schemaVersion": 1, "active": null})
+            status_payload(&none, 0, NOW),
+            json!({"schemaVersion": 2, "active": {"codex": null, "claude": null}, "totalManagedAccounts": 0})
         );
-        let unmanaged = CurrentAccount::Unmanaged {
-            email: "u@x.com".into(),
-        };
+        let unmanaged = [
+            ProviderStatus {
+                provider: Provider::Codex,
+                current: CurrentAccount::Unmanaged {
+                    email: "u@x.com".into(),
+                },
+                row: None,
+            },
+            ProviderStatus {
+                provider: Provider::Claude,
+                current: CurrentAccount::NoLogin,
+                row: None,
+            },
+        ];
         assert_eq!(
-            status_payload(&unmanaged, None, 2, NOW),
-            json!({"schemaVersion": 1, "active": {"email": "u@x.com", "managed": false}})
+            status_payload(&unmanaged, 2, NOW)["active"],
+            json!({"codex": {"email": "u@x.com", "managed": false}, "claude": null})
         );
-        let record = AccountRecord::new("a@x.com");
-        let managed = CurrentAccount::Managed {
-            slot: 1,
-            email: "a@x.com".into(),
-            api_key: false,
-        };
-        let value = status_payload(&managed, Some((&record, &entry(None, None))), 2, NOW);
-        assert_eq!(value["active"]["managed"], true);
-        assert!(value["active"].get("active").is_none());
-        assert_eq!(value["active"]["usageStatus"], "unavailable");
+        let mut record = AccountRecord::new("a@x.com");
+        record.provider = Provider::Claude;
+        let managed = [
+            ProviderStatus {
+                provider: Provider::Codex,
+                current: CurrentAccount::NoLogin,
+                row: None,
+            },
+            ProviderStatus {
+                provider: Provider::Claude,
+                current: CurrentAccount::Managed {
+                    slot: 5,
+                    email: "a@x.com".into(),
+                    api_key: false,
+                },
+                row: Some(AccountRow {
+                    slot: 5,
+                    record,
+                    usage: entry(None, None),
+                    is_active: true,
+                }),
+            },
+        ];
+        let value = status_payload(&managed, 2, NOW);
+        assert!(value["active"]["codex"].is_null());
+        assert_eq!(value["active"]["claude"]["managed"], true);
+        assert_eq!(value["active"]["claude"]["provider"], "claude");
+        assert_eq!(value["active"]["claude"]["number"], 5);
+        assert!(value["active"]["claude"].get("active").is_none());
         assert_eq!(value["totalManagedAccounts"], 2);
 
         let outcome = SwitchOutcome {
@@ -405,9 +487,13 @@ mod tests {
             reason: "switched".into(),
             message: "Switched to Account-2 (b@x.com)".into(),
             warnings: vec![],
+            provider: Provider::Claude,
         };
         let value = switch_payload(&outcome, Some((&["Spark".to_string()], "cli")));
-        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["schemaVersion"], 2);
+        assert_eq!(value["provider"], "claude");
+        assert_eq!(value["from"]["provider"], "claude");
+        assert_eq!(value["to"]["provider"], "claude");
         assert_eq!(value["from"]["number"], 1);
         assert_eq!(value["models"], json!(["Spark"]));
         assert_eq!(value["modelSource"], "cli");
@@ -418,7 +504,7 @@ mod tests {
         let envelope = error_envelope(&CswitchError::not_found("x"));
         assert_eq!(
             envelope,
-            json!({"schemaVersion": 1, "error": {"type": "AccountNotFoundError", "message": "No account found with identifier: x"}})
+            json!({"schemaVersion": 2, "error": {"type": "AccountNotFoundError", "message": "No account found with identifier: x"}})
         );
         assert!(render_document(&json!({"a": 1})).ends_with("\n"));
         assert_eq!(render_document(&json!({"a": 1})), "{\n  \"a\": 1\n}\n");

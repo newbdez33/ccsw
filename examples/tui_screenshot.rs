@@ -11,7 +11,8 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 
 use cswitch::cli::tui::TuiStart;
-use cswitch::model::{NormalizedUsage, ScopedWindow, WindowUsage, format_iso};
+use cswitch::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso};
+use cswitch::provider::Provider;
 use cswitch::store::usage_store::UsageEntry;
 use cswitch::tui::app::App;
 use cswitch::tui::snapshot::{AccountSnapshot, AccountsSnapshot};
@@ -19,7 +20,7 @@ use cswitch::tui::theme::{DARK, ThemeName};
 
 const NOW: f64 = 1_790_000_000.0;
 const COLS: u16 = 96;
-const ROWS: u16 = 24;
+const ROWS: u16 = 36;
 
 fn window(pct: f64, reset_in: i64) -> WindowUsage {
     WindowUsage {
@@ -52,10 +53,12 @@ fn account(
     email: &str,
     tag: &str,
     alias: Option<&str>,
+    provider: Provider,
     usage: UsageEntry,
 ) -> AccountSnapshot {
     AccountSnapshot {
         number,
+        provider,
         email: email.to_string(),
         tag: tag.to_string(),
         alias: alias.map(str::to_string),
@@ -72,6 +75,7 @@ fn fixture() -> AccountsSnapshot {
         "alice@corp.io",
         "Team",
         Some("dev"),
+        Provider::Codex,
         entry(
             20.0,
             NormalizedUsage {
@@ -87,6 +91,7 @@ fn fixture() -> AccountsSnapshot {
         "john.doe@gmail.com",
         "Pro 20×",
         None,
+        Provider::Codex,
         entry(
             40.0,
             NormalizedUsage {
@@ -108,6 +113,7 @@ fn fixture() -> AccountsSnapshot {
         "john.doe@company.com",
         "Plus",
         None,
+        Provider::Codex,
         entry(
             15.0,
             NormalizedUsage {
@@ -118,9 +124,52 @@ fn fixture() -> AccountsSnapshot {
         ),
     );
     work.disabled = true;
+    let mut claude_personal = account(
+        4,
+        "bob@gmail.com",
+        "Personal",
+        None,
+        Provider::Claude,
+        entry(
+            30.0,
+            NormalizedUsage {
+                five_hour: Some(window(40.0, 70 * 60)),
+                seven_day: Some(window(100.0, 2 * 86_400 + 4 * 3600)),
+                scoped: vec![ScopedWindow {
+                    name: "Fable".into(),
+                    pct: 100.0,
+                    resets_at: Some(format_iso(NOW as i64 + 2 * 86_400 + 4 * 3600)),
+                }],
+                spend: Some(Spend {
+                    used: 12.5,
+                    limit: 50.0,
+                    pct: 25.0,
+                    currency: "USD".into(),
+                    resets_at: None,
+                }),
+                ..NormalizedUsage::default()
+            },
+        ),
+    );
+    claude_personal.is_active = true;
+    let claude_work = account(
+        5,
+        "bob@work.com",
+        "Work",
+        None,
+        Provider::Claude,
+        entry(
+            12.0,
+            NormalizedUsage {
+                five_hour: Some(window(3.0, 3600)),
+                seven_day: Some(window(22.0, 86_400)),
+                ..NormalizedUsage::default()
+            },
+        ),
+    );
     AccountsSnapshot {
         active_number: Some(2),
-        accounts: vec![dev, personal, work],
+        accounts: vec![dev, personal, work, claude_personal, claude_work],
         taken_at: NOW,
     }
 }

@@ -360,7 +360,7 @@ mod tests {
         let text = serde_json::to_string(&ErrorPayload::new(&CswitchError::config("x"))).unwrap();
         assert_eq!(
             text,
-            r#"{"schemaVersion":1,"error":{"type":"ConfigError","message":"x"}}"#
+            r#"{"schemaVersion":2,"error":{"type":"ConfigError","message":"x"}}"#
         );
     }
 }

@@ -2,6 +2,7 @@
 
 use crate::errors::Result;
 use crate::jsonout;
+use crate::provider::Provider;
 use crate::store::parse_model_names;
 use crate::switcher::{Line, Strategy, SwitchReport, Switcher};
 
@@ -23,6 +24,7 @@ pub fn direct_cmd(
 /// Bare `switch` and `switch --strategy … [--model …]`.
 pub fn rotate_cmd(
     switcher: &mut Switcher,
+    provider: Option<Provider>,
     strategy: Option<&str>,
     model: Option<&str>,
     json: bool,
@@ -47,7 +49,7 @@ pub fn rotate_cmd(
             models.join(", ")
         ))]);
     }
-    let report = switcher.switch(strategy, &models, !json)?;
+    let report = switcher.switch(provider, strategy, &models, !json)?;
     finish(switcher, report, json, Some((models.as_slice(), source)))
 }
 

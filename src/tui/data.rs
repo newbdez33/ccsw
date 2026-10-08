@@ -5,7 +5,7 @@ use crate::model::{Credits, NormalizedUsage};
 use crate::printer::{countdown_and_clock, format_age, format_duration};
 use crate::store::poll_policy::SERVE_TTL_S;
 use crate::store::usage_store::{STALE_OK_S, UsageEntry, UsageSentinel};
-use crate::usage_math::{binding_pct, usage_rows};
+use crate::usage_math::{binding_pct, parse_reset, usage_rows};
 
 /// `· 6m ago` once the measurement is older than the serve TTL (180 s).
 pub fn age_note(age_s: Option<f64>) -> Option<String> {
@@ -128,6 +128,26 @@ pub fn display_rows(usage: &NormalizedUsage, fetched_at: Option<f64>, now: i64) 
         .collect()
 }
 
+/// The `$$` row of a Claude card: pct plus `resets …` and the amounts.
+pub fn spend_row(usage: &NormalizedUsage, now: i64) -> Option<DisplayRow> {
+    let spend = usage.spend.as_ref()?;
+    let resets_at = spend.resets_at.as_deref().and_then(parse_reset);
+    let reset = reset_text(resets_at, now).unwrap_or_default();
+    let reset_full = match reset_clock(resets_at, now) {
+        Some(clock) if !reset.is_empty() => format!("{reset} · {clock}"),
+        _ => reset.clone(),
+    };
+    Some(DisplayRow {
+        label: "$$".to_string(),
+        pct: spend.pct,
+        suffix: join(&[reset, spend.amounts()]),
+        suffix_full: join(&[reset_full, spend.amounts()]),
+        maxed_pool: false,
+        ahead: false,
+        resets_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +256,27 @@ mod tests {
             None,
             "nothing left, nothing shown"
         );
+    }
+
+    #[test]
+    fn spend_row_text() {
+        let now = 1_790_000_000;
+        let usage = NormalizedUsage {
+            spend: Some(crate::model::Spend {
+                used: 12.5,
+                limit: 50.0,
+                pct: 25.0,
+                currency: "USD".into(),
+                resets_at: Some(format_iso(now + 7980)),
+            }),
+            ..NormalizedUsage::default()
+        };
+        let row = spend_row(&usage, now).unwrap();
+        assert_eq!(row.label, "$$");
+        assert_eq!(row.pct, 25.0);
+        assert_eq!(row.suffix, "resets 2h 13m  $12.50 / $50.00");
+        assert!(row.suffix_full.starts_with("resets 2h 13m · "));
+        assert!(row.suffix_full.ends_with("  $12.50 / $50.00"));
+        assert_eq!(spend_row(&NormalizedUsage::default(), now), None);
     }
 }

@@ -12,7 +12,7 @@ fn first_run_json_never_prompts() {
     assert_eq!(run.status, 0, "{}", run.stderr);
     assert_eq!(
         run.json(),
-        json!({"schemaVersion": 1, "activeAccountNumber": null, "accounts": []})
+        json!({"schemaVersion": 2, "activeAccountNumber": null, "active": {"codex": null, "claude": null}, "accounts": []})
     );
     assert!(
         !cli.cswitch_home.exists(),
@@ -27,7 +27,7 @@ fn first_run_human_offers_to_add_the_live_login() {
     assert_eq!(run.status, 0);
     assert_eq!(
         run.stdout,
-        "No accounts are managed yet.\nNo active Codex account found. Please log in first.\n"
+        "No accounts are managed yet.\nNo active Codex or Claude login found. Log in first.\n"
     );
 
     cli.write_live(&chatgpt_auth("alice@example.com", "acct-alice", "rt-a"));
@@ -104,7 +104,8 @@ fn list_json_rows() {
     assert_eq!(run.status, 0, "{}", run.stderr);
     assert_eq!(run.stderr, "");
     let payload = run.json();
-    assert_eq!(payload["schemaVersion"], 1);
+    assert_eq!(payload["schemaVersion"], 2);
+    assert_eq!(payload["accounts"][0]["provider"], "codex");
     assert_eq!(payload["activeAccountNumber"], 2);
     let rows = payload["accounts"].as_array().unwrap();
     assert_eq!(rows.len(), 3);
@@ -136,9 +137,12 @@ fn list_json_rows() {
 fn status_human_and_json() {
     let cli = Cli::new();
     let run = cli.run(&["status"]);
-    assert_eq!(run.stdout, "Status: No active Codex account\n");
+    assert_eq!(run.stdout, "Status: No active Codex or Claude account\n");
     let run = cli.run(&["status", "--json"]);
-    assert_eq!(run.json(), json!({"schemaVersion": 1, "active": null}));
+    assert_eq!(
+        run.json(),
+        json!({"schemaVersion": 2, "active": {"codex": null, "claude": null}, "totalManagedAccounts": 0})
+    );
 
     cli.write_live(&chatgpt_auth("carol@example.com", "acct-carol", "rt-c"));
     let run = cli.run(&["status"]);
@@ -146,7 +150,7 @@ fn status_human_and_json() {
     let run = cli.run(&["--status", "--json"]);
     assert_eq!(
         run.json(),
-        json!({"schemaVersion": 1, "active": {"email": "carol@example.com", "managed": false}})
+        json!({"schemaVersion": 2, "active": {"codex": {"email": "carol@example.com", "managed": false}, "claude": null}, "totalManagedAccounts": 0})
     );
 
     cli.add_chatgpt("alice@example.com", "acct-alice", "rt-a");
@@ -158,10 +162,10 @@ fn status_human_and_json() {
     );
     let run = cli.run(&["status", "--json"]);
     let payload = run.json();
-    assert_eq!(payload["active"]["number"], 2);
-    assert_eq!(payload["active"]["managed"], true);
+    assert_eq!(payload["active"]["codex"]["number"], 2);
+    assert_eq!(payload["active"]["codex"]["managed"], true);
     assert!(payload["active"].get("active").is_none());
-    assert_eq!(payload["active"]["usageStatus"], "unavailable");
+    assert_eq!(payload["active"]["codex"]["usageStatus"], "unavailable");
     assert_eq!(payload["totalManagedAccounts"], 2);
 
     cli.write_live(&api_key_auth("sk-unknown"));

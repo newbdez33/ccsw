@@ -93,15 +93,15 @@ fn switch_json_payload_and_rotation() {
     // JSON mode: stdout is the one document and nothing reaches stderr.
     assert_eq!(run.stderr, "");
     let payload = run.json();
-    assert_eq!(payload["schemaVersion"], 1);
+    assert_eq!(payload["schemaVersion"], 2);
     assert_eq!(payload["switched"], true);
     assert_eq!(
         payload["from"],
-        json!({"number": 2, "email": "bob@example.com"})
+        json!({"number": 2, "email": "bob@example.com", "provider": "codex"})
     );
     assert_eq!(
         payload["to"],
-        json!({"number": 1, "email": "alice@example.com"})
+        json!({"number": 1, "email": "alice@example.com", "provider": "codex"})
     );
     assert_eq!(payload["strategy"], "rotation");
     assert_eq!(payload["reason"], "switched");
@@ -156,7 +156,7 @@ fn rotation_no_ops() {
     assert_eq!(payload["reason"], "only-one-account");
     assert_eq!(
         payload["from"],
-        json!({"number": 1, "email": "alice@example.com"})
+        json!({"number": 1, "email": "alice@example.com", "provider": "codex"})
     );
     assert_eq!(payload["from"], payload["to"]);
 
@@ -236,7 +236,7 @@ fn unmanaged_and_missing_live_logins() {
     assert_eq!(payload["reason"], "unmanaged-account");
     assert_eq!(
         payload["from"],
-        json!({"number": null, "email": "carol@example.com"})
+        json!({"number": null, "email": "carol@example.com", "provider": "codex"})
     );
     assert_eq!(
         payload["message"],

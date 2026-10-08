@@ -7,11 +7,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 
+use crate::provider::Provider;
 use crate::store::usage_store::{UsageEntry, UsageSentinel};
 
 use super::data::{
-    age_note, credits_text, display_rows, is_stale, last_seen_note, reset_cards_text, reset_text,
-    sentinel_label,
+    DisplayRow, age_note, credits_text, display_rows, is_stale, last_seen_note, reset_cards_text,
+    reset_text, sentinel_label, spend_row,
 };
 use super::snapshot::{AccountSnapshot, AccountsSnapshot};
 use super::theme::Palette;
@@ -147,10 +148,15 @@ pub fn account_card(
         }
         return lines;
     }
-    let rows = usage
+    let rows: Vec<DisplayRow> = usage
         .last_good
         .as_ref()
-        .map(|last| display_rows(last, usage.fetched_at, now as i64))
+        .map(|last| {
+            spend_row(last, now as i64)
+                .into_iter()
+                .chain(display_rows(last, usage.fetched_at, now as i64))
+                .collect()
+        })
         .unwrap_or_default();
     if rows.is_empty() {
         let mut text = "    usage unavailable".to_string();
@@ -276,6 +282,11 @@ pub fn mini_line(acc: &AccountSnapshot, now: f64, p: &Palette) -> Line<'static> 
     line
 }
 
+/// `codex` / `claude` above a provider's accounts when the roster is mixed.
+pub fn section_header(provider: Provider, p: &Palette) -> Line<'static> {
+    Line::from(Span::styled(provider.as_str().to_string(), p.muted_style()))
+}
+
 /// The dashboard monitor (`show_minis`) and the auto screen's active card.
 pub fn accounts_panel(
     snapshot: Option<&AccountsSnapshot>,
@@ -293,27 +304,41 @@ pub fn accounts_panel(
         return vec![
             muted("No managed accounts yet."),
             muted(
-                "Use the menu below: Add account — from your current Codex login, or from an API key.",
+                "Use the menu below: Add account — from your current Codex or Claude Code login, or from a token.",
             ),
         ];
     }
+    let mixed = snapshot.is_mixed();
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut last_was_card = false;
-    for acc in &snapshot.accounts {
-        if acc.is_active {
-            let card = account_card(acc, width, threshold, now, p);
-            if !lines.is_empty() {
-                lines.push(Line::default());
+    for (provider, group) in snapshot.grouped() {
+        let mut rows: Vec<Line<'static>> = Vec::new();
+        let mut last_was_card = false;
+        for acc in group {
+            if acc.is_active {
+                let card = account_card(acc, width, threshold, now, p);
+                if !rows.is_empty() {
+                    rows.push(Line::default());
+                }
+                rows.extend(card);
+                last_was_card = true;
+            } else if show_minis {
+                if last_was_card {
+                    rows.push(Line::default());
+                }
+                rows.push(mini_line(acc, now, p));
+                last_was_card = false;
             }
-            lines.extend(card);
-            last_was_card = true;
-        } else if show_minis {
-            if last_was_card {
-                lines.push(Line::default());
-            }
-            lines.push(mini_line(acc, now, p));
-            last_was_card = false;
         }
+        if rows.is_empty() {
+            continue;
+        }
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        if mixed {
+            lines.push(section_header(provider, p));
+        }
+        lines.extend(rows);
     }
     if lines.is_empty() {
         return vec![muted("no active managed login")];
@@ -438,6 +463,7 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::model::{NormalizedUsage, ScopedWindow, WindowUsage, format_iso};
+    use crate::provider::Provider;
     use crate::tui::test_support::{account, entry};
     use crate::tui::theme::DARK;
 
@@ -607,6 +633,26 @@ mod tests {
     }
 
     #[test]
+    fn card_shows_spend_row_first_and_mini_omits_it() {
+        let p = &DARK;
+        let now = 1_790_000_000.0;
+        let mut acc = account(4, "s@y.z", false, entry(Some(now), Some(5.0)));
+        acc.usage.age_s = Some(0.0);
+        acc.usage.last_good.as_mut().unwrap().spend = Some(crate::model::Spend {
+            used: 12.5,
+            limit: 50.0,
+            pct: 25.0,
+            currency: "USD".into(),
+            resets_at: None,
+        });
+        let lines = account_card(&acc, 100, None, now, p);
+        assert!(text(&lines[1]).contains("$$"), "{}", text(&lines[1]));
+        assert!(text(&lines[1]).contains("$12.50 / $50.00"));
+        assert!(text(&lines[2]).contains("5h"), "{}", text(&lines[2]));
+        assert!(!text(&mini_line(&acc, now, p)).contains("$$"));
+    }
+
+    #[test]
     fn mini_line_shapes() {
         let p = &DARK;
         let now = 1_790_000_000.0;
@@ -627,6 +673,7 @@ mod tests {
                 resets_at: None,
             }],
             reset_credits: Some(2),
+            spend: None,
             ..NormalizedUsage::default()
         });
         let line = mini_line(&acc, now, p);
@@ -680,7 +727,7 @@ mod tests {
         let empty = crate::tui::test_support::snapshot(Vec::new(), 0.0);
         let lines = accounts_panel(Some(&empty), 80, None, true, 0.0, p);
         assert_eq!(text(&lines[0]), "No managed accounts yet.");
-        assert!(text(&lines[1]).contains("Codex login"));
+        assert!(text(&lines[1]).contains("Claude Code login"));
 
         let snap = crate::tui::test_support::snapshot(
             vec![
@@ -704,6 +751,86 @@ mod tests {
         no_active.accounts[1].is_active = false;
         let lines = accounts_panel(Some(&no_active), 80, None, false, 1000.0, p);
         assert_eq!(text(&lines[0]), "no active managed login");
+    }
+
+    #[test]
+    fn mixed_panel_gets_a_header_per_provider_and_single_does_not() {
+        use crate::tui::test_support::claude_account;
+        let p = &DARK;
+        let mixed = crate::tui::test_support::snapshot(
+            vec![
+                account(1, "a@x.y", true, entry(Some(900.0), Some(10.0))),
+                claude_account(2, "c@x.y", true, entry(Some(900.0), Some(20.0))),
+                claude_account(3, "d@x.y", false, entry(Some(900.0), Some(30.0))),
+            ],
+            1000.0,
+        );
+        let lines = accounts_panel(Some(&mixed), 90, Some(90.0), true, 1000.0, p);
+        let lines: Vec<String> = lines.iter().map(text).collect();
+        assert_eq!(lines[0], "codex");
+        assert!(lines[1].starts_with(" 1  a@x.y"), "{}", lines[1]);
+        let claude_at = lines.iter().position(|l| l == "claude").unwrap();
+        assert_eq!(lines[claude_at - 1], "", "blank line between sections");
+        assert!(
+            lines[claude_at + 1].starts_with(" 2  c@x.y"),
+            "the card follows its header directly"
+        );
+        assert!(lines[claude_at + 2].starts_with("    5h"));
+        assert_eq!(lines[claude_at + 3], "");
+        assert!(
+            lines[claude_at + 4].starts_with(" 3  d@x.y"),
+            "{}",
+            lines[claude_at + 4]
+        );
+        assert_eq!(
+            section_header(Provider::Claude, p).spans[0].content,
+            "claude"
+        );
+
+        let single = crate::tui::test_support::snapshot(
+            vec![account(1, "a@x.y", true, entry(Some(900.0), Some(10.0)))],
+            1000.0,
+        );
+        let lines = accounts_panel(Some(&single), 90, None, true, 1000.0, p);
+        assert!(
+            text(&lines[0]).starts_with(" 1  a@x.y"),
+            "no header for one provider: {}",
+            text(&lines[0])
+        );
+    }
+
+    #[test]
+    fn mixed_panel_without_minis_skips_sections_with_no_rows() {
+        use crate::tui::test_support::claude_account;
+        let p = &DARK;
+        let mut snap = crate::tui::test_support::snapshot(
+            vec![
+                account(1, "a@x.y", true, entry(Some(900.0), Some(10.0))),
+                claude_account(2, "c@x.y", false, entry(Some(900.0), Some(20.0))),
+            ],
+            1000.0,
+        );
+        let lines = accounts_panel(Some(&snap), 90, None, false, 1000.0, p);
+        let lines: Vec<String> = lines.iter().map(text).collect();
+        assert_eq!(lines[0], "codex");
+        assert!(lines[1].starts_with(" 1  a@x.y"));
+        assert!(lines.iter().all(|l| l != "claude"), "{lines:?}");
+        assert_ne!(lines.last().unwrap(), "", "no trailing blank");
+
+        snap.accounts[0].is_active = false;
+        let lines = accounts_panel(Some(&snap), 90, None, false, 1000.0, p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(text(&lines[0]), "no active managed login");
+    }
+
+    #[test]
+    fn empty_state_mentions_both_tools() {
+        let empty = crate::tui::snapshot::AccountsSnapshot::empty(1.0);
+        let lines = accounts_panel(Some(&empty), 90, None, true, 1.0, &DARK);
+        assert_eq!(
+            text(&lines[1]),
+            "Use the menu below: Add account — from your current Codex or Claude Code login, or from a token."
+        );
     }
 
     #[test]

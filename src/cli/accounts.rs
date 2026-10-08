@@ -3,10 +3,16 @@
 use std::io::{self, BufRead, IsTerminal};
 
 use crate::errors::{CswitchError, Result};
+use crate::provider::Provider;
 use crate::switcher::Switcher;
 
-pub fn add(switcher: &mut Switcher, slot: Option<i64>, alias: Option<&str>) -> Result<i32> {
-    switcher.add_account(slot, alias)?;
+pub fn add(
+    switcher: &mut Switcher,
+    provider: Option<Provider>,
+    slot: Option<i64>,
+    alias: Option<&str>,
+) -> Result<i32> {
+    switcher.add_accounts(provider, slot, alias)?;
     Ok(0)
 }
 

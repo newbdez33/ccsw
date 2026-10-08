@@ -44,11 +44,16 @@ pub fn usage_url() -> String {
         .unwrap_or_else(|| USAGE_URL.to_string())
 }
 
-/// HTTP client for the usage and token endpoints: Codex's user agent,
-/// 30 s connect / 60 s total, rustls with the OS trust store plus bundled
-/// roots. Proxy: the argument, then `CSWITCH_PROXY`, then reqwest's own
-/// `HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` handling.
+/// The Codex client: Codex's own user agent.
 pub fn build_client(proxy: Option<&str>) -> Result<reqwest::Client> {
+    build_client_with_agent(proxy, &user_agent())
+}
+
+/// HTTP client with the given user agent (30 s connect / 60 s total, rustls
+/// with the OS trust store plus bundled roots). Proxy: the argument, then
+/// `CSWITCH_PROXY`, then reqwest's own `HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`
+/// handling.
+pub fn build_client_with_agent(proxy: Option<&str>, agent: &str) -> Result<reqwest::Client> {
     let proxy = proxy
         .map(str::to_string)
         .or_else(|| std::env::var("CSWITCH_PROXY").ok())
@@ -56,7 +61,7 @@ pub fn build_client(proxy: Option<&str>) -> Result<reqwest::Client> {
         .filter(|url| !url.is_empty());
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
-        .user_agent(user_agent())
+        .user_agent(agent)
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60));
     if let Some(url) = proxy {
@@ -270,7 +275,7 @@ async fn get_usage(
     })
 }
 
-fn transport_error(err: reqwest::Error) -> FetchError {
+pub(crate) fn transport_error(err: reqwest::Error) -> FetchError {
     if err.is_timeout() {
         FetchError::Timeout
     } else {
@@ -405,6 +410,7 @@ pub fn parse_usage(body: &Value) -> std::result::Result<NormalizedUsage, String>
             .and_then(Value::as_str)
             .map(str::to_string),
         reset_credits: parse_reset_credits(body),
+        spend: None,
     };
     if usage.is_empty() {
         return Err("usage response missing recognized quota fields".to_string());
@@ -765,6 +771,7 @@ mod tests {
 
     #[test]
     fn client_builder_and_helpers() {
+        assert!(build_client_with_agent(None, "x/1").is_ok());
         assert_eq!(
             user_agent(),
             format!(

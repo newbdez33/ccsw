@@ -33,6 +33,11 @@ esac
 exit 0
 "#;
 
+const FAKE_CLAUDE: &str = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CS_CLAUDE_LOG\"\nexit 0\n";
+
+#[cfg(windows)]
+const FAKE_CLAUDE_CMD: &str = "@echo off\r\n>> \"%CS_CLAUDE_LOG%\" echo %*\r\nexit /b 0\r\n";
+
 /// Windows cannot run the shell script; the batch twin answers the same
 /// three shapes (argv log, `--help`, `app-server daemon version|restart`).
 #[cfg(windows)]
@@ -87,6 +92,12 @@ pub struct Cli {
     /// `CSWITCH_USAGE_URL` / `CSWITCH_TOKEN_URL` overrides; `None` refuses connections.
     pub usage_url: Option<String>,
     pub token_url: Option<String>,
+    /// `CLAUDE_CONFIG_DIR`: Claude Code's credentials file and global config.
+    pub claude_home: PathBuf,
+    pub claude_log: PathBuf,
+    /// `CSWITCH_CLAUDE_USAGE_URL` / `CSWITCH_CLAUDE_TOKEN_URL` overrides.
+    pub claude_usage_url: Option<String>,
+    pub claude_token_url: Option<String>,
 }
 
 impl Cli {
@@ -97,6 +108,17 @@ impl Cli {
         let bin_dir = root.path().join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
         fs::create_dir_all(&codex_home).unwrap();
+        let claude_home = root.path().join("claude");
+        fs::create_dir_all(&claude_home).unwrap();
+        let claude_script = bin_dir.join("claude");
+        fs::write(&claude_script, FAKE_CLAUDE).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&claude_script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        fs::write(bin_dir.join("claude.cmd"), FAKE_CLAUDE_CMD).unwrap();
         let script = bin_dir.join("codex");
         fs::write(&script, FAKE_CODEX).unwrap();
         #[cfg(unix)]
@@ -112,6 +134,10 @@ impl Cli {
         drop(listener);
         Self {
             log: root.path().join("codex-calls.log"),
+            claude_log: root.path().join("claude-calls.log"),
+            claude_home,
+            claude_usage_url: None,
+            claude_token_url: None,
             root,
             cswitch_home,
             codex_home,
@@ -127,6 +153,8 @@ impl Cli {
     pub fn with_mock(mut self, mock: &usage_mock::UsageMock) -> Self {
         self.usage_url = Some(mock.usage_url.clone());
         self.token_url = Some(mock.token_url.clone());
+        self.claude_usage_url = Some(mock.claude_usage_url.clone());
+        self.claude_token_url = Some(mock.claude_token_url.clone());
         self
     }
 
@@ -170,6 +198,23 @@ impl Cli {
                     .clone()
                     .unwrap_or_else(|| format!("{}/token", self.dead_url)),
             )
+            .env("CLAUDE_CONFIG_DIR", &self.claude_home)
+            .env("CSWITCH_KEYCHAIN", "off")
+            .env("USER", "tester")
+            .env(
+                "CSWITCH_CLAUDE_USAGE_URL",
+                self.claude_usage_url
+                    .clone()
+                    .unwrap_or_else(|| format!("{}/claude-usage", self.dead_url)),
+            )
+            .env(
+                "CSWITCH_CLAUDE_TOKEN_URL",
+                self.claude_token_url
+                    .clone()
+                    .unwrap_or_else(|| format!("{}/claude-token", self.dead_url)),
+            )
+            .env("CS_CLAUDE_LOG", &self.claude_log)
+            .env("CSWITCH_CLAUDE_LOCK_BUDGET_MS", "300")
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
@@ -286,6 +331,81 @@ impl Cli {
         run
     }
 
+    pub fn claude_credentials_path(&self) -> PathBuf {
+        self.claude_home.join(".credentials.json")
+    }
+
+    pub fn claude_config_path(&self) -> PathBuf {
+        self.claude_home.join(".claude.json")
+    }
+
+    pub fn write_claude_live_with(&self, creds: &Value, config: &Value) {
+        fs::write(
+            self.claude_credentials_path(),
+            serde_json::to_string_pretty(creds).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            self.claude_config_path(),
+            serde_json::to_string_pretty(config).unwrap(),
+        )
+        .unwrap();
+    }
+
+    pub fn write_claude_live(&self, email: &str, org_uuid: &str, org_name: &str, refresh: &str) {
+        self.write_claude_live_with(
+            &claude_creds(refresh, &format!("cat-{refresh}")),
+            &claude_config(email, org_uuid, org_name),
+        );
+    }
+
+    pub fn remove_claude_live(&self) {
+        let _ = fs::remove_file(self.claude_credentials_path());
+        let _ = fs::remove_file(self.claude_config_path());
+    }
+
+    pub fn claude_credentials(&self) -> Value {
+        read_json(&self.claude_credentials_path())
+    }
+
+    pub fn claude_config(&self) -> Value {
+        read_json(&self.claude_config_path())
+    }
+
+    pub fn claude_backups(&self) -> Vec<String> {
+        let dir = self.cswitch_home.join("backups").join("claude");
+        let mut names: Vec<String> = fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    pub fn claude_calls(&self) -> Vec<String> {
+        fs::read_to_string(&self.claude_log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// `add claude` the given login and return the run.
+    pub fn add_claude(&self, email: &str, org_uuid: &str, org_name: &str, refresh: &str) -> Run {
+        self.write_claude_live(email, org_uuid, org_name, refresh);
+        let run = self.run(&["add", "claude"]);
+        assert_eq!(
+            run.status, 0,
+            "add claude failed: {}{}",
+            run.stdout, run.stderr
+        );
+        run
+    }
+
     /// The backup store's log file.
     pub fn log_path(&self) -> PathBuf {
         self.cswitch_home.join("cswitch.log")
@@ -361,4 +481,31 @@ pub fn chatgpt_auth_with_tokens(
 
 pub fn api_key_auth(key: &str) -> Value {
     json!({"auth_mode": "apikey", "OPENAI_API_KEY": key})
+}
+
+pub fn claude_creds(refresh: &str, access: &str) -> Value {
+    json!({
+        "claudeAiOauth": {
+            "accessToken": access,
+            "refreshToken": refresh,
+            "expiresAt": 4_102_444_800_000i64,
+            "scopes": ["user:inference", "user:profile"],
+            "subscriptionType": "max"
+        },
+        "mcpOAuth": {"srv": {"accessToken": "mcp-token"}}
+    })
+}
+
+pub fn claude_config(email: &str, org_uuid: &str, org_name: &str) -> Value {
+    json!({
+        "numStartups": 7,
+        "oauthAccount": {
+            "accountUuid": format!("uuid-{}", email.to_lowercase()),
+            "emailAddress": email,
+            "organizationUuid": org_uuid,
+            "organizationName": org_name,
+            "billingType": "stripe"
+        },
+        "projects": {"/tmp/p": {"allowedTools": []}}
+    })
 }

@@ -1,6 +1,7 @@
 //! Snapshot builders shared by the unit tests.
 
 use crate::model::{NormalizedUsage, WindowUsage};
+use crate::provider::Provider;
 use crate::store::usage_store::UsageEntry;
 
 use super::snapshot::{AccountSnapshot, AccountsSnapshot};
@@ -40,6 +41,7 @@ pub(crate) fn account(
 ) -> AccountSnapshot {
     AccountSnapshot {
         number,
+        provider: Provider::Codex,
         email: email.to_string(),
         tag: "personal".to_string(),
         alias: None,
@@ -50,9 +52,24 @@ pub(crate) fn account(
     }
 }
 
+pub(crate) fn claude_account(
+    number: u32,
+    email: &str,
+    is_active: bool,
+    usage: UsageEntry,
+) -> AccountSnapshot {
+    let mut account = account(number, email, is_active, usage);
+    account.provider = Provider::Claude;
+    account
+}
+
 pub(crate) fn snapshot(accounts: Vec<AccountSnapshot>, taken_at: f64) -> AccountsSnapshot {
     AccountsSnapshot {
-        active_number: accounts.iter().find(|a| a.is_active).map(|a| a.number),
+        active_number: accounts
+            .iter()
+            .filter(|a| a.is_active)
+            .map(|a| a.number)
+            .min(),
         accounts,
         taken_at,
     }

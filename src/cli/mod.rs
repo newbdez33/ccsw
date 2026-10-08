@@ -85,17 +85,20 @@ pub fn run_with(argv: Vec<String>) -> i32 {
         Command::Upgrade => Ok(misc::upgrade()),
         Command::Tui => Ok(tui::run(TuiStart::Dashboard)),
         Command::Watch => Ok(tui::run(TuiStart::Watch)),
-        Command::AddAccount => accounts::add(switcher, opts.slot, opts.alias.as_deref()),
+        Command::AddAccount => {
+            accounts::add(switcher, opts.provider, opts.slot, opts.alias.as_deref())
+        }
         Command::AddToken(token) => {
             accounts::add_token(switcher, &token, opts.email.as_deref(), opts.slot)
         }
         Command::RemoveAccount(id) => accounts::remove(switcher, &id),
         Command::DisableAccount(id) => accounts::set_disabled(switcher, &id, true),
         Command::EnableAccount(id) => accounts::set_disabled(switcher, &id, false),
-        Command::List => list::list_cmd(switcher, json, opts.token_status),
-        Command::Status => list::status_cmd(switcher, json),
+        Command::List => list::list_cmd(switcher, json, opts.token_status, opts.provider),
+        Command::Status => list::status_cmd(switcher, json, opts.provider),
         Command::Switch => switch::rotate_cmd(
             switcher,
+            opts.provider,
             opts.strategy.as_deref(),
             opts.model.as_deref(),
             json,

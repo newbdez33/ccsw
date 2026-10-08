@@ -11,15 +11,22 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::claude::credentials::{
+    ClaudeCredential, CredentialKind, OAUTH_ACCOUNT_KEY, OauthAccount, SlotFile,
+    looks_like_api_key, looks_like_setup_token,
+};
+use crate::claude::keychain::SystemSecurity;
+use crate::claude::live::{ClaudeLive, LiveLogin, backup_live as backup_claude_live};
 use crate::codex::app_server::{restart_daemon_if_live_auth_changed, snapshot_live_auth};
 use crate::codex::auth::{AuthJson, AuthKind, backup_live};
 use crate::collect::{self, CollectMode, CollectOptions};
 use crate::errors::{CswitchError, Result};
 use crate::model::{
-    AccountKind, AccountRecord, AccountRef, CurrentAccount, Identity, Roster, SwitchOutcome,
-    now_unix,
+    AccountKind, AccountRecord, AccountRef, ActiveSlots, CurrentAccount, Identity, Roster,
+    SwitchOutcome, now_unix,
 };
 use crate::printer;
+use crate::provider::Provider;
 use crate::store::poll_policy::replan_new_active;
 use crate::store::usage_store::{UsageEntry, UsageSentinel, UsageStore};
 use crate::store::{
@@ -227,17 +234,25 @@ pub struct AccountRow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListSnapshot {
-    /// The slot of the live login, when managed.
-    pub active: Option<u32>,
+    /// The slot of each provider's live login, when managed.
+    pub actives: ActiveSlots,
     pub rows: Vec<AccountRow>,
     pub warnings: Vec<String>,
 }
 
+/// One provider's live login and (when managed) its row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderStatus {
+    pub provider: Provider,
+    pub current: CurrentAccount,
+    pub row: Option<AccountRow>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusSnapshot {
-    pub current: CurrentAccount,
+    /// One entry per provider, in `Provider::ALL` order.
+    pub providers: Vec<ProviderStatus>,
     pub total: usize,
-    pub row: Option<AccountRow>,
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +298,73 @@ pub fn valid_email(text: &str) -> bool {
         && tld.chars().all(|c| c.is_ascii_alphabetic())
 }
 
+/// What `add` found logged in for one provider.
+enum Capture {
+    Codex(AuthJson),
+    Claude(LiveLogin),
+}
+
+fn no_login_error(provider: Option<Provider>) -> CswitchError {
+    match provider {
+        Some(provider) => CswitchError::config(format!(
+            "No active {} account found. Please log in first.",
+            provider.title()
+        )),
+        None => CswitchError::config("No active Codex or Claude login found. Log in first."),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenKind {
+    OpenAiKey,
+    ClaudeApiKey,
+    SetupToken,
+}
+
+impl TokenKind {
+    fn detect(token: &str) -> Self {
+        if looks_like_api_key(token) {
+            Self::ClaudeApiKey
+        } else if looks_like_setup_token(token) {
+            Self::SetupToken
+        } else {
+            Self::OpenAiKey
+        }
+    }
+
+    fn provider(self) -> Provider {
+        match self {
+            Self::OpenAiKey => Provider::Codex,
+            _ => Provider::Claude,
+        }
+    }
+
+    fn is_api_key(self) -> bool {
+        self != Self::SetupToken
+    }
+
+    fn email_prefix(self) -> &'static str {
+        match self {
+            Self::SetupToken => "setup-token",
+            _ => "api-key",
+        }
+    }
+
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::SetupToken => "from token",
+            _ => "from API key",
+        }
+    }
+
+    fn what(self) -> &'static str {
+        match self {
+            Self::SetupToken => "token",
+            _ => "API key",
+        }
+    }
+}
+
 fn slot_arg(slot: Option<i64>) -> Result<Option<u32>> {
     match slot {
         None => Ok(None),
@@ -307,6 +389,33 @@ fn live_email(live: &AuthJson) -> String {
             .unwrap_or_else(|| "unknown".to_string()),
         AuthKind::ApiKey => "api-key".to_string(),
         AuthKind::Unknown => "unknown".to_string(),
+    }
+}
+
+/// Splice `oauthAccount` into the global config, leaving every other key.
+fn splice_oauth_account(live_api: &ClaudeLive, account: Value) -> Result<()> {
+    #[cfg(test)]
+    if tests::FAIL_CONFIG_SPLICE.with(std::cell::Cell::get) {
+        return Err(CswitchError::credential_write("injected config failure"));
+    }
+    live_api.update_global_config(|config| {
+        config.insert(OAUTH_ACCOUNT_KEY.to_string(), account);
+    })
+}
+
+/// The email shown for a live Claude login: `oauthAccount`'s, else a placeholder.
+fn claude_live_email(live: &LiveLogin) -> String {
+    let email = live
+        .oauth_account
+        .as_ref()
+        .map(|a| a.email_address().to_lowercase())
+        .unwrap_or_default();
+    if !email.is_empty() {
+        return email;
+    }
+    match live.credential.as_ref().map(ClaudeCredential::kind) {
+        Some(CredentialKind::ApiKey) => "api-key".to_string(),
+        _ => "unknown".to_string(),
     }
 }
 
@@ -356,6 +465,15 @@ fn swap_paths(a: &Path, b: &Path) -> Result<()> {
     rename_if_exists(&staging, b)
 }
 
+/// The roster holds a Codex record (or cannot be read), or Codex has a live
+/// `auth.json`.
+fn codex_in_use(paths: &crate::paths::Paths) -> bool {
+    paths.live_auth_file().exists()
+        || roster::read(paths).map_or(true, |roster| {
+            roster.is_some_and(|r| !r.slots_of(Provider::Codex).is_empty())
+        })
+}
+
 enum Placement {
     Refreshed(u32),
     Placed { slot: u32, moved_from: Option<u32> },
@@ -363,10 +481,13 @@ enum Placement {
 }
 
 impl Switcher {
-    /// The store from the environment, with the Codex credential-store gate.
+    /// The store from the environment, with the Codex credential-store gate
+    /// once Codex is in use (spec §5): a Claude-only store skips it.
     pub fn from_env() -> Result<Self> {
         let store = Store::from_env()?;
-        store.paths.validate_credential_store()?;
+        if codex_in_use(&store.paths) {
+            store.paths.validate_credential_store()?;
+        }
         Ok(Self::open(store))
     }
 
@@ -412,7 +533,9 @@ impl Switcher {
     /// login, the key string for an API key.
     fn slot_of_live(&self, roster: &Roster, live: &AuthJson) -> Option<u32> {
         match live.kind() {
-            AuthKind::ChatGpt => live.identity().and_then(|id| roster.find_slot(&id)),
+            AuthKind::ChatGpt => live
+                .identity()
+                .and_then(|id| roster.find_slot(Provider::Codex, &id)),
             AuthKind::ApiKey => {
                 let key = live.api_key()?;
                 roster.sequence.iter().copied().find(|slot| {
@@ -489,18 +612,183 @@ impl Switcher {
 
     // -- add ------------------------------------------------------------------
 
-    /// Snapshot `$CODEX_HOME/auth.json` into the store.
-    pub fn add_account(&mut self, slot: Option<i64>, alias: Option<&str>) -> Result<AddOutcome> {
+    /// The live login of `provider`, resolved against the roster.
+    pub fn current_account_for(&self, provider: Provider) -> Result<CurrentAccount> {
+        let roster = roster::read_or_empty(&self.store.paths)?;
+        Ok(collect::live_login_for(&self.store, &roster, provider))
+    }
+
+    fn capture_live(&self, provider: Provider) -> Result<Option<Capture>> {
+        match provider {
+            Provider::Codex => {
+                Ok(AuthJson::read(&self.store.paths.live_auth_file())?.map(Capture::Codex))
+            }
+            Provider::Claude => {
+                let login = ClaudeLive::new(&self.store.paths, &SystemSecurity).read()?;
+                if login.credential.is_none() && login.keychain_unavailable {
+                    return Err(CswitchError::credential_read(
+                        "The macOS Keychain is unavailable, so the current Claude login cannot be read. Unlock the Keychain and retry.",
+                    ));
+                }
+                Ok(login.credential.is_some().then_some(Capture::Claude(login)))
+            }
+        }
+    }
+
+    /// Snapshot the live login(s) into the store: both providers without a
+    /// selector, each new login added and each managed one refreshed in place.
+    pub fn add_accounts(
+        &mut self,
+        provider: Option<Provider>,
+        slot: Option<i64>,
+        alias: Option<&str>,
+    ) -> Result<Vec<(Provider, AddOutcome)>> {
         let requested = slot_arg(slot)?;
         let alias = alias
             .map(|a| normalize_alias(a).map_err(|e| CswitchError::validation(e.to_string())))
             .transpose()?;
-        let live_path = self.store.paths.live_auth_file();
-        let live = AuthJson::read(&live_path)?.ok_or_else(|| {
-            CswitchError::config("No active Codex account found. Please log in first.")
-        })?;
+        let providers: Vec<Provider> = provider.map_or_else(|| Provider::ALL.to_vec(), |p| vec![p]);
+        if provider == Some(Provider::Codex) {
+            self.store.paths.validate_credential_store()?;
+        }
+        let mut captures = Vec::new();
+        for candidate in providers {
+            if let Some(capture) = self.capture_live(candidate)? {
+                captures.push((candidate, capture));
+            }
+        }
+        if captures.is_empty() {
+            return Err(no_login_error(provider));
+        }
+        if captures.len() > 1 && (requested.is_some() || alias.is_some()) {
+            return Err(CswitchError::validation(
+                "--slot/--alias need a single login; both a Codex and a Claude login were found. Say which: cswitch add codex … or cswitch add claude …",
+            ));
+        }
         let _lock = self.store.lock()?;
-        self.add_auth(&live, requested, alias)
+        let mut outcomes = Vec::new();
+        for (candidate, capture) in captures {
+            let outcome = match capture {
+                Capture::Codex(auth) => self.add_auth(&auth, requested, alias.clone())?,
+                Capture::Claude(login) => self.add_claude(&login, requested, alias.clone())?,
+            };
+            outcomes.push((candidate, outcome));
+        }
+        if provider.is_none()
+            && outcomes.len() == 2
+            && outcomes
+                .iter()
+                .all(|(_, o)| matches!(o, AddOutcome::Updated { .. }))
+        {
+            let slot_of = |wanted: Provider| {
+                outcomes
+                    .iter()
+                    .find_map(|(p, o)| match o {
+                        AddOutcome::Updated { slot } if *p == wanted => Some(*slot),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            };
+            self.say(Line::dimmed(format!(
+                "Both current logins were already managed: Account-{} (codex), Account-{} (claude) — nothing new was added.",
+                slot_of(Provider::Codex),
+                slot_of(Provider::Claude)
+            )));
+        }
+        Ok(outcomes)
+    }
+
+    /// `add` for one provider.
+    pub fn add_account(
+        &mut self,
+        provider: Provider,
+        slot: Option<i64>,
+        alias: Option<&str>,
+    ) -> Result<AddOutcome> {
+        Ok(self
+            .add_accounts(Some(provider), slot, alias)?
+            .into_iter()
+            .next()
+            .map_or(AddOutcome::Cancelled, |(_, outcome)| outcome))
+    }
+
+    /// The managed Claude slot holding this live login.
+    fn claude_slot_of_live(&self, roster: &Roster, live: &LiveLogin) -> Option<u32> {
+        let credential = live.credential.as_ref()?;
+        match credential.kind() {
+            CredentialKind::ApiKey => self.claude_slot_of_key(roster, credential.api_key()),
+            CredentialKind::OAuth | CredentialKind::SetupToken => live
+                .identity()
+                .and_then(|id| roster.find_slot(Provider::Claude, &id)),
+            CredentialKind::Unknown => None,
+        }
+    }
+
+    fn claude_slot_of_key(&self, roster: &Roster, key: Option<&str>) -> Option<u32> {
+        let key = key?;
+        roster.slots_of(Provider::Claude).into_iter().find(|slot| {
+            roster.record(*slot).is_some_and(|r| r.is_api_key())
+                && credentials::read(&self.store, *slot)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| SlotFile::from_value(&v).ok())
+                    .is_some_and(|s| s.credential.api_key() == Some(key))
+        })
+    }
+
+    /// The caller holds the store lock.
+    fn add_claude(
+        &mut self,
+        login: &LiveLogin,
+        requested: Option<u32>,
+        alias: Option<String>,
+    ) -> Result<AddOutcome> {
+        let mut roster = roster::init_if_absent(&self.store.paths)?;
+        let credential = login
+            .credential
+            .as_ref()
+            .ok_or_else(|| no_login_error(Some(Provider::Claude)))?;
+        let (record, existing, suffix) = match credential.kind() {
+            CredentialKind::OAuth | CredentialKind::SetupToken => {
+                let account = login.oauth_account.as_ref().ok_or_else(|| {
+                    CswitchError::credential_read(
+                        "the Claude Code login carries no oauthAccount; log in with Claude Code first",
+                    )
+                })?;
+                let identity = account.identity().ok_or_else(|| {
+                    CswitchError::credential_read("the Claude Code login carries no email address")
+                })?;
+                let mut record = AccountRecord::new(identity.email.clone());
+                record.provider = Provider::Claude;
+                record.uuid = account.account_uuid();
+                record.organization_uuid = identity.account_id.clone();
+                record.organization_name = account.organization_name();
+                let existing = roster.find_slot(Provider::Claude, &identity);
+                (record, existing, None)
+            }
+            CredentialKind::ApiKey => {
+                let existing = self.claude_slot_of_key(&roster, credential.api_key());
+                let slot = existing
+                    .or(requested)
+                    .unwrap_or_else(|| roster.next_free_slot());
+                let mut record = AccountRecord::new(format!("api-key-{slot}@token.local"));
+                record.provider = Provider::Claude;
+                record.kind = Some(AccountKind::ApiKey);
+                (record, existing, Some("from API key"))
+            }
+            CredentialKind::Unknown => {
+                return Err(CswitchError::credential_read(
+                    "the Claude Code login holds neither an OAuth credential nor an API key",
+                ));
+            }
+        };
+        let oauth_account = match (credential.kind(), &login.oauth_account) {
+            (CredentialKind::ApiKey, _) | (_, None) => OauthAccount::synthesized(&record.email),
+            (_, Some(account)) => account.clone(),
+        };
+        let value = SlotFile::new(credential, oauth_account).to_value();
+        let placement = self.place(&mut roster, record, existing, requested, alias, &value)?;
+        Ok(self.announce_placement(&roster, placement, suffix, "credentials"))
     }
 
     /// Save and activate a completed browser login under one store lock.
@@ -562,7 +850,7 @@ impl Switcher {
                 record.organization_uuid = identity.account_id.clone();
                 record.organization_name = info.workspace_name.unwrap_or_default();
                 record.plan_type = info.plan_type;
-                let existing = roster.find_slot(&identity);
+                let existing = roster.find_slot(Provider::Codex, &identity);
                 (record, existing, false)
             }
             AuthKind::ApiKey => {
@@ -582,10 +870,15 @@ impl Switcher {
             }
         };
         let placement = self.place(&mut roster, record, existing, requested, alias, &live.0)?;
-        Ok(self.announce_placement(&roster, placement, from_api_key, "credentials"))
+        Ok(self.announce_placement(
+            &roster,
+            placement,
+            from_api_key.then_some("from API key"),
+            "credentials",
+        ))
     }
 
-    /// Register an OpenAI API key.
+    /// Register an API key or setup-token, routed by its prefix.
     pub fn add_token(
         &mut self,
         token: &str,
@@ -599,7 +892,7 @@ impl Switcher {
         }
         if token.starts_with('{') {
             return Err(CswitchError::validation(
-                "Token must be an OpenAI API key, not a JSON object",
+                "Token must be an API key or setup-token, not a JSON object",
             ));
         }
         if let Some(email) = email
@@ -609,29 +902,51 @@ impl Switcher {
                 "Invalid email format: {email}"
             )));
         }
+        let kind = TokenKind::detect(token);
+        if kind.provider() == Provider::Codex {
+            self.store.paths.validate_credential_store()?;
+        }
         let _lock = self.store.lock()?;
         let mut roster = roster::init_if_absent(&self.store.paths)?;
         let email = match email {
             Some(email) => email.to_string(),
             None => format!(
-                "api-key-{}@token.local",
+                "{}-{}@token.local",
+                kind.email_prefix(),
                 requested.unwrap_or_else(|| roster.next_free_slot())
             ),
         };
         let identity = Identity::new(email.clone(), "");
-        let existing = roster.find_slot(&identity);
+        let existing = roster.find_slot(kind.provider(), &identity);
         if let Some(slot) = existing
-            && !roster.record(slot).is_some_and(AccountRecord::is_api_key)
+            && roster
+                .record(slot)
+                .is_some_and(|r| r.is_api_key() != kind.is_api_key())
         {
             return Err(CswitchError::validation(format!(
                 "'{email}' already exists as an OAuth account (slot {slot}); cannot add it as an API-key account. Pass a distinct --email."
             )));
         }
-        let mut record = AccountRecord::new(email);
-        record.kind = Some(AccountKind::ApiKey);
-        let creds = AuthJson::api_key_auth(token).0;
+        let mut record = AccountRecord::new(email.clone());
+        record.provider = kind.provider();
+        if kind.is_api_key() {
+            record.kind = Some(AccountKind::ApiKey);
+        }
+        let creds = match kind {
+            TokenKind::OpenAiKey => AuthJson::api_key_auth(token).0,
+            TokenKind::ClaudeApiKey => SlotFile::new(
+                &ClaudeCredential::managed_key(token),
+                OauthAccount::synthesized(&email),
+            )
+            .to_value(),
+            TokenKind::SetupToken => SlotFile::new(
+                &ClaudeCredential::wrap_setup_token(token),
+                OauthAccount::synthesized(&email),
+            )
+            .to_value(),
+        };
         let placement = self.place(&mut roster, record, existing, requested, None, &creds)?;
-        Ok(self.announce_placement(&roster, placement, true, "API key"))
+        Ok(self.announce_placement(&roster, placement, Some(kind.suffix()), kind.what()))
     }
 
     /// Put `record` + `creds` into a slot per cswap's rules: refresh in place,
@@ -707,8 +1022,9 @@ impl Switcher {
             record.alias = Some(alias);
         }
         credentials::write(&self.store, target, creds)?;
+        let provider = record.provider;
         roster.add_record(target, record);
-        roster.set_active(Some(target));
+        roster.set_active_for(provider, Some(target));
         self.write_roster(roster)?;
         UsageStore::new(&self.store.paths).clear_dead_token(&[target])?;
         Ok(Placement::Placed {
@@ -747,7 +1063,8 @@ impl Switcher {
         if let Some(alias) = alias {
             record.alias = Some(alias);
         }
-        roster.set_active(Some(slot));
+        let provider = roster.record(slot).map(|r| r.provider).unwrap_or_default();
+        roster.set_active_for(provider, Some(slot));
         self.write_roster(roster)?;
         UsageStore::new(&self.store.paths).clear_dead_token(&[slot])?;
         Ok(slot)
@@ -757,7 +1074,7 @@ impl Switcher {
         &mut self,
         roster: &Roster,
         placement: Placement,
-        from_api_key: bool,
+        suffix: Option<&str>,
         what: &str,
     ) -> AddOutcome {
         let describe = |roster: &Roster, slot: u32| {
@@ -786,8 +1103,8 @@ impl Switcher {
                     .push(Style::Accent, "Added")
                     .push(Style::Plain, format!(" Account {slot}: {email} "))
                     .push(Style::Muted, format!("[{tag}]"));
-                if from_api_key {
-                    line = line.push(Style::Plain, " (from API key)");
+                if let Some(suffix) = suffix {
+                    line = line.push(Style::Plain, format!(" ({suffix})"));
                 }
                 self.say(line);
                 AddOutcome::Added { slot }
@@ -805,7 +1122,7 @@ impl Switcher {
             return Ok(false);
         };
         let record = roster.record(slot).cloned().ok_or_else(|| missing(slot))?;
-        if self.current_account()?.slot() == Some(slot) {
+        if self.current_account_for(record.provider)?.slot() == Some(slot) {
             self.say(Line::warning(format!(
                 "Warning: {} is currently active",
                 account_label(slot, &record.email)
@@ -844,9 +1161,9 @@ impl Switcher {
         let _lock = self.store.lock()?;
         let mut roster = self.roster()?;
         let slot = resolve_slot(&roster, identifier)?;
-        let email = roster
+        let (email, provider) = roster
             .record(slot)
-            .map(|r| r.email.clone())
+            .map(|r| (r.email.clone(), r.provider))
             .ok_or_else(|| missing(slot))?;
         let label = account_label(slot, &email);
         let state = if disabled { "disabled" } else { "enabled" };
@@ -861,7 +1178,7 @@ impl Switcher {
                     .push(Style::Accent, "Disabled")
                     .push(Style::Plain, format!(" {label}.")),
             );
-            if self.current_account()?.slot() == Some(slot) {
+            if self.current_account_for(provider)?.slot() == Some(slot) {
                 self.say(Line::dimmed(
                     "  It is the active account — it stays live until you switch away; it just won't be an automatic switch target.",
                 ));
@@ -1143,6 +1460,9 @@ impl Switcher {
             .record(target)
             .cloned()
             .ok_or_else(|| missing(target))?;
+        if record.provider == Provider::Claude {
+            return self.perform_claude_switch(roster, target, record, strategy, force);
+        }
         let mut stored = credentials::read(&self.store, target)?
             .map(AuthJson::from_value)
             .ok_or_else(|| {
@@ -1178,6 +1498,7 @@ impl Switcher {
             return Ok(SwitchReport {
                 outcome: SwitchOutcome {
                     switched: false,
+                    provider: Provider::Codex,
                     from: from.clone(),
                     to: Some(to),
                     strategy: strategy.to_string(),
@@ -1257,6 +1578,204 @@ impl Switcher {
         Ok(SwitchReport {
             outcome: SwitchOutcome {
                 switched,
+                provider: Provider::Codex,
+                from,
+                to: Some(to),
+                strategy: strategy.to_string(),
+                reason: reason.to_string(),
+                message,
+                warnings,
+            },
+            followup,
+            show_list,
+        })
+    }
+
+    /// The Claude switch body (spec §7): Claude Code's locks, fold-back, backup,
+    /// write across backends, `oauthAccount` splice, follow-up by backend.
+    fn perform_claude_switch(
+        &mut self,
+        mut roster: Roster,
+        target: u32,
+        record: AccountRecord,
+        strategy: &str,
+        force: bool,
+    ) -> Result<SwitchReport> {
+        let to = AccountRef {
+            number: Some(target),
+            email: record.email.clone(),
+        };
+        let mut warnings = Vec::new();
+        let live_api = ClaudeLive::new(&self.store.paths, &SystemSecurity);
+
+        let store_lock = self.store.lock()?;
+        let stored = credentials::read(&self.store, target)?.ok_or_else(|| {
+            CswitchError::switch(format!(
+                "Account-{target} has no stored credentials. Re-add with: cswitch add claude --slot {target}"
+            ))
+        })?;
+        let stored = SlotFile::from_value(&stored).map_err(|err| {
+            CswitchError::switch(format!(
+                "Account-{target}'s stored credentials are unusable ({err}). Re-add with: cswitch add claude --slot {target}"
+            ))
+        })?;
+        if stored.credential.kind() == CredentialKind::Unknown {
+            return Err(CswitchError::switch(format!(
+                "Account-{target}'s stored credentials are unusable (no login in the slot file). Re-add with: cswitch add claude --slot {target}"
+            )));
+        }
+        let claude_locks = crate::claude::locks::acquire(&self.store.paths)?;
+        let live = live_api.read()?;
+        let live_slot = self.claude_slot_of_live(&roster, &live);
+        let from = live.credential.as_ref().map(|_| match live_slot {
+            Some(slot) => AccountRef {
+                number: Some(slot),
+                email: roster
+                    .record(slot)
+                    .map(|r| r.email.clone())
+                    .unwrap_or_else(|| claude_live_email(&live)),
+            },
+            None => AccountRef {
+                number: None,
+                email: claude_live_email(&live),
+            },
+        });
+        let same_slot = live_slot == Some(target);
+        let live_login_only = live.credential.as_ref().map(ClaudeCredential::oauth_only);
+        if same_slot && !force && live_login_only.as_ref() == Some(&stored.credential) {
+            return Ok(SwitchReport {
+                outcome: SwitchOutcome {
+                    switched: false,
+                    provider: Provider::Claude,
+                    from: from.clone(),
+                    to: Some(to),
+                    strategy: strategy.to_string(),
+                    reason: "already-active".to_string(),
+                    message: format!("Already on {}", account_label(target, &record.email)),
+                    warnings,
+                },
+                followup: None,
+                show_list: false,
+            });
+        }
+        let mut target_credential = stored.credential.clone();
+        if !force && let Some(live_credential) = &live.credential {
+            match live_slot {
+                Some(slot) => {
+                    let kept = credentials::read(&self.store, slot)?
+                        .and_then(|v| SlotFile::from_value(&v).ok());
+                    let incoming = live_credential.oauth_only();
+                    if kept
+                        .as_ref()
+                        .is_none_or(|kept| incoming.is_newer_than(&kept.credential))
+                    {
+                        let account = live
+                            .oauth_account
+                            .clone()
+                            .or_else(|| kept.as_ref().map(|k| k.oauth_account.clone()))
+                            .unwrap_or_else(|| {
+                                OauthAccount::synthesized(
+                                    &roster
+                                        .record(slot)
+                                        .map(|r| r.email.clone())
+                                        .unwrap_or_default(),
+                                )
+                            });
+                        let folded = SlotFile::new(live_credential, account);
+                        credentials::write(&self.store, slot, &folded.to_value())?;
+                        tracing::info!("folded the live Claude login back into slot {slot}");
+                        if slot == target {
+                            target_credential = folded.credential;
+                        }
+                    }
+                }
+                None => warnings.push(
+                    "The live login does not match a managed account; it was left in place."
+                        .to_string(),
+                ),
+            }
+        }
+        backup_claude_live(&self.store.paths, &live)?;
+        // What a failed splice below restores: the login exactly as it was.
+        let previous = live.raw.clone().or_else(|| live.credential.clone());
+        let backend = match target_credential.kind() {
+            CredentialKind::ApiKey => {
+                live_api.write_managed_key(target_credential.api_key().unwrap_or_default())?
+            }
+            _ => {
+                let mut object = live
+                    .raw
+                    .clone()
+                    .filter(|c| c.kind() != CredentialKind::ApiKey)
+                    .unwrap_or_else(|| ClaudeCredential::from_value(serde_json::json!({})));
+                object.replace_oauth_from(&target_credential);
+                live_api.write_oauth(&object)?
+            }
+        };
+        let account = stored.oauth_account.0.clone();
+        if let Err(err) = splice_oauth_account(&live_api, account) {
+            // Live tokens would belong to one account while `oauthAccount`
+            // names another; put the previous login back (best effort).
+            let restored = match live.credential.as_ref() {
+                Some(c) if c.kind() == CredentialKind::ApiKey => {
+                    live_api.write_managed_key(c.api_key().unwrap_or_default())
+                }
+                Some(_) => match &previous {
+                    Some(previous) => live_api.write_oauth(previous),
+                    None => Ok(backend),
+                },
+                None => Ok(backend),
+            };
+            if let Err(rollback) = restored {
+                tracing::warn!(
+                    "could not restore the previous Claude login ({rollback}); it is saved under {}",
+                    self.store.paths.claude_backups_dir().display()
+                );
+            }
+            return Err(err);
+        }
+        roster.set_active_for(Provider::Claude, Some(target));
+        self.write_roster(&roster)?;
+        drop(claude_locks);
+        drop(store_lock);
+
+        let followup = Some(backend.followup().to_string());
+        self.replan_active(target, &record);
+        tracing::info!(
+            "Switched from account {} to {target} (claude)",
+            from.as_ref()
+                .and_then(|f| f.number)
+                .map_or_else(|| "none".to_string(), |n| n.to_string())
+        );
+        let switched = from.as_ref().and_then(|f| f.number) != Some(target);
+        let label = account_label(target, &record.email);
+        let (reason, verb, message, show_list) = match (switched, live_slot.is_some()) {
+            (true, true) => (
+                "switched",
+                "Switched to",
+                format!("Switched to {label}"),
+                true,
+            ),
+            (true, false) => ("switched", "Activated", format!("Activated {label}"), false),
+            (false, _) => (
+                "activated",
+                "Activated",
+                format!("Activated {label} from stored backup"),
+                false,
+            ),
+        };
+        for warning in &warnings {
+            self.say(Line::warning(warning));
+        }
+        self.say(
+            Line::new()
+                .push(Style::Accent, verb)
+                .push(Style::Plain, message[verb.len()..].to_string()),
+        );
+        Ok(SwitchReport {
+            outcome: SwitchOutcome {
+                switched,
+                provider: Provider::Claude,
                 from,
                 to: Some(to),
                 strategy: strategy.to_string(),
@@ -1287,15 +1806,18 @@ impl Switcher {
     /// Bare `switch` and `switch --strategy`.
     pub fn switch(
         &mut self,
+        provider: Option<Provider>,
         strategy: Strategy,
         models: &[String],
         interactive: bool,
     ) -> Result<SwitchReport> {
         let roster = self.roster()?;
+        let provider = self.resolve_provider(&roster, provider, "switch")?;
         let name = strategy.name();
         let noop = |from: Option<AccountRef>, reason: &str, message: String| SwitchReport {
             outcome: SwitchOutcome {
                 switched: false,
+                provider,
                 from: from.clone(),
                 to: from,
                 strategy: name.to_string(),
@@ -1306,9 +1828,9 @@ impl Switcher {
             followup: None,
             show_list: false,
         };
-        let current = self.current_account()?;
+        let current = self.current_account_for(provider)?;
         let live_slot = match &current {
-            CurrentAccount::NoLogin => return self.activate_fresh(roster, name),
+            CurrentAccount::NoLogin => return self.activate_fresh(roster, provider, name),
             CurrentAccount::Unmanaged { email } => {
                 if !interactive {
                     let from = AccountRef {
@@ -1324,7 +1846,7 @@ impl Switcher {
                 self.say(Line::plain(format!(
                     "Notice: Active account '{email}' was not managed."
                 )));
-                let slot = match self.add_account(None, None)? {
+                let slot = match self.add_account(provider, None, None)? {
                     AddOutcome::Added { slot } | AddOutcome::Updated { slot } => slot,
                     AddOutcome::Cancelled => {
                         return Err(CswitchError::switch(
@@ -1354,7 +1876,7 @@ impl Switcher {
             number: Some(live_slot),
             email: current.email().unwrap_or_default().to_string(),
         };
-        if roster.sorted_slots().len() <= 1 {
+        if roster.slots_of(provider).len() <= 1 {
             let message = "Only one account is managed. Add more accounts to switch between.";
             self.say(Line::dimmed(message));
             return Ok(noop(
@@ -1364,28 +1886,66 @@ impl Switcher {
             ));
         }
         match strategy {
-            Strategy::Rotation => self.rotate(roster, live_slot, current_ref, None, models),
+            Strategy::Rotation => {
+                self.rotate(roster, provider, live_slot, current_ref, None, models)
+            }
             Strategy::NextAvailable => {
-                let entries = self.collect_for_switch(&roster, live_slot, models)?;
-                self.rotate(roster, live_slot, current_ref, Some(&entries), models)
+                let entries = self.collect_for_switch(&roster, provider, live_slot, models)?;
+                self.rotate(
+                    roster,
+                    provider,
+                    live_slot,
+                    current_ref,
+                    Some(&entries),
+                    models,
+                )
             }
             Strategy::Best => {
-                let entries = self.collect_for_switch(&roster, live_slot, models)?;
-                self.best(roster, live_slot, current_ref, &entries, models)
+                let entries = self.collect_for_switch(&roster, provider, live_slot, models)?;
+                self.best(roster, provider, live_slot, current_ref, &entries, models)
             }
         }
     }
 
+    /// The provider a bare verb acts on: the selector, else the only provider
+    /// with accounts, else the user has to say (spec §6.1).
+    fn resolve_provider(
+        &self,
+        roster: &Roster,
+        explicit: Option<Provider>,
+        verb: &str,
+    ) -> Result<Provider> {
+        if let Some(provider) = explicit {
+            return Ok(provider);
+        }
+        let present: Vec<Provider> = Provider::ALL
+            .into_iter()
+            .filter(|p| !roster.slots_of(*p).is_empty())
+            .collect();
+        match present.as_slice() {
+            [] => Ok(Provider::Codex),
+            [only] => Ok(*only),
+            _ => Err(CswitchError::config(format!(
+                "Both Codex and Claude accounts are managed — say which: cswitch {verb} codex | cswitch {verb} claude"
+            ))),
+        }
+    }
+
     /// No live login: activate the recorded active slot, else the first usable one.
-    fn activate_fresh(&mut self, roster: Roster, strategy: &str) -> Result<SwitchReport> {
+    fn activate_fresh(
+        &mut self,
+        roster: Roster,
+        provider: Provider,
+        strategy: &str,
+    ) -> Result<SwitchReport> {
+        let in_provider = roster.slots_of(provider);
         let preferred = roster
-            .active_account_number
-            .filter(|n| roster.record(*n).is_some());
+            .active_for(provider)
+            .filter(|n| in_provider.contains(n));
         let order: Vec<u32> = preferred
             .into_iter()
             .chain(
-                roster
-                    .sequence
+                in_provider
                     .iter()
                     .copied()
                     .filter(|s| Some(*s) != preferred),
@@ -1438,16 +1998,21 @@ impl Switcher {
     fn collect_for_switch(
         &mut self,
         roster: &Roster,
+        provider: Provider,
         live_slot: u32,
         models: &[String],
     ) -> Result<BTreeMap<u32, UsageEntry>> {
-        let candidates = roster.switchable_slots(|s| credentials::exists(&self.store, s));
+        let candidates: Vec<u32> = roster
+            .switchable_slots(|s| credentials::exists(&self.store, s))
+            .into_iter()
+            .filter(|s| roster.record(*s).is_some_and(|r| r.provider == provider))
+            .collect();
         let collected = collect::run_pass(
             &self.store,
             roster,
             CollectOptions {
                 mode: CollectMode::OnDemand,
-                active: Some(live_slot),
+                actives: vec![live_slot],
                 candidates: &candidates,
                 threshold: self.settings.autoswitch.threshold,
                 models,
@@ -1462,6 +2027,7 @@ impl Switcher {
     fn rotate(
         &mut self,
         roster: Roster,
+        provider: Provider,
         live_slot: u32,
         current_ref: AccountRef,
         entries: Option<&BTreeMap<u32, UsageEntry>>,
@@ -1472,14 +2038,14 @@ impl Switcher {
         } else {
             Strategy::Rotation
         };
+        let sequence = roster.slots_of(provider);
         let anchor = match strategy {
             Strategy::Rotation => roster
-                .active_account_number
-                .filter(|n| roster.sequence.contains(n))
+                .active_for(provider)
+                .filter(|n| sequence.contains(n))
                 .unwrap_or(live_slot),
             _ => live_slot,
         };
-        let sequence = roster.sequence.clone();
         let start = sequence
             .iter()
             .position(|s| *s == anchor)
@@ -1517,6 +2083,7 @@ impl Switcher {
         let noop = |reason: &str, message: String, warnings: Vec<String>| SwitchReport {
             outcome: SwitchOutcome {
                 switched: false,
+                provider,
                 from: Some(current_ref.clone()),
                 to: Some(current_ref.clone()),
                 strategy: strategy.name().to_string(),
@@ -1558,6 +2125,7 @@ impl Switcher {
     fn best(
         &mut self,
         roster: Roster,
+        provider: Provider,
         live_slot: u32,
         current_ref: AccountRef,
         entries: &BTreeMap<u32, UsageEntry>,
@@ -1572,6 +2140,7 @@ impl Switcher {
         let noop = |reason: &str, message: String| SwitchReport {
             outcome: SwitchOutcome {
                 switched: false,
+                provider,
                 from: Some(current_ref.clone()),
                 to: Some(current_ref.clone()),
                 strategy: "best".to_string(),
@@ -1592,7 +2161,9 @@ impl Switcher {
         let candidates: Vec<u32> = roster
             .switchable_slots(|s| credentials::exists(&self.store, s))
             .into_iter()
-            .filter(|s| *s != live_slot)
+            .filter(|s| {
+                *s != live_slot && roster.record(*s).is_some_and(|r| r.provider == provider)
+            })
             .collect();
         let known: Vec<(u32, f64)> = candidates
             .iter()
@@ -1646,8 +2217,13 @@ impl Switcher {
         let Some(roster) = self.roster_opt()? else {
             return Ok(None);
         };
-        let current = collect::live_login(&self.store, &roster);
-        let active = current.slot();
+        let mut actives = ActiveSlots::default();
+        for provider in Provider::ALL {
+            actives.set(
+                provider,
+                collect::live_login_for(&self.store, &roster, provider).slot(),
+            );
+        }
         let slots: Vec<u32> = roster
             .sequence
             .iter()
@@ -1664,7 +2240,7 @@ impl Switcher {
             &roster,
             CollectOptions {
                 mode,
-                active,
+                actives: actives.iter().filter_map(|(_, slot)| slot).collect(),
                 candidates: &slots,
                 threshold: self.settings.autoswitch.threshold,
                 models: &self.settings.autoswitch.model_names(),
@@ -1672,18 +2248,22 @@ impl Switcher {
         )?;
         let rows = slots
             .into_iter()
-            .map(|slot| AccountRow {
-                slot,
-                record: roster.record(slot).cloned().expect("filtered above"),
-                usage: collected
-                    .entries
-                    .remove(&slot)
-                    .unwrap_or_else(|| self.fallback_entry(slot)),
-                is_active: active == Some(slot),
+            .map(|slot| {
+                let record = roster.record(slot).cloned().expect("filtered above");
+                let is_active = actives.get(record.provider) == Some(slot);
+                AccountRow {
+                    slot,
+                    record,
+                    usage: collected
+                        .entries
+                        .remove(&slot)
+                        .unwrap_or_else(|| self.fallback_entry(slot)),
+                    is_active,
+                }
             })
             .collect();
         Ok(Some(ListSnapshot {
-            active,
+            actives,
             rows,
             warnings: collected.token_persist_failures,
         }))
@@ -1691,41 +2271,45 @@ impl Switcher {
 
     pub fn status(&self) -> Result<StatusSnapshot> {
         let roster = self.roster_opt()?.unwrap_or_else(Roster::empty);
-        let current = collect::live_login(&self.store, &roster);
         let total = roster.sorted_slots().len();
-        let row = match (
-            current.slot(),
-            current.slot().and_then(|s| roster.record(s)),
-        ) {
-            (Some(slot), Some(record)) => {
-                let mut collected = collect::run_pass(
-                    &self.store,
-                    &roster,
-                    CollectOptions {
-                        mode: CollectMode::OnDemand,
-                        active: Some(slot),
-                        candidates: &[],
-                        threshold: self.settings.autoswitch.threshold,
-                        models: &self.settings.autoswitch.model_names(),
-                    },
-                )?;
-                Some(AccountRow {
-                    slot,
-                    record: record.clone(),
-                    usage: collected
-                        .entries
-                        .remove(&slot)
-                        .unwrap_or_else(|| self.fallback_entry(slot)),
-                    is_active: true,
-                })
-            }
-            _ => None,
-        };
-        Ok(StatusSnapshot {
-            current,
-            total,
-            row,
-        })
+        let mut providers = Vec::new();
+        for provider in Provider::ALL {
+            let current = collect::live_login_for(&self.store, &roster, provider);
+            let row = match (
+                current.slot(),
+                current.slot().and_then(|s| roster.record(s)),
+            ) {
+                (Some(slot), Some(record)) => {
+                    let mut collected = collect::run_pass(
+                        &self.store,
+                        &roster,
+                        CollectOptions {
+                            mode: CollectMode::OnDemand,
+                            actives: vec![slot],
+                            candidates: &[],
+                            threshold: self.settings.autoswitch.threshold,
+                            models: &self.settings.autoswitch.model_names(),
+                        },
+                    )?;
+                    Some(AccountRow {
+                        slot,
+                        record: record.clone(),
+                        usage: collected
+                            .entries
+                            .remove(&slot)
+                            .unwrap_or_else(|| self.fallback_entry(slot)),
+                        is_active: true,
+                    })
+                }
+                _ => None,
+            };
+            providers.push(ProviderStatus {
+                provider,
+                current,
+                row,
+            });
+        }
+        Ok(StatusSnapshot { providers, total })
     }
 
     fn fallback_entry(&self, slot: u32) -> UsageEntry {
@@ -1812,6 +2396,10 @@ mod tests {
         }
     }
 
+    thread_local! {
+        pub(super) static FAIL_CONFIG_SPLICE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
     struct Fixture {
         _dir: tempfile::TempDir,
         switcher: Switcher,
@@ -1849,6 +2437,48 @@ mod tests {
         fn roster(&self) -> Roster {
             roster::read(&self.switcher.store.paths).unwrap().unwrap()
         }
+        fn write_claude_live(&self, email: &str, org: &str, name: &str, refresh: &str) {
+            let paths = &self.switcher.store.paths;
+            fs::create_dir_all(&paths.claude_home).unwrap();
+            fs::write(
+                paths.claude_credentials_file(),
+                json!({
+                    "claudeAiOauth": {"accessToken": format!("cat-{refresh}"), "refreshToken": refresh, "expiresAt": 4_102_444_800_000i64, "scopes": ["user:inference"]},
+                    "mcpOAuth": {"srv": {"accessToken": "m"}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            fs::write(
+                paths.claude_global_config_file(),
+                json!({"oauthAccount": {"emailAddress": email, "organizationUuid": org, "organizationName": name, "accountUuid": "u"}, "projects": {"/p": {}}})
+                    .to_string(),
+            )
+            .unwrap();
+        }
+        fn claude_credentials(&self) -> Value {
+            serde_json::from_str(
+                &fs::read_to_string(self.switcher.store.paths.claude_credentials_file()).unwrap(),
+            )
+            .unwrap()
+        }
+        fn claude_config(&self) -> Value {
+            serde_json::from_str(
+                &fs::read_to_string(self.switcher.store.paths.claude_global_config_file()).unwrap(),
+            )
+            .unwrap()
+        }
+        fn live(&self) -> Value {
+            serde_json::from_str(
+                &fs::read_to_string(self.switcher.store.paths.live_auth_file()).unwrap(),
+            )
+            .unwrap()
+        }
+        fn credential(&self, slot: u32) -> Value {
+            credentials::read(&self.switcher.store, slot)
+                .unwrap()
+                .unwrap()
+        }
     }
 
     fn jwt(email: &str, account_id: &str) -> String {
@@ -1875,6 +2505,162 @@ mod tests {
             "tokens": {"id_token": jwt(email, account_id), "access_token": "at", "refresh_token": refresh, "account_id": account_id},
             "last_refresh": "2026-09-29T10:00:00Z"
         })
+    }
+
+    #[test]
+    fn add_accounts_captures_both_logins_even_with_the_same_email() {
+        let mut fx = fixture();
+        fx.write_live(&chatgpt("me@example.com", "acct-1", "rt-codex"));
+        fx.write_claude_live("Me@Example.com", "org-1", "Acme", "crt-1");
+        let outcomes = fx.switcher.add_accounts(None, None, None).unwrap();
+        assert_eq!(
+            outcomes,
+            vec![
+                (Provider::Codex, AddOutcome::Added { slot: 1 }),
+                (Provider::Claude, AddOutcome::Added { slot: 2 })
+            ]
+        );
+        assert_eq!(
+            fx.lines(),
+            [
+                "Added Account 1: me@example.com [Plus]",
+                "Added Account 2: me@example.com [Acme]"
+            ]
+        );
+        let roster = fx.roster();
+        assert_eq!(roster.record(1).unwrap().provider, Provider::Codex);
+        let claude = roster.record(2).unwrap();
+        assert_eq!(claude.provider, Provider::Claude);
+        assert_eq!(claude.organization_uuid, "org-1");
+        assert_eq!(claude.uuid, "u");
+        assert_eq!(roster.active_for(Provider::Codex), Some(1));
+        assert_eq!(roster.active_for(Provider::Claude), Some(2));
+        let stored = fx.credential(2);
+        assert_eq!(stored["claudeAiOauth"]["refreshToken"], "crt-1");
+        assert_eq!(stored["oauthAccount"]["emailAddress"], "Me@Example.com");
+        assert!(stored.get("mcpOAuth").is_none());
+    }
+
+    #[test]
+    fn add_accounts_reports_when_both_logins_are_already_managed() {
+        let mut fx = fixture();
+        fx.write_live(&chatgpt("a@example.com", "acct-1", "rt-1"));
+        fx.write_claude_live("c@example.com", "org", "", "crt-1");
+        fx.switcher.add_accounts(None, None, None).unwrap();
+        fx.lines.borrow_mut().clear();
+        let outcomes = fx.switcher.add_accounts(None, None, None).unwrap();
+        assert_eq!(
+            outcomes,
+            vec![
+                (Provider::Codex, AddOutcome::Updated { slot: 1 }),
+                (Provider::Claude, AddOutcome::Updated { slot: 2 })
+            ]
+        );
+        assert_eq!(
+            fx.lines(),
+            [
+                "Updated credentials for Account 1 (a@example.com [Plus]).",
+                "Updated credentials for Account 2 (c@example.com [personal]).",
+                "Both current logins were already managed: Account-1 (codex), Account-2 (claude) — nothing new was added.",
+            ]
+        );
+    }
+
+    #[test]
+    fn add_accounts_selector_missing_login_and_flags() {
+        let mut fx = fixture();
+        let err = fx.switcher.add_accounts(None, None, None).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "No active Codex or Claude login found. Log in first."
+        );
+        fx.write_live(&chatgpt("a@example.com", "acct-1", "rt-1"));
+        let err = fx
+            .switcher
+            .add_accounts(Some(Provider::Claude), None, None)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "No active Claude account found. Please log in first."
+        );
+        assert_eq!(
+            fx.switcher
+                .add_account(Provider::Codex, Some(3), Some("Work"))
+                .unwrap(),
+            AddOutcome::Added { slot: 3 }
+        );
+        fx.write_claude_live("c@example.com", "org", "", "crt-1");
+        let err = fx.switcher.add_accounts(None, None, Some("x")).unwrap_err();
+        assert_eq!(err.type_name(), "ValidationError");
+        assert!(
+            err.to_string()
+                .starts_with("--slot/--alias need a single login"),
+            "{err}"
+        );
+        assert_eq!(fx.switcher.add_accounts(None, None, None).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn add_token_routes_by_prefix() {
+        let mut fx = fixture();
+        assert_eq!(
+            fx.switcher
+                .add_token("sk-ant-api03-key", None, None)
+                .unwrap(),
+            AddOutcome::Added { slot: 1 }
+        );
+        assert_eq!(
+            fx.switcher
+                .add_token("sk-ant-oat01-tok", Some("me@example.com"), None)
+                .unwrap(),
+            AddOutcome::Added { slot: 2 }
+        );
+        assert_eq!(
+            fx.switcher.add_token("sk-openai", None, None).unwrap(),
+            AddOutcome::Added { slot: 3 }
+        );
+        assert_eq!(
+            fx.lines(),
+            [
+                "Added Account 1: api-key-1@token.local [personal] (from API key)",
+                "Added Account 2: me@example.com [personal] (from token)",
+                "Added Account 3: api-key-3@token.local [personal] (from API key)",
+            ]
+        );
+        let roster = fx.roster();
+        assert_eq!(roster.record(1).unwrap().provider, Provider::Claude);
+        assert!(roster.record(1).unwrap().is_api_key());
+        assert_eq!(roster.record(2).unwrap().provider, Provider::Claude);
+        assert!(
+            !roster.record(2).unwrap().is_api_key(),
+            "a setup-token is an OAuth-shaped login"
+        );
+        assert_eq!(roster.record(3).unwrap().provider, Provider::Codex);
+        assert_eq!(fx.credential(1)["primaryApiKey"], "sk-ant-api03-key");
+        assert_eq!(
+            fx.credential(1)["oauthAccount"]["emailAddress"],
+            "api-key-1@token.local"
+        );
+        assert_eq!(
+            fx.credential(2)["claudeAiOauth"]["accessToken"],
+            "sk-ant-oat01-tok"
+        );
+        assert_eq!(
+            fx.credential(2)["claudeAiOauth"]["scopes"],
+            json!(["user:inference"])
+        );
+        assert_eq!(fx.credential(3)["OPENAI_API_KEY"], "sk-openai");
+        fx.lines.borrow_mut().clear();
+        assert_eq!(
+            fx.switcher
+                .add_token("sk-ant-oat01-tok2", Some("me@example.com"), None)
+                .unwrap(),
+            AddOutcome::Updated { slot: 2 }
+        );
+        assert_eq!(
+            fx.lines(),
+            ["Updated token for Account 2 (me@example.com [personal])."]
+        );
     }
 
     #[test]
@@ -1907,12 +2693,17 @@ mod tests {
     fn add_account_first_second_and_refresh() {
         let mut f = fixture();
         assert_eq!(
-            f.switcher.add_account(None, None).unwrap_err().to_string(),
+            f.switcher
+                .add_account(Provider::Codex, None, None)
+                .unwrap_err()
+                .to_string(),
             "No active Codex account found. Please log in first."
         );
         f.write_live(&chatgpt("A@Example.com", "acct-1", "rt-1"));
         assert_eq!(
-            f.switcher.add_account(None, Some("Dev")).unwrap(),
+            f.switcher
+                .add_account(Provider::Codex, None, Some("Dev"))
+                .unwrap(),
             AddOutcome::Added { slot: 1 }
         );
         assert_eq!(f.lines(), ["Added Account 1: a@example.com [Plus]"]);
@@ -1928,7 +2719,7 @@ mod tests {
 
         f.write_live(&chatgpt("b@example.com", "acct-team", "rt-2"));
         assert_eq!(
-            f.switcher.add_account(None, None).unwrap(),
+            f.switcher.add_account(Provider::Codex, None, None).unwrap(),
             AddOutcome::Added { slot: 2 }
         );
         assert_eq!(f.lines()[1], "Added Account 2: b@example.com [Acme]");
@@ -1937,7 +2728,7 @@ mod tests {
         // Same identity again: refreshed in place, alias kept, active moves.
         f.write_live(&chatgpt("a@example.com", "acct-1", "rt-3"));
         assert_eq!(
-            f.switcher.add_account(None, None).unwrap(),
+            f.switcher.add_account(Provider::Codex, None, None).unwrap(),
             AddOutcome::Updated { slot: 1 }
         );
         assert_eq!(
@@ -1954,13 +2745,16 @@ mod tests {
         f.write_live(&chatgpt("b@example.com", "acct-team", "rt-5"));
         assert_eq!(
             f.switcher
-                .add_account(None, Some("dev"))
+                .add_account(Provider::Codex, None, Some("dev"))
                 .unwrap_err()
                 .to_string(),
             "Alias 'dev' is already used by account 1"
         );
         f.write_live(&chatgpt("c@example.com", "acct-3", "rt-4"));
-        let err = f.switcher.add_account(None, Some("dev")).unwrap_err();
+        let err = f
+            .switcher
+            .add_account(Provider::Codex, None, Some("dev"))
+            .unwrap_err();
         assert_eq!(err.type_name(), "ValidationError");
         assert!(f.roster().record(3).is_none());
     }
@@ -1969,9 +2763,9 @@ mod tests {
     fn add_account_slot_overwrite_and_migration() {
         let mut f = fixture();
         f.write_live(&chatgpt("a@example.com", "acct-1", "rt-1"));
-        f.switcher.add_account(None, None).unwrap();
+        f.switcher.add_account(Provider::Codex, None, None).unwrap();
         f.write_live(&chatgpt("b@example.com", "acct-2", "rt-2"));
-        f.switcher.add_account(None, None).unwrap();
+        f.switcher.add_account(Provider::Codex, None, None).unwrap();
         let mut mappings = MappingStore::load(&f.switcher.store.paths);
         mappings.set(
             Path::new("/tmp/proj"),
@@ -1983,7 +2777,9 @@ mod tests {
         f.write_live(&chatgpt("c@example.com", "acct-3", "rt-3"));
         f.answer("n");
         assert_eq!(
-            f.switcher.add_account(Some(1), None).unwrap(),
+            f.switcher
+                .add_account(Provider::Codex, Some(1), None)
+                .unwrap(),
             AddOutcome::Cancelled
         );
         assert_eq!(
@@ -2000,7 +2796,9 @@ mod tests {
         // Accept: the occupant and its mappings go away.
         f.answer("y");
         assert_eq!(
-            f.switcher.add_account(Some(1), None).unwrap(),
+            f.switcher
+                .add_account(Provider::Codex, Some(1), None)
+                .unwrap(),
             AddOutcome::Added { slot: 1 }
         );
         assert_eq!(
@@ -2017,7 +2815,9 @@ mod tests {
         f.switcher.alias_set("2", "work").unwrap();
         f.write_live(&chatgpt("b@example.com", "acct-2", "rt-9"));
         assert_eq!(
-            f.switcher.add_account(Some(5), None).unwrap(),
+            f.switcher
+                .add_account(Provider::Codex, Some(5), None)
+                .unwrap(),
             AddOutcome::Added { slot: 5 }
         );
         let lines = f.lines();
@@ -2037,7 +2837,7 @@ mod tests {
 
         assert_eq!(
             f.switcher
-                .add_account(Some(0), None)
+                .add_account(Provider::Codex, Some(0), None)
                 .unwrap_err()
                 .to_string(),
             "Slot number must be >= 1"
@@ -2049,7 +2849,7 @@ mod tests {
         let mut f = fixture();
         f.write_live(&json!({"auth_mode": "apikey", "OPENAI_API_KEY": "sk-live"}));
         assert_eq!(
-            f.switcher.add_account(None, None).unwrap(),
+            f.switcher.add_account(Provider::Codex, None, None).unwrap(),
             AddOutcome::Added { slot: 1 }
         );
         assert_eq!(
@@ -2061,7 +2861,7 @@ mod tests {
         assert_eq!(record.organization_uuid, "");
         // The same key again refreshes in place.
         assert_eq!(
-            f.switcher.add_account(None, None).unwrap(),
+            f.switcher.add_account(Provider::Codex, None, None).unwrap(),
             AddOutcome::Updated { slot: 1 }
         );
         assert_eq!(
@@ -2070,7 +2870,10 @@ mod tests {
         );
         f.write_live(&json!({"nonsense": true}));
         assert_eq!(
-            f.switcher.add_account(None, None).unwrap_err().type_name(),
+            f.switcher
+                .add_account(Provider::Codex, None, None)
+                .unwrap_err()
+                .type_name(),
             "CredentialReadError"
         );
     }
@@ -2083,7 +2886,7 @@ mod tests {
             (
                 "{\"x\":1}",
                 None,
-                "Token must be an OpenAI API key, not a JSON object",
+                "Token must be an API key or setup-token, not a JSON object",
             ),
             ("sk-1", Some("bad"), "Invalid email format: bad"),
         ] {
@@ -2286,5 +3089,303 @@ mod tests {
         );
         assert_eq!(limits_label(&[]), "5h/7d limit");
         assert_eq!(limits_label(&["x".into()]), "usage limits");
+    }
+
+    #[test]
+    fn switch_to_a_claude_slot_rewrites_the_live_login_and_keeps_siblings() {
+        let mut fx = fixture();
+        fx.write_live(&chatgpt("a@example.com", "acct-1", "rt-codex"));
+        fx.write_claude_live("one@example.com", "org-1", "", "crt-1");
+        fx.switcher.add_accounts(None, None, None).unwrap();
+        fx.write_claude_live("two@example.com", "org-2", "Acme", "crt-2");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        let codex_before = fx.live();
+        fx.lines.borrow_mut().clear();
+
+        let report = fx.switcher.switch_to("2", false, true).unwrap().unwrap();
+        assert!(report.outcome.switched);
+        assert_eq!(report.outcome.provider, Provider::Claude);
+        assert_eq!(report.outcome.from.as_ref().unwrap().number, Some(3));
+        assert_eq!(report.outcome.to.as_ref().unwrap().email, "one@example.com");
+        assert_eq!(
+            report.followup.as_deref(),
+            Some(crate::claude::live::FILE_FOLLOWUP)
+        );
+        assert!(report.show_list);
+        assert_eq!(fx.lines(), ["Switched to Account-2 (one@example.com)"]);
+
+        let creds = fx.claude_credentials();
+        assert_eq!(creds["claudeAiOauth"]["refreshToken"], "crt-1");
+        assert_eq!(
+            creds["mcpOAuth"]["srv"]["accessToken"], "m",
+            "siblings survive"
+        );
+        let config = fx.claude_config();
+        assert_eq!(config["oauthAccount"]["emailAddress"], "one@example.com");
+        assert_eq!(config["oauthAccount"]["organizationUuid"], "org-1");
+        assert_eq!(
+            config["projects"]["/p"],
+            json!({}),
+            "other config keys survive"
+        );
+        assert_eq!(fx.live(), codex_before, "the Codex login is untouched");
+        assert_eq!(fx.roster().active_for(Provider::Claude), Some(2));
+        assert_eq!(fx.roster().active_for(Provider::Codex), Some(1));
+        let backups = fs::read_dir(fx.switcher.store.paths.claude_backups_dir())
+            .unwrap()
+            .count();
+        assert_eq!(backups, 1);
+        let paths = &fx.switcher.store.paths;
+        assert!(
+            !paths.claude_refresh_lock_dir().exists()
+                && !paths.claude_legacy_lock_dir().exists()
+                && !paths.claude_config_lock_dir().exists()
+        );
+
+        fx.lines.borrow_mut().clear();
+        let again = fx.switcher.switch_to("2", false, true).unwrap().unwrap();
+        assert_eq!(again.outcome.reason, "already-active");
+        assert_eq!(fx.lines()[0], "Already on Account-2 (one@example.com)");
+    }
+
+    #[test]
+    fn switch_folds_a_rotated_live_claude_login_back_first() {
+        let mut fx = fixture();
+        fx.write_claude_live("one@example.com", "org-1", "", "crt-1");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        fx.write_claude_live("two@example.com", "org-2", "", "crt-2");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        // Claude Code rotated account two's token while it was live.
+        let paths = fx.switcher.store.paths.clone();
+        fs::write(
+            paths.claude_credentials_file(),
+            json!({"claudeAiOauth": {"accessToken": "cat-rotated", "refreshToken": "crt-2b", "expiresAt": 4_102_444_801_000i64}}).to_string(),
+        )
+        .unwrap();
+        fx.switcher.switch_to("1", false, true).unwrap();
+        assert_eq!(
+            fx.credential(2)["claudeAiOauth"]["refreshToken"],
+            "crt-2b",
+            "folded back before leaving"
+        );
+        assert_eq!(
+            fx.claude_credentials()["claudeAiOauth"]["refreshToken"],
+            "crt-1"
+        );
+        let err = fx.switcher.switch_to("9", false, true).unwrap_err();
+        assert_eq!(err.to_string(), "Account-9 does not exist");
+    }
+
+    fn claude_slot_file(fx: &Fixture, slot: u32, value: Value) {
+        credentials::write(&fx.switcher.store, slot, &value).unwrap();
+    }
+
+    #[test]
+    fn switch_refuses_a_slot_without_a_login_and_changes_nothing() {
+        let mut fx = fixture();
+        fx.write_claude_live("one@example.com", "org-1", "", "crt-1");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        fx.write_claude_live("two@example.com", "org-2", "", "crt-2");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        let account = fx.credential(1)["oauthAccount"].clone();
+        claude_slot_file(&fx, 1, json!({"oauthAccount": account}));
+        let creds_before = fs::read(fx.switcher.store.paths.claude_credentials_file()).unwrap();
+        let config_before = fs::read(fx.switcher.store.paths.claude_global_config_file()).unwrap();
+
+        let err = fx.switcher.switch_to("1", false, true).unwrap_err();
+        assert!(err.to_string().contains("unusable"), "{err}");
+        let paths = &fx.switcher.store.paths;
+        assert_eq!(
+            fs::read(paths.claude_credentials_file()).unwrap(),
+            creds_before
+        );
+        assert_eq!(
+            fs::read(paths.claude_global_config_file()).unwrap(),
+            config_before
+        );
+        assert!(!paths.claude_backups_dir().exists());
+        assert!(
+            !paths.claude_refresh_lock_dir().exists() && !paths.claude_config_lock_dir().exists()
+        );
+    }
+
+    #[test]
+    fn mcp_oauth_siblings_survive_a_round_trip_through_an_api_key_slot() {
+        let mut fx = fixture();
+        fx.write_claude_live("one@example.com", "org-1", "", "crt-1");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        fx.switcher
+            .add_token("sk-ant-api03-xyz", None, None)
+            .unwrap();
+        let mcp_before = fx.claude_credentials()["mcpOAuth"].clone();
+
+        fx.switcher.switch_to("2", false, true).unwrap();
+        assert_eq!(fx.claude_credentials()["mcpOAuth"], mcp_before);
+        fx.switcher.switch_to("1", false, true).unwrap();
+        let creds = fx.claude_credentials();
+        assert_eq!(
+            creds["mcpOAuth"], mcp_before,
+            "siblings survive the round trip"
+        );
+        assert_eq!(creds["claudeAiOauth"]["refreshToken"], "crt-1");
+        let mut names: Vec<_> = fs::read_dir(fx.switcher.store.paths.claude_backups_dir())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        names.sort();
+        let first: Value = serde_json::from_str(&fs::read_to_string(&names[0]).unwrap()).unwrap();
+        assert_eq!(
+            first["credentials"]["mcpOAuth"], mcp_before,
+            "the backup keeps siblings"
+        );
+    }
+
+    #[test]
+    fn a_failed_config_splice_restores_the_previous_live_login() {
+        let mut fx = fixture();
+        fx.write_claude_live("one@example.com", "org-1", "", "crt-1");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        fx.write_claude_live("two@example.com", "org-2", "", "crt-2");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        let creds_before = fx.claude_credentials();
+        let active_before = fx.roster().active_for(Provider::Claude);
+
+        FAIL_CONFIG_SPLICE.with(|f| f.set(true));
+        let result = fx.switcher.switch_to("1", false, true);
+        FAIL_CONFIG_SPLICE.with(|f| f.set(false));
+        assert!(result.is_err());
+        assert_eq!(fx.claude_credentials(), creds_before);
+        assert_eq!(fx.roster().active_for(Provider::Claude), active_before);
+    }
+
+    #[test]
+    fn rotation_needs_a_selector_when_both_providers_have_accounts() {
+        let mut fx = fixture();
+        fx.write_live(&chatgpt("a@example.com", "acct-1", "rt-1"));
+        fx.switcher
+            .add_account(Provider::Codex, None, None)
+            .unwrap();
+        fx.write_live(&chatgpt("b@example.com", "acct-2", "rt-2"));
+        fx.switcher
+            .add_account(Provider::Codex, None, None)
+            .unwrap();
+        let report = fx
+            .switcher
+            .switch(None, Strategy::Rotation, &[], false)
+            .unwrap();
+        assert_eq!(
+            report.outcome.to.as_ref().unwrap().number,
+            Some(1),
+            "one provider: rotation as before"
+        );
+        fx.write_claude_live("c@example.com", "org", "", "crt-1");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        let err = fx
+            .switcher
+            .switch(None, Strategy::Rotation, &[], false)
+            .unwrap_err();
+        assert_eq!(err.type_name(), "ConfigError");
+        assert_eq!(
+            err.to_string(),
+            "Both Codex and Claude accounts are managed — say which: cswitch switch codex | cswitch switch claude"
+        );
+        fx.lines.borrow_mut().clear();
+        let report = fx
+            .switcher
+            .switch(Some(Provider::Claude), Strategy::Rotation, &[], false)
+            .unwrap();
+        assert_eq!(report.outcome.reason, "only-one-account");
+        assert_eq!(report.outcome.provider, Provider::Claude);
+        let report = fx
+            .switcher
+            .switch(Some(Provider::Codex), Strategy::Rotation, &[], false)
+            .unwrap();
+        assert_eq!(report.outcome.to.as_ref().unwrap().number, Some(2));
+        assert_eq!(report.outcome.provider, Provider::Codex);
+    }
+
+    #[test]
+    fn rotation_stays_inside_the_selected_provider() {
+        let mut fx = fixture();
+        fx.write_live(&chatgpt("a@example.com", "acct-1", "rt-1"));
+        fx.switcher
+            .add_account(Provider::Codex, None, None)
+            .unwrap();
+        fx.write_claude_live("one@example.com", "org-1", "", "crt-1");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        fx.write_claude_live("two@example.com", "org-2", "", "crt-2");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        let report = fx
+            .switcher
+            .switch(Some(Provider::Claude), Strategy::Rotation, &[], false)
+            .unwrap();
+        assert_eq!(report.outcome.from.as_ref().unwrap().number, Some(3));
+        assert_eq!(
+            report.outcome.to.as_ref().unwrap().number,
+            Some(2),
+            "slot 1 (Codex) is never a Claude target"
+        );
+        let report = fx
+            .switcher
+            .switch(Some(Provider::Claude), Strategy::Rotation, &[], false)
+            .unwrap();
+        assert_eq!(report.outcome.to.as_ref().unwrap().number, Some(3));
+        assert_eq!(
+            fx.roster().active_for(Provider::Codex),
+            Some(1),
+            "the Codex marker never moved"
+        );
+    }
+
+    #[test]
+    fn list_and_status_report_one_active_per_provider() {
+        let mut fx = fixture();
+        fx.write_live(&chatgpt("a@example.com", "acct-1", "rt-1"));
+        fx.write_claude_live("c@example.com", "org", "Acme", "crt-1");
+        fx.switcher.add_accounts(None, None, None).unwrap();
+        let list = fx.switcher.list_snapshot(false).unwrap().unwrap();
+        assert_eq!(
+            list.actives,
+            ActiveSlots {
+                codex: Some(1),
+                claude: Some(2)
+            }
+        );
+        assert!(list.rows.iter().all(|row| row.is_active));
+        assert_eq!(list.rows[1].record.provider, Provider::Claude);
+        let status = fx.switcher.status().unwrap();
+        assert_eq!(status.total, 2);
+        assert_eq!(status.providers.len(), 2);
+        assert_eq!(status.providers[0].provider, Provider::Codex);
+        assert_eq!(status.providers[0].current.slot(), Some(1));
+        assert_eq!(status.providers[1].provider, Provider::Claude);
+        assert_eq!(status.providers[1].current.slot(), Some(2));
+        assert_eq!(
+            status.providers[1].row.as_ref().unwrap().record.email,
+            "c@example.com"
+        );
+        fx.switcher.remove("2", false).unwrap_or_default();
     }
 }

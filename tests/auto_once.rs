@@ -17,6 +17,7 @@ use cswitch::model::{
     now_unix,
 };
 use cswitch::paths::Paths;
+use cswitch::provider::Provider;
 use cswitch::store::usage_store::{FetchRecord, UsageStore};
 use cswitch::store::{Store, credentials, state};
 
@@ -78,6 +79,7 @@ impl AutoFacade for Fake {
         };
         Ok(SwitchOutcome {
             switched: true,
+            provider: Provider::Codex,
             from,
             to: Some(AccountRef {
                 number: Some(slot),
@@ -103,6 +105,7 @@ impl World {
         let paths = Paths::from_values(
             Some(dir.path().join("store")),
             Some(dir.path().join("codex")),
+            Some(dir.path().join("claude")),
             dir.path(),
         )
         .unwrap();

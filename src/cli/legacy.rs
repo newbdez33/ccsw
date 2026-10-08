@@ -5,6 +5,7 @@
 //! clap would phrase them differently.
 
 use crate::VERSION;
+use crate::provider::Provider;
 
 pub const PROG: &str = "cswitch";
 pub const USAGE_LINE: &str = "usage: cswitch <command> [args] [options]";
@@ -39,6 +40,15 @@ pub fn translate(argv: Vec<String>) -> Vec<String> {
     if first == "switch" {
         let rest = &argv[1..];
         return match rest.first() {
+            Some(word) if Provider::parse_selector(word).is_some() => {
+                let mut out = vec![
+                    "--switch".to_string(),
+                    "--provider".to_string(),
+                    word.to_ascii_lowercase(),
+                ];
+                out.extend(rest[1..].iter().cloned());
+                out
+            }
             Some(target) if !target.starts_with('-') => {
                 let mut out = vec!["--switch-to".to_string(), target.clone()];
                 out.extend(rest[1..].iter().cloned());
@@ -52,9 +62,18 @@ pub fn translate(argv: Vec<String>) -> Vec<String> {
         };
     }
     match VERB_FLAGS.iter().find(|(verb, _)| verb == first) {
-        Some((_, flag)) => {
+        Some((verb, flag)) => {
             let mut out = vec![flag.to_string()];
-            out.extend(argv[1..].iter().cloned());
+            let mut rest = argv[1..].iter();
+            if matches!(*verb, "add" | "list" | "ls" | "status")
+                && let Some(word) = argv.get(1)
+                && Provider::parse_selector(word).is_some()
+            {
+                out.push("--provider".to_string());
+                out.push(word.to_ascii_lowercase());
+                rest.next();
+            }
+            out.extend(rest.cloned());
             out
         }
         None => argv,
@@ -115,6 +134,7 @@ pub struct Options {
     pub json: bool,
     pub strategy: Option<String>,
     pub model: Option<String>,
+    pub provider: Option<Provider>,
     pub slot: Option<i64>,
     pub email: Option<String>,
     pub account: Option<String>,
@@ -171,6 +191,14 @@ pub fn parse(argv: &[String]) -> Result<Options, String> {
                 opts.strategy = Some(value);
             }
             "--model" => opts.model = Some(take_value(&mut i, false)?),
+            "--provider" => {
+                let value = take_value(&mut i, false)?;
+                opts.provider = Some(Provider::parse_selector(&value).ok_or_else(|| {
+                    format!(
+                        "argument --provider: invalid choice: '{value}' (choose from 'codex', 'claude')"
+                    )
+                })?);
+            }
             "--slot" => {
                 let value = take_value(&mut i, true)?;
                 let slot: i64 = value
@@ -304,6 +332,9 @@ pub fn validate(opts: &Options) -> Result<(), String> {
     if opts.full && !is(|c| matches!(c, Export(_))) {
         return Err("--full can only be used with 'export'".into());
     }
+    if opts.provider.is_some() && !is(|c| matches!(c, Switch | AddAccount | List | Status)) {
+        return Err("--provider can only be used with 'switch', 'add', 'list', or 'status'".into());
+    }
     Ok(())
 }
 
@@ -315,16 +346,16 @@ pub fn help_text() -> String {
     format!(
         "{USAGE_LINE}
 
-Multi-Account Switcher for OpenAI Codex
+Multi-Account Switcher for OpenAI Codex and Claude Code
 
 Commands:
   cswitch help                       show this help
-  cswitch list                       list managed accounts
-  cswitch status                     show current account
-  cswitch switch                     rotate to the next account
-  cswitch switch <num|email>         switch to a specific account
-  cswitch add                        add the current account
-  cswitch add-token [TOKEN|-]        register an API key
+  cswitch list [codex|claude]        list managed accounts (both providers by default)
+  cswitch status [codex|claude]      show the active account of each provider
+  cswitch switch [codex|claude]      rotate to the next account of one provider
+  cswitch switch <num|email>         switch to a specific account (Codex or Claude)
+  cswitch add [codex|claude]         add the current login(s)
+  cswitch add-token [TOKEN|-]        register an OpenAI API key, or an Anthropic API key / setup-token (sk-ant-…)
   cswitch remove <num|email>         remove an account
   cswitch disable <num|email>        hold an account out of auto-rotation
   cswitch enable <num|email>         return a disabled account to rotation
@@ -371,7 +402,8 @@ options:
                         or 'add-token')
   --email EMAIL         Email address for the account. Optional with
                         'add-token'; defaults to api-key-{{slot}}@token.local
-                        since API keys carry no email metadata.
+                        (setup-token-{{slot}}@token.local for a Claude
+                        setup-token) since tokens carry no email metadata.
   --account NUM|EMAIL   Limit export to one account (use with 'export')
   --alias NAME          Set a short display alias for the account (use with
                         'add')
@@ -380,15 +412,20 @@ options:
                         backing up the current login first
   --full                Accepted for compatibility (use with 'export'); Codex
                         has no per-account config to include
+  --provider {{codex,claude}}
+                        Act on one provider; the same as the word after
+                        'switch', 'add', 'list' or 'status'
 
 Flags combine with subcommands:
   cswitch switch --strategy best           # pick the account with most quota left
   cswitch switch --strategy next-available # rotate, skipping rate-limited accounts
+  cswitch switch claude                     # rotate among the Claude accounts
   cswitch switch user@example.com
   cswitch list --token-status
   cswitch list --json
   cswitch add --slot 3                      # add to a specific slot
   cswitch add-token sk-... --email me@example.com
+  cswitch add-token sk-ant-oat01-... --email me@example.com
   cswitch run 2 -- resume                   # forward args after '--' to codex
   cswitch auto --once                       # single auto-switch tick (cron-friendly)
   cswitch config set autoswitch.threshold 80
@@ -401,6 +438,7 @@ The original flag spellings (cswitch --switch, cswitch --list, ...) keep working
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::Provider;
 
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
@@ -417,6 +455,23 @@ mod tests {
                 &["--switch", "--strategy", "best"],
             ),
             (&["switch", "2"], &["--switch-to", "2"]),
+            (&["switch", "claude"], &["--switch", "--provider", "claude"]),
+            (
+                &["switch", "Codex", "--strategy", "best"],
+                &["--switch", "--provider", "codex", "--strategy", "best"],
+            ),
+            (
+                &["add", "claude", "--slot", "3"],
+                &["--add-account", "--provider", "claude", "--slot", "3"],
+            ),
+            (
+                &["list", "codex", "--json"],
+                &["--list", "--provider", "codex", "--json"],
+            ),
+            (&["ls", "claude"], &["--list", "--provider", "claude"]),
+            (&["status", "claude"], &["--status", "--provider", "claude"]),
+            (&["switch", "dev"], &["--switch-to", "dev"]),
+            (&["remove", "claude"], &["--remove-account", "claude"]),
             (
                 &["switch", "u@x.com", "--json"],
                 &["--switch-to", "u@x.com", "--json"],
@@ -463,6 +518,12 @@ mod tests {
         assert_eq!(opts.model.as_deref(), Some("all"));
         assert!(parse(&argv(&["--version"])).unwrap().version);
         assert!(parse(&argv(&["-h"])).unwrap().help);
+        let opts = parse(&argv(&["--switch", "--provider", "claude"])).unwrap();
+        assert_eq!(opts.provider, Some(Provider::Claude));
+        assert_eq!(
+            parse(&argv(&["--list", "--provider", "gemini"])).unwrap_err(),
+            "argument --provider: invalid choice: 'gemini' (choose from 'codex', 'claude')"
+        );
     }
 
     #[test]
@@ -545,8 +606,14 @@ mod tests {
             check(&["--import", "f", "--full"]),
             "--full can only be used with 'export'"
         );
+        assert_eq!(
+            check(&["--remove-account", "2", "--provider", "codex"]),
+            "--provider can only be used with 'switch', 'add', 'list', or 'status'"
+        );
         for ok in [
             &["--switch-to", "2", "--json", "--force"][..],
+            &["--switch", "--provider", "claude", "--strategy", "best"],
+            &["--status", "--provider", "codex", "--json"],
             &["--list", "--token-status"],
             &["--switch", "--strategy", "best", "--model", "all", "--json"],
             &["--add-account", "--slot", "3", "--alias", "dev"],
@@ -562,10 +629,11 @@ mod tests {
     fn help_and_version() {
         let help = help_text();
         assert!(help.starts_with("usage: cswitch <command> [args] [options]\n"));
-        assert!(help.contains("Multi-Account Switcher for OpenAI Codex"));
+        assert!(help.contains("Multi-Account Switcher for OpenAI Codex and Claude Code"));
         assert!(help.contains("Aliases: ls=list  rm=remove  update=upgrade"));
         assert!(help.contains("keep working"));
-        assert!(!help.contains("Claude"));
+        assert!(help.contains("cswitch switch [codex|claude]"));
+        assert!(help.contains("sk-ant-"));
         assert!(!help.contains("cswap "));
         assert_eq!(version_line(), format!("cswitch {VERSION}"));
     }

@@ -14,14 +14,17 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use crate::claude::credentials::{ClaudeCredential, CredentialKind, SlotFile};
+use crate::claude::keychain::{SecurityCli, SystemSecurity};
+use crate::claude::live::{ClaudeLive, LiveLogin};
+use crate::claude::oauth::ClaudeTokens;
 use crate::codex::auth::{AuthJson, AuthKind};
 use crate::codex::jwt::{is_expiring, token_expires_at};
-use crate::codex::oauth::{self, Presented, RefreshError, RefreshedTokens};
-use crate::codex::usage::{
-    FetchError, FetchOutcome, REFRESH_MARGIN_SECS, build_client, fetch_usage,
-};
+use crate::codex::oauth::{self, Presented as HeldTokens, RefreshError, RefreshedTokens};
+use crate::codex::usage::{FetchError, REFRESH_MARGIN_SECS, build_client, fetch_usage};
 use crate::errors::Result;
-use crate::model::{CurrentAccount, Identity, Roster, now_unix};
+use crate::model::{CurrentAccount, Identity, NormalizedUsage, Roster, now_unix};
+use crate::provider::Provider;
 use crate::store::Store;
 use crate::store::credentials;
 use crate::store::poll_policy::{CANDIDATE_MAX_INTERVAL_S, plan_after_fetch};
@@ -50,13 +53,19 @@ pub enum CollectMode {
 #[derive(Debug, Clone)]
 pub struct CollectOptions<'a> {
     pub mode: CollectMode,
-    /// The slot whose credentials are the live login, if any.
-    pub active: Option<u32>,
+    /// The slots whose credentials are a live login (at most one per provider).
+    pub actives: Vec<u32>,
     /// The other slots to report (and, when due, fetch).
     pub candidates: &'a [u32],
     /// Poll-plan inputs (the auto-switch threshold and model pools).
     pub threshold: f64,
     pub models: &'a [String],
+}
+
+impl CollectOptions<'_> {
+    fn is_active(&self, slot: u32) -> bool {
+        self.actives.contains(&slot)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -90,7 +99,7 @@ pub fn live_login(store: &Store, roster: &Roster) -> CurrentAccount {
     };
     match auth.kind() {
         AuthKind::ChatGpt => match auth.identity() {
-            Some(identity) => match roster.find_slot(&identity) {
+            Some(identity) => match roster.find_slot(Provider::Codex, &identity) {
                 Some(slot) => CurrentAccount::Managed {
                     slot,
                     email: roster
@@ -133,59 +142,233 @@ pub fn live_login(store: &Store, roster: &Roster) -> CurrentAccount {
     }
 }
 
+/// The slot whose credentials are `provider`'s live login.
+pub fn live_login_for(store: &Store, roster: &Roster, provider: Provider) -> CurrentAccount {
+    match provider {
+        Provider::Codex => live_login(store, roster),
+        Provider::Claude => claude_live_login(store, roster),
+    }
+}
+
+fn claude_live_login(store: &Store, roster: &Roster) -> CurrentAccount {
+    claude_live_login_with(store, roster, &SystemSecurity)
+}
+
+fn claude_live_login_with(store: &Store, roster: &Roster, cli: &dyn SecurityCli) -> CurrentAccount {
+    let Ok(login) = ClaudeLive::new(&store.paths, cli).read() else {
+        return CurrentAccount::NoLogin;
+    };
+    claude_account_of(store, roster, &login)
+}
+
+/// The roster slot a read Claude Code login belongs to.
+fn claude_account_of(store: &Store, roster: &Roster, login: &LiveLogin) -> CurrentAccount {
+    let Some(credential) = &login.credential else {
+        // A failed Keychain hides the credential, not the account: the global
+        // config is a plain file. Without a failure, no credential is no login
+        // (a stale `oauthAccount` after a logout must not pin a slot).
+        if !login.keychain_unavailable {
+            return CurrentAccount::NoLogin;
+        }
+        let Some(account) = &login.oauth_account else {
+            return CurrentAccount::NoLogin;
+        };
+        return match login.identity() {
+            Some(identity) => match roster.find_slot(Provider::Claude, &identity) {
+                Some(slot) => CurrentAccount::Managed {
+                    slot,
+                    email: roster
+                        .record(slot)
+                        .map(|r| r.email.clone())
+                        .unwrap_or_default(),
+                    api_key: false,
+                },
+                None => CurrentAccount::Unmanaged {
+                    email: identity.email,
+                },
+            },
+            None => CurrentAccount::Unmanaged {
+                email: account.email_address().to_lowercase(),
+            },
+        };
+    };
+    let email_of = |slot: u32| {
+        roster
+            .record(slot)
+            .map(|r| r.email.clone())
+            .unwrap_or_default()
+    };
+    match credential.kind() {
+        CredentialKind::ApiKey => {
+            let key = credential.api_key();
+            let matched = roster.slots_of(Provider::Claude).into_iter().find(|slot| {
+                roster.record(*slot).is_some_and(|r| r.is_api_key())
+                    && credentials::read(store, *slot)
+                        .ok()
+                        .flatten()
+                        .and_then(|v| SlotFile::from_value(&v).ok())
+                        .is_some_and(|s| s.credential.api_key() == key)
+            });
+            match matched {
+                Some(slot) => CurrentAccount::Managed {
+                    slot,
+                    email: email_of(slot),
+                    api_key: true,
+                },
+                None => CurrentAccount::Unmanaged {
+                    email: String::new(),
+                },
+            }
+        }
+        CredentialKind::OAuth | CredentialKind::SetupToken => match login.identity() {
+            Some(identity) => match roster.find_slot(Provider::Claude, &identity) {
+                Some(slot) => CurrentAccount::Managed {
+                    slot,
+                    email: email_of(slot),
+                    api_key: false,
+                },
+                None => CurrentAccount::Unmanaged {
+                    email: identity.email,
+                },
+            },
+            None => CurrentAccount::Unmanaged {
+                email: login
+                    .oauth_account
+                    .as_ref()
+                    .map(|a| a.email_address().to_lowercase())
+                    .unwrap_or_default(),
+            },
+        },
+        CredentialKind::Unknown => CurrentAccount::NoLogin,
+    }
+}
+
+/// The credential a pass presents for a slot, by provider.
+#[derive(Debug, Clone)]
+enum Presented {
+    Codex(AuthJson),
+    Claude(ClaudeCredential),
+}
+
+impl Presented {
+    fn fingerprint(&self) -> Option<String> {
+        match self {
+            Self::Codex(auth) => credentials::fingerprint(&auth.0),
+            Self::Claude(cred) => cred.fingerprint(),
+        }
+    }
+
+    fn refresh_token(&self) -> Option<&str> {
+        match self {
+            Self::Codex(auth) => auth.refresh_token(),
+            Self::Claude(cred) => cred.refresh_token(),
+        }
+    }
+}
+
 /// What a pass knows about one slot before any network call.
 struct SlotView {
     identity: Option<Identity>,
     api_key_record: bool,
     /// The stored snapshot; `None` when the slot has no readable credentials.
-    stored: Option<AuthJson>,
-    /// The live `auth.json`, for the active slot only.
-    live: Option<AuthJson>,
+    stored: Option<Presented>,
+    /// The live login, for the active slot only.
+    live: Option<Presented>,
+    /// The active Claude slot's live read failed on the Keychain.
+    keychain_unavailable: bool,
 }
 
 impl SlotView {
-    fn load(store: &Store, roster: &Roster, slot: u32, is_active: bool) -> Self {
+    fn load(
+        store: &Store,
+        roster: &Roster,
+        slot: u32,
+        is_active: bool,
+        cli: &dyn SecurityCli,
+    ) -> Self {
         let record = roster.record(slot);
-        let stored = credentials::read(store, slot)
-            .ok()
-            .flatten()
-            .map(AuthJson::from_value);
-        let live = if is_active {
-            AuthJson::read(&store.paths.live_auth_file()).ok().flatten()
-        } else {
-            None
+        let provider = record.map(|r| r.provider).unwrap_or_default();
+        let identity = record.map(|r| r.identity());
+        let api_key_record = record.is_some_and(|r| r.is_api_key());
+        let raw = credentials::read(store, slot).ok().flatten();
+        let (stored, live, keychain_unavailable) = match provider {
+            Provider::Codex => (
+                raw.map(|v| Presented::Codex(AuthJson::from_value(v))),
+                is_active
+                    .then(|| AuthJson::read(&store.paths.live_auth_file()).ok().flatten())
+                    .flatten()
+                    .map(Presented::Codex),
+                false,
+            ),
+            Provider::Claude => {
+                let mut stored = raw
+                    .and_then(|v| SlotFile::from_value(&v).ok())
+                    .map(|s| Presented::Claude(s.credential));
+                let (live, unavailable) = if is_active {
+                    match ClaudeLive::new(&store.paths, cli).read() {
+                        Ok(login) => (
+                            login.credential.map(Presented::Claude),
+                            login.keychain_unavailable,
+                        ),
+                        Err(_) => (None, false),
+                    }
+                } else {
+                    (None, false)
+                };
+                if unavailable && live.is_none() {
+                    // The live login is unreadable, not absent: the stored
+                    // copy may be stale, so present nothing at all.
+                    stored = None;
+                }
+                (stored, live, unavailable)
+            }
         };
         Self {
-            identity: record.map(|r| r.identity()),
-            api_key_record: record.is_some_and(|r| r.is_api_key()),
+            identity,
+            api_key_record,
             stored,
             live,
+            keychain_unavailable,
         }
     }
 
-    /// The credential a fetch would present: the live file for the active slot.
-    fn presented(&self) -> Option<&AuthJson> {
+    /// The credential a fetch would present: the live login for the active slot.
+    fn presented(&self) -> Option<&Presented> {
         self.live.as_ref().or(self.stored.as_ref())
     }
 
+    /// Something a usage request can be made with.
     fn fetchable(&self) -> bool {
-        !self.api_key_record
-            && self.identity.is_some()
-            && self
-                .presented()
-                .is_some_and(|auth| auth.kind() == AuthKind::ChatGpt)
+        if self.api_key_record || self.identity.is_none() {
+            return false;
+        }
+        match self.presented() {
+            Some(Presented::Codex(auth)) => auth.kind() == AuthKind::ChatGpt,
+            Some(Presented::Claude(cred)) => {
+                matches!(
+                    cred.kind(),
+                    CredentialKind::OAuth | CredentialKind::SetupToken
+                )
+            }
+            None => false,
+        }
     }
 
     fn fingerprint(&self) -> Option<String> {
-        self.presented()
-            .and_then(|auth| credentials::fingerprint(&auth.0))
+        self.presented().and_then(Presented::fingerprint)
     }
 
-    /// The access token is past its `exp` claim (or absent).
+    /// The access token is past its expiry (or absent).
     fn access_expired(&self, now: f64) -> bool {
-        match self.presented().and_then(AuthJson::access_token) {
+        match self.presented() {
+            Some(Presented::Codex(auth)) => match auth.access_token() {
+                None => true,
+                Some(token) => token_expires_at(token).is_some_and(|exp| exp as f64 <= now),
+            },
+            Some(Presented::Claude(cred)) => {
+                cred.access_token().is_none() || cred.is_expired((now * 1000.0) as i64)
+            }
             None => true,
-            Some(token) => token_expires_at(token).is_some_and(|exp| exp as f64 <= now),
         }
     }
 }
@@ -218,13 +401,20 @@ fn derive_sentinel(
     now: f64,
     pass_started: Option<f64>,
 ) -> Option<UsageSentinel> {
-    let Some(auth) = view.presented() else {
+    let Some(presented) = view.presented() else {
+        if view.keychain_unavailable {
+            return Some(UsageSentinel::KeychainUnavailable);
+        }
         return Some(UsageSentinel::NoCredentials);
     };
-    if view.api_key_record || auth.kind() == AuthKind::ApiKey {
+    let api_key = match presented {
+        Presented::Codex(auth) => auth.kind() == AuthKind::ApiKey,
+        Presented::Claude(cred) => cred.kind() == CredentialKind::ApiKey,
+    };
+    if view.api_key_record || api_key {
         return Some(UsageSentinel::ApiKey);
     }
-    if auth.kind() != AuthKind::ChatGpt {
+    if !view.fetchable() {
         return Some(UsageSentinel::NoCredentials);
     }
     if entry.token_dead(AUTH_DEAD_STRIKES, view.fingerprint().as_deref()) {
@@ -264,12 +454,35 @@ fn exhausted_with_wide_plan(entry: &UsageEntry, models: &[String], now: f64) -> 
             .is_some_and(|i| i > CANDIDATE_MAX_INTERVAL_S)
 }
 
+/// Whether Claude Code's live login can be read. When it cannot, the live
+/// slot cannot be told apart, so a pass refreshes no Claude slot (spec §8).
+fn claude_live_readable(store: &Store, cli: &dyn SecurityCli) -> bool {
+    match ClaudeLive::new(&store.paths, cli).read() {
+        Ok(_) => true,
+        Err(err) => {
+            tracing::warn!(
+                "Claude Code's live login could not be read ({err}); no Claude account is refreshed this pass"
+            );
+            false
+        }
+    }
+}
+
 /// Run one pass (see the module docs).
 pub fn run_pass(store: &Store, roster: &Roster, opts: CollectOptions<'_>) -> Result<Collected> {
+    run_pass_with(store, roster, opts, &SystemSecurity)
+}
+
+fn run_pass_with(
+    store: &Store,
+    roster: &Roster,
+    opts: CollectOptions<'_>,
+    cli: &dyn SecurityCli,
+) -> Result<Collected> {
     let started = now_unix() as f64;
     let usage_store = UsageStore::new(&store.paths);
 
-    let mut slots: Vec<u32> = opts.active.into_iter().collect();
+    let mut slots: Vec<u32> = opts.actives.to_vec();
     for &slot in opts.candidates {
         if !slots.contains(&slot) {
             slots.push(slot);
@@ -280,7 +493,7 @@ pub fn run_pass(store: &Store, roster: &Roster, opts: CollectOptions<'_>) -> Res
         .map(|&slot| {
             (
                 slot,
-                SlotView::load(store, roster, slot, opts.active == Some(slot)),
+                SlotView::load(store, roster, slot, opts.is_active(slot), cli),
             )
         })
         .collect();
@@ -308,20 +521,35 @@ pub fn run_pass(store: &Store, roster: &Roster, opts: CollectOptions<'_>) -> Res
     let reserved = reserve(&usage_store, &views, &entries, &identities, &opts, started)?;
     let mut failures = Vec::new();
     if !reserved.is_empty() {
-        let jobs: Vec<(u32, AuthJson)> = reserved
+        let claude_may_refresh = !reserved
             .iter()
-            .filter_map(|slot| Some((*slot, views[slot].presented()?.clone())))
+            .any(|slot| matches!(views[slot].presented(), Some(Presented::Claude(_))))
+            || claude_live_readable(store, cli);
+        let jobs: Vec<Job> = reserved
+            .iter()
+            .filter_map(|slot| {
+                Some((
+                    *slot,
+                    views[slot].presented()?.clone(),
+                    claude_may_refresh && !opts.is_active(*slot),
+                ))
+            })
             .collect();
         for (slot, presented, outcome) in fetch_all(jobs)? {
-            let is_active = opts.active == Some(slot);
+            let is_active = opts.is_active(slot);
             let now = now_unix() as f64;
-            if let Some(tokens) = &outcome.refreshed
+            if let Some(rotation) = &outcome.rotation
                 && let Some(rt) = presented.refresh_token()
-                && let Err(err) = persist_rotation(store, slot, is_active, rt, tokens)
             {
-                failures.push(format!(
-                    "[Account-{slot}] token refresh succeeded but the rotated credentials could not be saved: {err}"
-                ));
+                let saved = match rotation {
+                    Rotation::Codex(tokens) => persist_rotation(store, slot, is_active, rt, tokens),
+                    Rotation::Claude(tokens) => persist_claude_rotation(store, slot, rt, tokens),
+                };
+                if let Err(err) = saved {
+                    failures.push(format!(
+                        "[Account-{slot}] token refresh succeeded but the rotated credentials could not be saved: {err}"
+                    ));
+                }
             }
             let identity = &identities[&slot];
             let previous = entries.get(&slot).cloned().unwrap_or_else(blank_entry);
@@ -354,9 +582,7 @@ pub fn run_pass(store: &Store, roster: &Roster, opts: CollectOptions<'_>) -> Res
                         error: err.label(),
                         retry_after,
                         permanent_auth,
-                        struck_fp: permanent_auth
-                            .then(|| credentials::fingerprint(&presented.0))
-                            .flatten(),
+                        struck_fp: permanent_auth.then(|| presented.fingerprint()).flatten(),
                     }
                 }
             };
@@ -368,7 +594,7 @@ pub fn run_pass(store: &Store, roster: &Roster, opts: CollectOptions<'_>) -> Res
             .map(|&slot| {
                 (
                     slot,
-                    SlotView::load(store, roster, slot, opts.active == Some(slot)),
+                    SlotView::load(store, roster, slot, opts.is_active(slot), cli),
                 )
             })
             .collect();
@@ -411,7 +637,7 @@ fn assemble(
         .map(|(slot, view)| {
             let mut entry = stored.get(slot).cloned().unwrap_or_else(blank_entry);
             entry.sentinel =
-                derive_sentinel(view, &entry, opts.active == Some(*slot), now, pass_started);
+                derive_sentinel(view, &entry, opts.is_active(*slot), now, pass_started);
             (*slot, entry)
         })
         .collect()
@@ -455,9 +681,10 @@ fn reserve(
         CollectMode::Escalation | CollectMode::StoreOnly => ReserveMode::Escalation,
     };
     let mut reserved = Vec::new();
-    if let Some(active) = opts.active
-        && fetchable(active)
-    {
+    for active in opts.actives.iter().copied() {
+        if !fetchable(active) {
+            continue;
+        }
         let mode = if opts.mode == CollectMode::Scheduled
             && stale_candidate_plan(&entries[&active], opts.models)
         {
@@ -471,7 +698,7 @@ fn reserve(
         .candidates
         .iter()
         .copied()
-        .filter(|slot| Some(*slot) != opts.active && fetchable(*slot))
+        .filter(|slot| !opts.is_active(*slot) && fetchable(*slot))
         .collect();
     match opts.mode {
         CollectMode::Escalation => {
@@ -498,12 +725,25 @@ fn reserve(
     Ok(reserved)
 }
 
-type Fetched = (u32, AuthJson, FetchOutcome);
+enum Rotation {
+    Codex(RefreshedTokens),
+    Claude(ClaudeTokens),
+}
+
+struct Outcome {
+    rotation: Option<Rotation>,
+    result: std::result::Result<NormalizedUsage, FetchError>,
+}
+
+type Fetched = (u32, Presented, Outcome);
+/// A slot, the credential it presents, and whether a Claude credential may be
+/// refreshed (never the live one, nor any when the live login is unreadable).
+type Job = (u32, Presented, bool);
 
 /// Fetch every job on a private runtime, starts staggered by [`STAGGER`].
 /// Called from inside another runtime, the work moves to a helper thread so
 /// the blocking wait never sits on an executor thread.
-fn fetch_all(jobs: Vec<(u32, AuthJson)>) -> Result<Vec<Fetched>> {
+fn fetch_all(jobs: Vec<Job>) -> Result<Vec<Fetched>> {
     if tokio::runtime::Handle::try_current().is_ok() {
         return std::thread::scope(|scope| {
             scope
@@ -515,17 +755,30 @@ fn fetch_all(jobs: Vec<(u32, AuthJson)>) -> Result<Vec<Fetched>> {
     fetch_all_blocking(jobs)
 }
 
-fn fetch_all_blocking(jobs: Vec<(u32, AuthJson)>) -> Result<Vec<Fetched>> {
-    let client = build_client(None)?;
+fn fetch_all_blocking(jobs: Vec<Job>) -> Result<Vec<Fetched>> {
+    let codex_client = build_client(None)?;
+    let claude_client = crate::claude::usage::build_client(None)?;
     let runtime = runtime()?;
     Ok(runtime.block_on(async move {
         let mut set = tokio::task::JoinSet::new();
-        for (index, (slot, auth)) in jobs.into_iter().enumerate() {
-            let client = client.clone();
+        for (index, (slot, presented, may_refresh)) in jobs.into_iter().enumerate() {
+            let codex_client = codex_client.clone();
+            let claude_client = claude_client.clone();
             set.spawn(async move {
                 tokio::time::sleep(STAGGER * index as u32).await;
-                let outcome = fetch_usage(&client, &auth).await;
-                (slot, auth, outcome)
+                let outcome = match &presented {
+                    Presented::Codex(auth) => {
+                        let out = fetch_usage(&codex_client, auth).await;
+                        Outcome {
+                            rotation: out.refreshed.map(Rotation::Codex),
+                            result: out.result,
+                        }
+                    }
+                    Presented::Claude(cred) => {
+                        fetch_claude(&claude_client, cred, may_refresh).await
+                    }
+                };
+                (slot, presented, outcome)
             });
         }
         let mut results = Vec::new();
@@ -538,6 +791,73 @@ fn fetch_all_blocking(jobs: Vec<(u32, AuthJson)>) -> Result<Vec<Fetched>> {
         }
         results
     }))
+}
+
+/// Spec §8: refresh only an inactive credential (proactively within the
+/// 5-minute buffer, reactively on 401/403); the active one belongs to
+/// Claude Code and a 401 is reported as such. `may_refresh` is false for the
+/// active slot and for every slot when the live login could not be read.
+async fn fetch_claude(
+    client: &reqwest::Client,
+    cred: &ClaudeCredential,
+    may_refresh: bool,
+) -> Outcome {
+    use crate::claude::oauth::refresh;
+    use crate::claude::usage::get_usage;
+    let now_ms = now_unix() * 1000;
+    let refreshable = may_refresh.then(|| cred.refresh_token()).flatten();
+    if let Some(rt) = refreshable
+        && cred.is_expiring(now_ms)
+    {
+        match refresh(client, rt).await {
+            Ok(tokens) => {
+                let result = get_usage(client, &tokens.access_token).await;
+                return Outcome {
+                    rotation: Some(Rotation::Claude(tokens)),
+                    result,
+                };
+            }
+            Err(err) if err.is_terminal() => {
+                return Outcome {
+                    rotation: None,
+                    result: Err(FetchError::Auth(err)),
+                };
+            }
+            Err(err) => tracing::warn!("proactive Claude token refresh failed: {err}"),
+        }
+    }
+    let Some(bearer) = cred.access_token() else {
+        return Outcome {
+            rotation: None,
+            result: Err(FetchError::NoAccessToken),
+        };
+    };
+    let first = get_usage(client, bearer).await;
+    let (
+        Err(FetchError::Http {
+            status: 401 | 403, ..
+        }),
+        Some(rt),
+    ) = (&first, refreshable)
+    else {
+        return Outcome {
+            rotation: None,
+            result: first,
+        };
+    };
+    match refresh(client, rt).await {
+        Ok(tokens) => {
+            let result = get_usage(client, &tokens.access_token).await;
+            Outcome {
+                rotation: Some(Rotation::Claude(tokens)),
+                result,
+            }
+        }
+        Err(err) => Outcome {
+            rotation: None,
+            result: Err(FetchError::Auth(err)),
+        },
+    }
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
@@ -596,14 +916,47 @@ fn persist_rotation(
     Ok(())
 }
 
+/// Persist a Claude rotation into the slot file with compare-and-swap on the
+/// presented refresh token. The live login is Claude Code's and never touched.
+fn persist_claude_rotation(
+    store: &Store,
+    slot: u32,
+    presented_refresh_token: &str,
+    tokens: &ClaudeTokens,
+) -> Result<()> {
+    let _lock = store.lock()?;
+    let Some(value) = credentials::read(store, slot)? else {
+        return Ok(());
+    };
+    let mut file = SlotFile::from_value(&value)?;
+    if file.credential.refresh_token() != Some(presented_refresh_token) {
+        return Ok(());
+    }
+    tokens.apply_to(&mut file.credential);
+    credentials::write(store, slot, &file.to_value())
+}
+
 /// Refresh the slot's tokens when the access or id JWT expires within
 /// [`REFRESH_MARGIN_SECS`] (always with `force`), persist the rotation with
 /// compare-and-swap, and report what happened. A terminal verdict is recorded
 /// as a dead-token strike bound to the credential's fingerprint.
 pub fn refresh_slot(store: &Store, roster: &Roster, slot: u32, force: bool) -> RefreshStatus {
+    refresh_slot_with(store, roster, slot, force, &SystemSecurity)
+}
+
+fn refresh_slot_with(
+    store: &Store,
+    roster: &Roster,
+    slot: u32,
+    force: bool,
+    cli: &dyn SecurityCli,
+) -> RefreshStatus {
     let Some(record) = roster.record(slot) else {
         return RefreshStatus::Transient(format!("Account-{slot} does not exist"));
     };
+    if record.provider == Provider::Claude {
+        return refresh_claude_slot(store, roster, slot, force, cli);
+    }
     if record.is_api_key() {
         return RefreshStatus::NotNeeded;
     }
@@ -679,6 +1032,119 @@ pub fn refresh_slot(store: &Store, roster: &Roster, slot: u32, force: bool) -> R
     }
 }
 
+fn refresh_claude_slot(
+    store: &Store,
+    roster: &Roster,
+    slot: u32,
+    force: bool,
+    cli: &dyn SecurityCli,
+) -> RefreshStatus {
+    let record = roster.record(slot).expect("checked by the caller");
+    if record.is_api_key() {
+        return RefreshStatus::NotNeeded;
+    }
+    let file = match credentials::read(store, slot) {
+        Ok(Some(value)) => match SlotFile::from_value(&value) {
+            Ok(file) => file,
+            Err(err) => return RefreshStatus::Transient(err.to_string()),
+        },
+        Ok(None) => {
+            return RefreshStatus::Transient(format!("Account-{slot} has no stored credentials"));
+        }
+        Err(err) => return RefreshStatus::Transient(err.to_string()),
+    };
+    match file.credential.kind() {
+        CredentialKind::ApiKey | CredentialKind::SetupToken => return RefreshStatus::NotNeeded,
+        CredentialKind::Unknown => return RefreshStatus::NoRefreshToken,
+        CredentialKind::OAuth => {}
+    }
+    let login = match ClaudeLive::new(&store.paths, cli).read() {
+        Ok(login) => login,
+        Err(err) => {
+            // Which slot is live is unknown, so this one may be: spec §8.
+            tracing::warn!(
+                "Claude Code's live login could not be read ({err}); not refreshing account {slot}"
+            );
+            return RefreshStatus::NotNeeded;
+        }
+    };
+    if claude_account_of(store, roster, &login).slot() == Some(slot) {
+        // Claude Code owns the active login; spec §8.
+        return RefreshStatus::NotNeeded;
+    }
+    if !force && !file.credential.is_expiring(now_unix() * 1000) {
+        return RefreshStatus::NotNeeded;
+    }
+    let Some(refresh_token) = file.credential.refresh_token().map(str::to_string) else {
+        return RefreshStatus::NoRefreshToken;
+    };
+    let result = run_blocking({
+        let refresh_token = refresh_token.clone();
+        move || {
+            Box::pin(async move {
+                let client = crate::claude::usage::build_client(None)
+                    .map_err(|err| RefreshError::Transient(err.to_string()))?;
+                crate::claude::oauth::refresh(&client, &refresh_token).await
+            })
+        }
+    });
+    match result {
+        Ok(tokens) => {
+            if let Err(err) = persist_claude_rotation(store, slot, &refresh_token, &tokens) {
+                return RefreshStatus::Transient(format!(
+                    "token refresh succeeded but the rotated credentials could not be saved: {err}"
+                ));
+            }
+            let _ = UsageStore::new(&store.paths).clear_dead_token(&[slot]);
+            RefreshStatus::Ok
+        }
+        Err(RefreshError::Terminal {
+            code, memorable, ..
+        }) => {
+            let strike = FetchRecord::Failure {
+                error: "auth".to_string(),
+                retry_after: None,
+                permanent_auth: true,
+                struck_fp: file.credential.fingerprint(),
+            };
+            if let Err(err) = UsageStore::new(&store.paths).record(
+                slot,
+                &record.identity(),
+                strike,
+                now_unix() as f64,
+            ) {
+                tracing::warn!("could not record the dead-token strike for account {slot}: {err}");
+            }
+            RefreshStatus::Terminal { code, memorable }
+        }
+        Err(RefreshError::Transient(detail)) => RefreshStatus::Transient(detail),
+    }
+}
+
+/// Run a future on a private runtime; from inside another runtime the work
+/// moves to a helper thread (the same rule as `run_refresh`).
+fn run_blocking<T: Send + 'static, F>(make: F) -> T
+where
+    F: FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static,
+{
+    let work = move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(make())
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::scope(|scope| {
+            scope
+                .spawn(work)
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+    }
+    work()
+}
+
 /// When the live file belongs to `slot` and is newer than its snapshot, store it
 /// and return the stored copy.
 fn fold_live_into_slot(store: &Store, slot: u32, stored: &AuthJson) -> Option<AuthJson> {
@@ -705,7 +1171,7 @@ fn run_refresh(
         runtime.block_on(oauth::refresh_with(
             &client,
             &refresh_token,
-            Presented {
+            HeldTokens {
                 id_token: id_token.as_deref(),
                 access_token: access_token.as_deref(),
             },
@@ -756,6 +1222,22 @@ mod tests {
     }
 
     impl Mock {
+        /// Calls on one path carrying `who` (the bearer, or the presented
+        /// refresh token for the token route); tests run in parallel, so each
+        /// counts only its own unique credentials.
+        fn claude_calls(&self, path: &str, who: &str) -> usize {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.path == path && r.bearer.as_deref() == Some(who))
+                .count()
+        }
+
+        fn claude_token_calls(&self, refresh_token: &str) -> usize {
+            self.claude_calls("/claude/token", refresh_token)
+        }
+
         fn for_account(&self, account_id: &str) -> Vec<Recorded> {
             self.requests
                 .lock()
@@ -843,6 +1325,70 @@ mod tests {
         }
     }
 
+    async fn claude_usage_route(
+        axum::extract::State(mock): axum::extract::State<std::sync::Arc<Mock>>,
+        headers: axum::http::HeaderMap,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        let header = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let bearer =
+            header("authorization").and_then(|v| v.strip_prefix("Bearer ").map(str::to_string));
+        mock.requests.lock().unwrap().push(Recorded {
+            path: "/claude/usage".into(),
+            bearer: bearer.clone(),
+            account_id: None,
+        });
+        if header("anthropic-beta").is_none() {
+            return axum::http::StatusCode::BAD_REQUEST.into_response();
+        }
+        match bearer.as_deref().unwrap_or("") {
+            "cat-good" => axum::Json(json!({
+                "five_hour": {"utilization": 40, "resets_at": "2100-01-01T00:00:00Z"},
+                "seven_day": {"utilization": 55}
+            }))
+            .into_response(),
+            _ => (
+                axum::http::StatusCode::UNAUTHORIZED,
+                axum::Json(json!({"error": "unauthorized"})),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn claude_token_route(
+        axum::extract::State(mock): axum::extract::State<std::sync::Arc<Mock>>,
+        axum::Json(body): axum::Json<Value>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        mock.requests.lock().unwrap().push(Recorded {
+            path: "/claude/token".into(),
+            bearer: body["refresh_token"].as_str().map(str::to_string),
+            account_id: None,
+        });
+        let presented = body["refresh_token"].as_str().unwrap_or("");
+        if body["client_id"].as_str() != Some("9d1c250a-e61b-44d9-88ed-5944d1962f5e") {
+            return axum::http::StatusCode::BAD_REQUEST.into_response();
+        }
+        if presented.starts_with("crt-live-") {
+            return axum::Json(json!({
+                "access_token": "cat-good",
+                "expires_in": 3600,
+                "refresh_token": "crt-next"
+            }))
+            .into_response();
+        }
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "invalid_grant"})),
+        )
+            .into_response()
+    }
+
     fn mock() -> &'static std::sync::Arc<Mock> {
         static MOCK: OnceLock<std::sync::Arc<Mock>> = OnceLock::new();
         MOCK.get_or_init(|| {
@@ -858,6 +1404,8 @@ mod tests {
                     let app = axum::Router::new()
                         .route("/usage", axum::routing::get(usage_route))
                         .route("/token", axum::routing::post(token_route))
+                        .route("/claude/usage", axum::routing::get(claude_usage_route))
+                        .route("/claude/token", axum::routing::post(claude_token_route))
                         .with_state(state);
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                     tx.send(listener.local_addr().unwrap()).unwrap();
@@ -870,6 +1418,14 @@ mod tests {
             unsafe {
                 std::env::set_var("CSWITCH_USAGE_URL", format!("http://{addr}/usage"));
                 std::env::set_var("CSWITCH_TOKEN_URL", format!("http://{addr}/token"));
+                std::env::set_var(
+                    "CSWITCH_CLAUDE_USAGE_URL",
+                    format!("http://{addr}/claude/usage"),
+                );
+                std::env::set_var(
+                    "CSWITCH_CLAUDE_TOKEN_URL",
+                    format!("http://{addr}/claude/token"),
+                );
             }
             mock
         })
@@ -935,14 +1491,10 @@ mod tests {
         auth.write(&store.paths.live_auth_file()).unwrap();
     }
 
-    fn opts<'a>(
-        mode: CollectMode,
-        active: Option<u32>,
-        candidates: &'a [u32],
-    ) -> CollectOptions<'a> {
+    fn opts<'a>(mode: CollectMode, actives: &[u32], candidates: &'a [u32]) -> CollectOptions<'a> {
         CollectOptions {
             mode,
-            active,
+            actives: actives.to_vec(),
             candidates,
             threshold: 90.0,
             models: &[],
@@ -1000,7 +1552,7 @@ mod tests {
         let collected = run_pass(
             &store,
             &roster,
-            opts(CollectMode::StoreOnly, Some(1), &[2, 3, 4, 5, 9]),
+            opts(CollectMode::StoreOnly, &[1], &[2, 3, 4, 5, 9]),
         )
         .unwrap();
         let sentinel = |slot: u32| collected.entries[&slot].sentinel;
@@ -1033,7 +1585,7 @@ mod tests {
         write_live(&store, &expired);
         store_auth(&store, 2, &chatgpt("a2", "", Some("rt-2"), 1));
         let collected =
-            run_pass(&store, &roster, opts(CollectMode::StoreOnly, Some(1), &[2])).unwrap();
+            run_pass(&store, &roster, opts(CollectMode::StoreOnly, &[1], &[2])).unwrap();
         assert_eq!(
             collected.entries[&1].sentinel,
             Some(UsageSentinel::TokenExpired)
@@ -1046,8 +1598,7 @@ mod tests {
 
         // The live file, not the snapshot, decides for the active slot.
         write_live(&store, &chatgpt("a1", "", Some("rt-1b"), FAR));
-        let collected =
-            run_pass(&store, &roster, opts(CollectMode::StoreOnly, Some(1), &[])).unwrap();
+        let collected = run_pass(&store, &roster, opts(CollectMode::StoreOnly, &[1], &[])).unwrap();
         assert_eq!(collected.entries[&1].sentinel, None);
     }
 
@@ -1177,12 +1728,8 @@ mod tests {
         store_auth(&store, 2, &chatgpt(&b, "at-good", Some("rt-keep"), FAR));
         store_auth(&store, 3, &chatgpt(&c, "at-good", Some("rt-keep"), FAR));
 
-        let collected = run_pass(
-            &store,
-            &roster,
-            opts(CollectMode::OnDemand, Some(1), &[2, 3]),
-        )
-        .unwrap();
+        let collected =
+            run_pass(&store, &roster, opts(CollectMode::OnDemand, &[1], &[2, 3])).unwrap();
         assert_eq!(mock.for_account(&a).len(), 1, "active fetched");
         let fetched_candidates = mock.for_account(&b).len() + mock.for_account(&c).len();
         assert_eq!(fetched_candidates, 1, "exactly one candidate per pass");
@@ -1211,23 +1758,13 @@ mod tests {
         assert!(collected.token_persist_failures.is_empty());
 
         // Fresh rows are served from the store; the waiting candidate is now the due one.
-        let second = run_pass(
-            &store,
-            &roster,
-            opts(CollectMode::OnDemand, Some(1), &[2, 3]),
-        )
-        .unwrap();
+        let second = run_pass(&store, &roster, opts(CollectMode::OnDemand, &[1], &[2, 3])).unwrap();
         assert_eq!(mock.for_account(&a).len(), 1);
         assert_eq!(mock.for_account(&b).len() + mock.for_account(&c).len(), 2);
         assert!(second.entries[&waiting].fetched_at.is_some());
 
         // Store-only reads what the passes left behind.
-        let third = run_pass(
-            &store,
-            &roster,
-            opts(CollectMode::StoreOnly, Some(1), &[2, 3]),
-        )
-        .unwrap();
+        let third = run_pass(&store, &roster, opts(CollectMode::StoreOnly, &[1], &[2, 3])).unwrap();
         assert_eq!(third.entries[&1].last_good, collected.entries[&1].last_good);
         assert_eq!(mock.for_account(&a).len(), 1);
     }
@@ -1254,7 +1791,7 @@ mod tests {
         let collected = run_pass(
             &store,
             &roster,
-            opts(CollectMode::Escalation, Some(1), &[2, 3]),
+            opts(CollectMode::Escalation, &[1], &[2, 3]),
         )
         .unwrap();
         for id in &ids {
@@ -1281,12 +1818,8 @@ mod tests {
             &chatgpt(&b, "at-stale", Some(&format!("rt-live-{b}")), FAR),
         );
 
-        let collected = run_pass(
-            &store,
-            &roster,
-            opts(CollectMode::Escalation, Some(1), &[2]),
-        )
-        .unwrap();
+        let collected =
+            run_pass(&store, &roster, opts(CollectMode::Escalation, &[1], &[2])).unwrap();
         assert!(collected.token_persist_failures.is_empty());
         let trail: Vec<(String, Option<String>)> = mock
             .for_account(&a)
@@ -1333,12 +1866,8 @@ mod tests {
         let dead = chatgpt(&b, "at-stale", Some("rt-dead"), FAR);
         store_auth(&store, 2, &dead);
 
-        let collected = run_pass(
-            &store,
-            &roster,
-            opts(CollectMode::Escalation, Some(1), &[2]),
-        )
-        .unwrap();
+        let collected =
+            run_pass(&store, &roster, opts(CollectMode::Escalation, &[1], &[2])).unwrap();
         assert_eq!(mock.for_account(&b).len(), 1, "no retry after the verdict");
         let entry = &collected.entries[&2];
         assert_eq!(entry.sentinel, Some(UsageSentinel::ReloginNeeded));
@@ -1352,20 +1881,10 @@ mod tests {
         );
 
         // Struck rows are never fetched again until the credential changes.
-        run_pass(
-            &store,
-            &roster,
-            opts(CollectMode::Escalation, Some(1), &[2]),
-        )
-        .unwrap();
+        run_pass(&store, &roster, opts(CollectMode::Escalation, &[1], &[2])).unwrap();
         assert_eq!(mock.for_account(&b).len(), 1);
         store_auth(&store, 2, &chatgpt(&b, "at-good", Some("rt-keep"), FAR));
-        let healed = run_pass(
-            &store,
-            &roster,
-            opts(CollectMode::Escalation, Some(1), &[2]),
-        )
-        .unwrap();
+        let healed = run_pass(&store, &roster, opts(CollectMode::Escalation, &[1], &[2])).unwrap();
         assert_eq!(
             healed.entries[&2].sentinel, None,
             "a new credential heals the strike"
@@ -1387,8 +1906,7 @@ mod tests {
         let live = chatgpt(&a, "at-limited", Some("rt-keep"), FAR);
         store_auth(&store, 1, &live);
         write_live(&store, &live);
-        let collected =
-            run_pass(&store, &roster, opts(CollectMode::OnDemand, Some(1), &[])).unwrap();
+        let collected = run_pass(&store, &roster, opts(CollectMode::OnDemand, &[1], &[])).unwrap();
         assert_eq!(mock.for_account(&a).len(), 1);
         let entry = &collected.entries[&1];
         assert_eq!(entry.last_error.as_deref(), Some("http-429"));
@@ -1525,5 +2043,407 @@ mod tests {
         assert_eq!(entry_headroom(&entry, &[]), Some(70.0));
         entry.sentinel = Some(UsageSentinel::TokenExpired);
         assert_eq!(entry_headroom(&entry, &[]), None);
+    }
+
+    fn claude_slot(
+        store: &Store,
+        slot: u32,
+        email: &str,
+        access: &str,
+        refresh: Option<&str>,
+        expires_at_ms: i64,
+    ) {
+        use crate::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
+        let mut inner = json!({"accessToken": access, "expiresAt": expires_at_ms, "scopes": ["user:inference"]});
+        if let Some(refresh) = refresh {
+            inner["refreshToken"] = json!(refresh);
+        }
+        let credential = ClaudeCredential::from_value(json!({"claudeAiOauth": inner}));
+        let account = OauthAccount(
+            json!({"emailAddress": email, "organizationUuid": "org", "organizationName": "Acme", "accountUuid": "u"}),
+        );
+        credentials::write(store, slot, &SlotFile::new(&credential, account).to_value()).unwrap();
+    }
+
+    fn claude_record(slot_email: &str) -> AccountRecord {
+        let mut record = AccountRecord::new(slot_email);
+        record.provider = crate::provider::Provider::Claude;
+        record.organization_uuid = "org".into();
+        record
+    }
+
+    fn write_claude_live(store: &Store, email: &str, access: &str, refresh: &str) {
+        let paths = &store.paths;
+        std::fs::create_dir_all(&paths.claude_home).unwrap();
+        std::fs::write(
+            paths.claude_credentials_file(),
+            json!({"claudeAiOauth": {"accessToken": access, "refreshToken": refresh, "expiresAt": FAR * 1000}}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            paths.claude_global_config_file(),
+            json!({"oauthAccount": {"emailAddress": email, "organizationUuid": "org"}}).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn claude_live_login_resolves_by_oauth_account() {
+        use crate::provider::Provider;
+        let (_dir, store) = temp_store();
+        let mut roster = roster_with(&[(1, "a1")]);
+        roster.add_record(2, claude_record("c@example.com"));
+        assert_eq!(
+            live_login_for(&store, &roster, Provider::Claude),
+            CurrentAccount::NoLogin
+        );
+        write_claude_live(&store, "C@example.com", "cat", "crt");
+        assert_eq!(
+            live_login_for(&store, &roster, Provider::Claude),
+            CurrentAccount::Managed {
+                slot: 2,
+                email: "c@example.com".into(),
+                api_key: false
+            }
+        );
+        write_claude_live(&store, "other@example.com", "cat", "crt");
+        assert_eq!(
+            live_login_for(&store, &roster, Provider::Claude),
+            CurrentAccount::Unmanaged {
+                email: "other@example.com".into()
+            }
+        );
+        assert_eq!(
+            live_login_for(&store, &roster, Provider::Codex),
+            CurrentAccount::NoLogin,
+            "Codex is untouched"
+        );
+    }
+
+    #[test]
+    fn claude_sentinels_in_a_store_only_pass() {
+        let (_dir, store) = temp_store();
+        let mut roster = roster_with(&[(1, "a1")]);
+        roster.add_record(2, claude_record("c@example.com"));
+        roster.add_record(3, claude_record("d@example.com"));
+        roster.add_record(4, claude_record("e@example.com"));
+        roster.record_mut(4).unwrap().kind = Some(AccountKind::ApiKey);
+        claude_slot(&store, 2, "c@example.com", "cat", Some("crt"), FAR * 1000);
+        // 3 has no slot file; 4 is a managed key.
+        {
+            use crate::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
+            let key = SlotFile::new(
+                &ClaudeCredential::managed_key("sk-ant-api03-k"),
+                OauthAccount::synthesized("e@example.com"),
+            );
+            credentials::write(&store, 4, &key.to_value()).unwrap();
+        }
+        let collected = run_pass(
+            &store,
+            &roster,
+            opts(CollectMode::StoreOnly, &[], &[2, 3, 4]),
+        )
+        .unwrap();
+        assert_eq!(collected.entries[&2].sentinel, None);
+        assert_eq!(
+            collected.entries[&3].sentinel,
+            Some(UsageSentinel::NoCredentials)
+        );
+        assert_eq!(collected.entries[&4].sentinel, Some(UsageSentinel::ApiKey));
+
+        // The active Claude slot reads the live login; an expired one idles.
+        write_claude_live(&store, "c@example.com", "cat-live", "crt-live");
+        let path = store.paths.claude_credentials_file();
+        std::fs::write(
+            &path,
+            json!({"claudeAiOauth": {"accessToken": "cat-live", "refreshToken": "crt-live", "expiresAt": 1}}).to_string(),
+        )
+        .unwrap();
+        let collected = run_pass(&store, &roster, opts(CollectMode::StoreOnly, &[2], &[])).unwrap();
+        assert_eq!(
+            collected.entries[&2].sentinel,
+            Some(UsageSentinel::TokenExpired)
+        );
+    }
+
+    #[test]
+    fn claude_rotation_is_persisted_into_the_slot_only() {
+        use crate::claude::credentials::SlotFile;
+        use crate::claude::oauth::ClaudeTokens;
+        let (_dir, store) = temp_store();
+        claude_slot(&store, 2, "c@example.com", "cat", Some("crt-old"), 1);
+        let tokens = ClaudeTokens {
+            access_token: "cat-new".into(),
+            expires_at_ms: 9,
+            refresh_token: Some("crt-new".into()),
+            scopes: None,
+        };
+        persist_claude_rotation(&store, 2, "crt-old", &tokens).unwrap();
+        let slot = SlotFile::from_value(&credentials::read(&store, 2).unwrap().unwrap()).unwrap();
+        assert_eq!(slot.credential.refresh_token(), Some("crt-new"));
+        assert_eq!(slot.credential.access_token(), Some("cat-new"));
+        assert_eq!(
+            slot.oauth_account.organization_name(),
+            "Acme",
+            "oauthAccount survives"
+        );
+        persist_claude_rotation(&store, 2, "crt-someone-else", &tokens).unwrap();
+        let slot = SlotFile::from_value(&credentials::read(&store, 2).unwrap().unwrap()).unwrap();
+        assert_eq!(
+            slot.credential.refresh_token(),
+            Some("crt-new"),
+            "compare-and-swap"
+        );
+        assert!(
+            !store.paths.claude_credentials_file().exists(),
+            "never touches the live login"
+        );
+    }
+
+    #[test]
+    fn claude_pass_refreshes_inactive_slots_on_401_and_never_the_active_one() {
+        let mock = mock();
+        let (_dir, store) = temp_store();
+        let (a, b) = (unique("cl"), unique("cl"));
+        let mut roster = Roster::empty();
+        roster.add_record(1, claude_record(&format!("{a}@example.com")));
+        roster.add_record(2, claude_record(&format!("{b}@example.com")));
+        write_claude_live(
+            &store,
+            &format!("{a}@example.com"),
+            "cat-stale",
+            "crt-live-a",
+        );
+        claude_slot(
+            &store,
+            1,
+            &format!("{a}@example.com"),
+            "cat-stale",
+            Some("crt-live-a"),
+            FAR * 1000,
+        );
+        claude_slot(
+            &store,
+            2,
+            &format!("{b}@example.com"),
+            "cat-stale",
+            Some(&format!("crt-live-{b}")),
+            FAR * 1000,
+        );
+        let collected =
+            run_pass(&store, &roster, opts(CollectMode::Escalation, &[1], &[2])).unwrap();
+        assert_eq!(
+            collected.entries[&1].last_good, None,
+            "the active slot is never refreshed"
+        );
+        assert_eq!(
+            collected.entries[&1].last_error.as_deref(),
+            Some("http-401")
+        );
+        assert_eq!(
+            collected.entries[&2]
+                .last_good
+                .as_ref()
+                .unwrap()
+                .five_hour
+                .as_ref()
+                .unwrap()
+                .pct,
+            40.0
+        );
+        let slot = crate::claude::credentials::SlotFile::from_value(
+            &credentials::read(&store, 2).unwrap().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            slot.credential.refresh_token(),
+            Some("crt-next"),
+            "the rotation landed in the slot file"
+        );
+        assert_eq!(mock.claude_token_calls(&format!("crt-live-{b}")), 1);
+        assert_eq!(collected.entries[&2].poll_interval_s, Some(300.0));
+    }
+
+    /// A Keychain that always errors, as a locked one does.
+    struct LockedKeychain;
+
+    impl SecurityCli for LockedKeychain {
+        fn run(
+            &self,
+            _args: &[String],
+            _stdin_line: Option<&str>,
+        ) -> std::io::Result<crate::claude::keychain::CliOutput> {
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "locked"))
+        }
+    }
+
+    /// Slot 2 is the live Claude account whose Keychain is locked; slot 3 is
+    /// an inactive one with an expiring token the mock can refresh.
+    fn locked_keychain_setup(store: &mut Store, unique_tag: &str) -> (Roster, String, String) {
+        store.paths.keychain_enabled = true;
+        let (a, b) = (
+            format!("{unique_tag}-a@example.com"),
+            format!("{unique_tag}-b@example.com"),
+        );
+        let mut roster = Roster::empty();
+        roster.add_record(2, claude_record(&a));
+        roster.add_record(3, claude_record(&b));
+        claude_slot(
+            store,
+            2,
+            &a,
+            &format!("cat-{unique_tag}"),
+            Some(&format!("crt-live-{unique_tag}-active")),
+            FAR * 1000,
+        );
+        claude_slot(
+            store,
+            3,
+            &b,
+            "cat-stale",
+            Some(&format!("crt-live-{unique_tag}-inactive")),
+            1,
+        );
+        std::fs::create_dir_all(&store.paths.claude_home).unwrap();
+        std::fs::write(
+            store.paths.claude_global_config_file(),
+            json!({"oauthAccount": {"emailAddress": a, "organizationUuid": "org"}}).to_string(),
+        )
+        .unwrap();
+        (roster, a, b)
+    }
+
+    #[test]
+    fn keychain_unavailable_active_slot_gets_the_sentinel_and_is_not_touched() {
+        let mock = mock();
+        let (_dir, mut store) = temp_store();
+        let tag = unique("kc");
+        let (roster, _a, _b) = locked_keychain_setup(&mut store, &tag);
+        let before = std::fs::read(store.paths.credential_file(2)).unwrap();
+        assert!(matches!(
+            claude_live_login_with(&store, &roster, &LockedKeychain),
+            CurrentAccount::Managed { slot: 2, .. }
+        ));
+        let collected = run_pass_with(
+            &store,
+            &roster,
+            opts(CollectMode::Escalation, &[2], &[]),
+            &LockedKeychain,
+        )
+        .unwrap();
+        assert_eq!(
+            collected.entries[&2].sentinel,
+            Some(UsageSentinel::KeychainUnavailable)
+        );
+        assert_eq!(mock.claude_calls("/claude/usage", &format!("cat-{tag}")), 0);
+        assert_eq!(
+            mock.claude_token_calls(&format!("crt-live-{tag}-active")),
+            0
+        );
+        assert_eq!(
+            std::fs::read(store.paths.credential_file(2)).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn a_live_read_error_refreshes_no_claude_slot() {
+        let mock = mock();
+        let (_dir, mut store) = temp_store();
+        let tag = unique("lr");
+        let (roster, _a, _b) = locked_keychain_setup(&mut store, &tag);
+        // The Keychain errors and the file fallback does not parse, so
+        // `ClaudeLive::read` fails and the live account cannot be told apart.
+        std::fs::write(store.paths.claude_credentials_file(), "{not json").unwrap();
+        assert!(
+            ClaudeLive::new(&store.paths, &LockedKeychain)
+                .read()
+                .is_err()
+        );
+        let before_2 = std::fs::read(store.paths.credential_file(2)).unwrap();
+        let before_3 = std::fs::read(store.paths.credential_file(3)).unwrap();
+
+        run_pass_with(
+            &store,
+            &roster,
+            opts(CollectMode::Escalation, &[], &[2, 3]),
+            &LockedKeychain,
+        )
+        .unwrap();
+        assert_eq!(
+            refresh_slot_with(&store, &roster, 3, true, &LockedKeychain),
+            RefreshStatus::NotNeeded
+        );
+        assert_eq!(
+            refresh_slot_with(&store, &roster, 2, true, &LockedKeychain),
+            RefreshStatus::NotNeeded
+        );
+        assert_eq!(
+            mock.claude_token_calls(&format!("crt-live-{tag}-inactive")),
+            0
+        );
+        assert_eq!(
+            mock.claude_token_calls(&format!("crt-live-{tag}-active")),
+            0
+        );
+        assert_eq!(
+            std::fs::read(store.paths.credential_file(2)).unwrap(),
+            before_2
+        );
+        assert_eq!(
+            std::fs::read(store.paths.credential_file(3)).unwrap(),
+            before_3
+        );
+    }
+
+    #[test]
+    fn a_missing_credential_without_a_keychain_failure_is_no_login() {
+        let (_dir, mut store) = temp_store();
+        let (roster, _a, _b) = locked_keychain_setup(&mut store, &unique("kc"));
+        store.paths.keychain_enabled = false;
+        assert_eq!(
+            claude_live_login_with(&store, &roster, &LockedKeychain),
+            CurrentAccount::NoLogin,
+            "a stale oauthAccount must not pin a slot"
+        );
+    }
+
+    #[test]
+    fn refresh_slot_refuses_the_active_claude_slot_under_a_keychain_failure() {
+        let mock = mock();
+        let (_dir, mut store) = temp_store();
+        let tag = unique("kc");
+        let (roster, _a, _b) = locked_keychain_setup(&mut store, &tag);
+        let before = std::fs::read(store.paths.credential_file(2)).unwrap();
+        assert_eq!(
+            refresh_slot_with(&store, &roster, 2, true, &LockedKeychain),
+            RefreshStatus::NotNeeded
+        );
+        assert_eq!(
+            mock.claude_token_calls(&format!("crt-live-{tag}-active")),
+            0
+        );
+        assert_eq!(
+            std::fs::read(store.paths.credential_file(2)).unwrap(),
+            before
+        );
+
+        let other_before = std::fs::read(store.paths.credential_file(3)).unwrap();
+        assert_eq!(
+            refresh_slot_with(&store, &roster, 3, true, &LockedKeychain),
+            RefreshStatus::Ok
+        );
+        assert_eq!(
+            mock.claude_token_calls(&format!("crt-live-{tag}-inactive")),
+            1
+        );
+        assert_ne!(
+            std::fs::read(store.paths.credential_file(3)).unwrap(),
+            other_before
+        );
+        assert_eq!(
+            std::fs::read(store.paths.credential_file(2)).unwrap(),
+            before
+        );
     }
 }

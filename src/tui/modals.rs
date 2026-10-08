@@ -49,7 +49,7 @@ impl ConfirmModal {
     pub fn add_current() -> Self {
         Self::new(
             "Add account",
-            "Back up the current Codex login as a managed account?\n\nIf this account is already managed, its stored credentials are refreshed in place.",
+            "Back up the current Codex and Claude Code logins as managed accounts?\n\nA login that is already managed has its stored credentials refreshed in place.",
             "Add",
             PendingAction::AddCurrent,
         )
@@ -464,11 +464,11 @@ pub fn modal_lines(modal: &Modal, width: usize, p: &Palette) -> Vec<Line<'static
         }
         Modal::AddToken(form) => {
             lines.push(Line::from(Span::styled(
-                "Add account from API key",
+                "Add account from a token",
                 p.bold_accent(),
             )));
             lines.extend(wrapped(
-                "OpenAI API key (sk-…); the account is registered as an API-key account without usage quota.",
+                "OpenAI API key (sk-…), or an Anthropic setup-token / API key (sk-ant-…); API-key accounts have no usage quota.",
                 width,
                 p.muted_style(),
             ));
@@ -500,7 +500,7 @@ pub fn modal_lines(modal: &Modal, width: usize, p: &Palette) -> Vec<Line<'static
                 &form.token,
                 true,
                 form.focus == Focus::Token,
-                "API key (required)",
+                "token (required)",
             ));
             lines.push(field(
                 &form.email,
@@ -644,7 +644,7 @@ mod tests {
         assert!(
             ConfirmModal::add_current()
                 .message
-                .starts_with("Back up the current Codex login")
+                .starts_with("Back up the current Codex and Claude Code logins")
         );
         assert_eq!(
             ConfirmModal::overwrite_slot(

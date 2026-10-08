@@ -9,7 +9,8 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 
 use cswitch::cli::tui::TuiStart;
-use cswitch::model::{NormalizedUsage, ScopedWindow, WindowUsage, format_iso};
+use cswitch::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso};
+use cswitch::provider::Provider;
 use cswitch::store::AutoSwitchSettings;
 use cswitch::store::usage_store::{UsageEntry, UsageSentinel};
 use cswitch::tui::app::{Action, ActionResult, App, Command, Inbound, ScreenKind};
@@ -52,6 +53,7 @@ fn entry(age: f64, usage: Option<NormalizedUsage>) -> UsageEntry {
 fn account(number: u32, email: &str, tag: &str, usage: UsageEntry) -> AccountSnapshot {
     AccountSnapshot {
         number,
+        provider: cswitch::provider::Provider::Codex,
         email: email.to_string(),
         tag: tag.to_string(),
         alias: None,
@@ -75,6 +77,7 @@ fn fixture() -> AccountsSnapshot {
                 five_hour: Some(window(12.0, 4 * 3600 + 2 * 60)),
                 seven_day: Some(window(40.0, 4 * 86_400 + 21 * 3600)),
                 reset_credits: Some(1),
+                spend: None,
                 ..NormalizedUsage::default()
             }),
         ),
@@ -94,6 +97,7 @@ fn fixture() -> AccountsSnapshot {
                     resets_at: Some(format_iso(NOW as i64 + 5 * 86_400 + 3 * 3600)),
                 }],
                 reset_credits: Some(2),
+                spend: None,
                 ..NormalizedUsage::default()
             }),
         ),
@@ -286,8 +290,8 @@ fn dashboard_menu_navigation_and_breadcrumb() {
     let (y, _) = find_row(&rows, "menu › add account");
     assert_eq!(rows[y], "   menu › add account");
     assert_eq!(rows[y + 2], " ▌ Add new account");
-    assert_eq!(rows[y + 3], "   From current Codex login");
-    assert_eq!(rows[y + 4], "   From an API key…");
+    assert_eq!(rows[y + 3], "   From current logins");
+    assert_eq!(rows[y + 4], "   From a token…");
     assert_eq!(rows[y + 5], "   ← back");
     app.handle_key(key(KeyCode::Esc), NOW);
     let rows = screen_rows(&render(&mut app, 100, 30, NOW));
@@ -309,7 +313,9 @@ fn dashboard_loading_and_empty_states() {
     app.apply_snapshot(AccountsSnapshot::empty(NOW), 1, NOW);
     let rows_empty = screen_rows(&render(&mut app, 100, 20, NOW));
     assert_eq!(rows_empty[1], "   No managed accounts yet.");
-    assert!(rows_empty[2].contains("from your current Codex login, or from an API key"));
+    assert!(
+        rows_empty[2].contains("from your current Codex or Claude Code login, or from a token")
+    );
 }
 
 #[test]
@@ -368,6 +374,7 @@ fn browser_login_starts_immediately_and_can_be_cancelled() {
                 ok: true,
                 lines: vec![cswitch::switcher::Line::plain("Login cancelled.")],
                 switch: None,
+                followup: None,
             }),
             NOW
         ),
@@ -705,4 +712,99 @@ fn light_theme_changes_the_palette() {
     );
     let buf = render(&mut app, 100, 30, NOW);
     assert_eq!(buf[(0, 0)].bg, DARK.bg, "auto without COLORFGBG is dark");
+}
+
+fn mixed_fixture() -> AccountsSnapshot {
+    let mut snapshot = fixture();
+    let mut bob = account(
+        6,
+        "bob@gmail.com",
+        "Personal",
+        entry(
+            10.0,
+            Some(NormalizedUsage {
+                five_hour: Some(window(40.0, 70 * 60)),
+                seven_day: Some(window(100.0, 2 * 86_400 + 4 * 3600)),
+                scoped: vec![ScopedWindow {
+                    name: "Fable".into(),
+                    pct: 100.0,
+                    resets_at: Some(format_iso(NOW as i64 + 2 * 86_400 + 4 * 3600)),
+                }],
+                spend: Some(Spend {
+                    used: 12.5,
+                    limit: 50.0,
+                    pct: 25.0,
+                    currency: "USD".into(),
+                    resets_at: None,
+                }),
+                ..NormalizedUsage::default()
+            }),
+        ),
+    );
+    bob.provider = Provider::Claude;
+    bob.is_active = true;
+    let mut work = account(
+        7,
+        "bob@work.com",
+        "Work",
+        entry(
+            10.0,
+            Some(NormalizedUsage {
+                five_hour: Some(window(3.0, 3600)),
+                seven_day: Some(window(22.0, 86_400)),
+                ..NormalizedUsage::default()
+            }),
+        ),
+    );
+    work.provider = Provider::Claude;
+    snapshot.accounts.push(bob);
+    snapshot.accounts.push(work);
+    snapshot
+}
+
+#[test]
+fn mixed_roster_shows_a_section_per_provider() {
+    let mut app = App::new(TuiStart::Dashboard, ThemeName::Dark, 90.0, None);
+    app.apply_snapshot(mixed_fixture(), 1, NOW);
+    let buf = render(&mut app, 100, 44, NOW);
+    let rows = screen_rows(&buf);
+    let (codex_y, codex) = find_row(&rows, "   codex");
+    assert_eq!(codex, "   codex");
+    assert_eq!(fg(&buf, 3, codex_y), DARK.muted);
+    let (alice_y, _) = find_row(&rows, "alice@corp.io");
+    assert_eq!(alice_y, codex_y + 1, "the first account follows its header");
+    let (claude_y, claude) = find_row(&rows, "   claude");
+    assert_eq!(claude, "   claude");
+    assert_eq!(rows[claude_y - 1], "");
+    let (bob_y, bob) = find_row(&rows, "bob@gmail.com");
+    assert_eq!(bob_y, claude_y + 1);
+    assert!(
+        bob.starts_with("    6  bob@gmail.com  [Personal]   ● active"),
+        "{bob}"
+    );
+    let (_, spend) = find_row(&rows, "$$    ");
+    assert!(spend.contains("  25%  "), "{spend}");
+    assert!(spend.ends_with("$12.50 / $50.00"), "{spend}");
+    let (_, work) = find_row(&rows, "bob@work.com");
+    assert_eq!(work, "    7  bob@work.com  [Work]   5h 3% · 7d 22%");
+
+    app.handle_key(key(KeyCode::Char('s')), NOW);
+    let rows = screen_rows(&render(&mut app, 100, 50, NOW));
+    find_row(&rows, "   codex");
+    find_row(&rows, "   claude");
+    let (_, active) = find_row(&rows, "john.doe@gmail.com");
+    assert!(
+        active.starts_with(" ▌  2  "),
+        "cursor on the lowest active: {active}"
+    );
+    for _ in 0..4 {
+        app.handle_key(key(KeyCode::Char('j')), NOW);
+    }
+    let rows = screen_rows(&render(&mut app, 100, 50, NOW));
+    let (_, bob) = find_row(&rows, "bob@gmail.com");
+    assert!(bob.starts_with(" ▌  6  "), "{bob}");
+    assert_eq!(
+        app.handle_key(key(KeyCode::Char('b')), NOW),
+        vec![Command::Action(Action::SwitchBest(Provider::Claude))]
+    );
 }

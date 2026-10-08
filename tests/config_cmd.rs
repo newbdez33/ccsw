@@ -34,6 +34,7 @@ fn fixture() -> Fx {
     let paths = Paths::from_values(
         Some(dir.path().join("store")),
         Some(dir.path().join("codex")),
+        Some(dir.path().join("claude")),
         dir.path(),
     )
     .unwrap();
@@ -96,7 +97,7 @@ fn list_json_payload() {
     assert_eq!(code, 0);
     assert_eq!(err, "");
     assert!(
-        out.starts_with("{\n  \"schemaVersion\": 1,\n  \"path\": "),
+        out.starts_with("{\n  \"schemaVersion\": 2,\n  \"path\": "),
         "{out}"
     );
     assert!(out.ends_with("}\n"));
@@ -147,7 +148,7 @@ fn get_prints_the_bare_value_or_json() {
     assert_eq!(err, "");
     assert_eq!(
         out,
-        "{\n  \"schemaVersion\": 1,\n  \"key\": \"autoswitch.model\",\n  \"value\": null,\n  \"isSet\": false\n}\n"
+        "{\n  \"schemaVersion\": 2,\n  \"key\": \"autoswitch.model\",\n  \"value\": null,\n  \"isSet\": false\n}\n"
     );
 
     run(&fx, &["set", "autoswitch.model", "all"]);
@@ -155,7 +156,7 @@ fn get_prints_the_bare_value_or_json() {
     let (_, out, _) = run(&fx, &["--json", "get", "autoswitch.model"]);
     assert_eq!(
         serde_json::from_str::<Value>(&out).unwrap(),
-        json!({"schemaVersion": 1, "key": "autoswitch.model", "value": "all", "isSet": true})
+        json!({"schemaVersion": 2, "key": "autoswitch.model", "value": "all", "isSet": true})
     );
 
     // The effective (clamped) value is reported, and a present key counts as set.
@@ -167,7 +168,7 @@ fn get_prints_the_bare_value_or_json() {
     let (_, out, _) = run(&fx, &["get", "autoswitch.threshold", "--json"]);
     assert_eq!(
         serde_json::from_str::<Value>(&out).unwrap(),
-        json!({"schemaVersion": 1, "key": "autoswitch.threshold", "value": 50.0, "isSet": true})
+        json!({"schemaVersion": 2, "key": "autoswitch.threshold", "value": 50.0, "isSet": true})
     );
     assert_eq!(run(&fx, &["get", "autoswitch.threshold"]).1, "50\n");
 }
@@ -227,7 +228,7 @@ fn json_errors_use_the_envelope_on_stdout() {
     assert_eq!(err, "");
     assert!(
         out.starts_with(
-            "{\n  \"schemaVersion\": 1,\n  \"error\": {\n    \"type\": \"ConfigError\",\n    \"message\": \"unknown setting 'bogus'\\nValid keys: "
+            "{\n  \"schemaVersion\": 2,\n  \"error\": {\n    \"type\": \"ConfigError\",\n    \"message\": \"unknown setting 'bogus'\\nValid keys: "
         ),
         "{out}"
     );

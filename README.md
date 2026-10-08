@@ -1,9 +1,11 @@
 # cswitch
 
-Multi-account switcher for the [OpenAI Codex CLI](https://github.com/openai/codex).
-Keep several Codex logins on one machine, switch between them without logging in again,
-watch every account's 5-hour and weekly usage in a live dashboard, let it switch for you
-before you hit a rate limit, and run two accounts side by side in different terminals.
+Multi-account switcher for the [OpenAI Codex CLI](https://github.com/openai/codex) and
+Claude Code. Keep several Codex and Claude logins on one machine in one roster, switch any
+of them without logging in again, watch every account's usage in a live dashboard, let it
+switch Codex accounts for you before you hit a rate limit, and run two Codex accounts side
+by side in different terminals. Auto-switch, session mode and export/import cover Codex
+accounts only for now; Claude support for them comes in later phases.
 
 The dashboard (`cswitch`) and the live monitor (`cswitch watch`):
 
@@ -35,6 +37,10 @@ cargo install --git https://github.com/newbdez33/cswitch --locked
 Codex must keep its credentials in `auth.json` (the default). If your
 `~/.codex/config.toml` sets `cli_auth_credentials_store`, it must be `"file"`.
 
+Claude Code's login is read from the macOS Keychain (service "Claude Code-credentials") or
+from `~/.claude/.credentials.json`, and the account identity from `~/.claude.json`;
+`CLAUDE_CONFIG_DIR` is honoured. Set `CSWITCH_KEYCHAIN=off` to use the file backend only.
+
 ## Usage
 
 ### Add your first account
@@ -46,8 +52,12 @@ The Codex CLI must be on your `PATH`. Press `Esc` to cancel.
 If you are already signed into Codex, you can snapshot that login instead:
 
 ```bash
-cswitch add
+cswitch add            # the current Codex login and the current Claude Code login
+cswitch add claude     # only the Claude Code login
+cswitch add codex      # only the Codex login
 ```
+
+`cswitch add` captures whichever of the two logins exist.
 
 ### Add more accounts
 
@@ -59,6 +69,9 @@ Do **not** run `codex logout` first: it can revoke a saved refresh token. Recent
 Codex versions can also clear the previous login when you run `codex login`
 directly. Use the dashboard to add another account.
 
+For Claude Code, log in with `claude` (`/login`), then run `cswitch add claude`. Do not
+run `/logout` first.
+
 Use `cswitch alias 2 work` to give a saved account a short name.
 
 An API key can be registered without touching the current login:
@@ -66,6 +79,8 @@ An API key can be registered without touching the current login:
 ```bash
 cswitch add-token sk-...                        # OpenAI API key
 cswitch add-token - --slot 3 < key.txt          # read the key from stdin
+cswitch add-token sk-ant-oat01-...              # Anthropic setup-token
+cswitch add-token sk-ant-api03-...              # Anthropic API key
 ```
 
 ### Switch accounts
@@ -73,11 +88,17 @@ cswitch add-token - --slot 3 < key.txt          # read the key from stdin
 ```bash
 cswitch switch                  # rotate to the next account
 cswitch switch 2                # by slot number
+cswitch switch 5                # by slot: slots are one list across Codex and Claude
+cswitch switch claude           # rotate among the Claude accounts
+cswitch switch claude --strategy best
 cswitch switch user@example.com # by email
 cswitch switch work             # by alias
 cswitch switch --strategy best  # the account with the most quota left
 cswitch switch --strategy next-available   # rotate, skipping rate-limited accounts
 ```
+
+A running Claude Code picks up the switched login after about 30 seconds when its
+credentials live in the Keychain, and immediately when they live in the file.
 
 Codex 0.157 and newer runs interactive sessions through a shared local app-server
 daemon that loads `auth.json` once. When that daemon is running, `cswitch switch`
@@ -88,19 +109,25 @@ the selected account; a turn that was in progress is interrupted. `codex exec` a
 ### See every account's usage
 
 ```bash
-cswitch list                # 5h / 7d / per-model pools with reset times
-cswitch status              # the active account
+cswitch list                # a Codex block and a Claude block: 5h / 7d / per-model pools with reset times
+cswitch list claude         # only the Claude accounts
+cswitch status              # the active account of each provider
 cswitch list --token-status # add stored-token expiry diagnostics
 ```
 
 Usage is fetched on demand (the active account plus one other account per command) and
 cached for three minutes, so run `cswitch list` again to fill in the remaining rows.
+Claude rows add a `$$` line for extra-usage spend and per-model windows such as
+`Fable: 62%`.
 
 ### JSON output for scripting
 
 `--json` works with `list`, `status` and `switch`; stdout carries exactly one JSON
-document (`schemaVersion: 1`) and nothing is printed to stderr. A handled error becomes
-`{"schemaVersion": 1, "error": {"type": "...", "message": "..."}}` with exit 1.
+document (`schemaVersion: 2`) and nothing is printed to stderr. A handled error becomes
+`{"schemaVersion": 2, "error": {"type": "...", "message": "..."}}` with exit 1.
+
+Account rows and switch references carry `provider`. `active` is
+`{"codex": n, "claude": n}` on `list` and a per-provider object on `status`.
 
 ```bash
 cswitch list --json                     # accounts[] with usage.fiveHour / sevenDay / scoped[] / credits
@@ -143,7 +170,8 @@ cswitch watch    # straight to the live monitor
 ```
 
 The dashboard shows the active account as a card with 5h, 7d and per-model bars, the
-other accounts as one-line summaries, and the menu; `cswitch watch` shows every account
+other accounts as one-line summaries, and the menu. The dashboard, switch and watch
+screens list a `codex` section and then a `claude` section when both are present; `cswitch watch` shows every account
 as a live card. Both are pictured at the top of this page.
 
 ### Other commands
@@ -169,7 +197,10 @@ the account roster (`sequence.json`), credential snapshots (`credentials/`),
 profiles and a rotating log (`cswitch.log`, 1 MiB, three backups; `--debug` mirrors it
 to stderr). The live Codex login is `$CODEX_HOME/auth.json` (default
 `~/.codex/auth.json`); `cswitch` backs it up as `auth.json.bak.<timestamp>` (three
-kept) before every switch.
+kept) before every switch. The outgoing Claude login is backed up under `backups/claude/`
+(three kept). During a switch cswitch creates and removes short-lived lock directories
+inside `~/.claude`. `CLAUDE_CONFIG_DIR` moves the live Claude location and
+`CSWITCH_KEYCHAIN=off` skips the Keychain.
 
 ## Development
 
@@ -181,12 +212,16 @@ cargo fmt --check
 ```
 
 The integration tests run the built binary against a fake `codex` and a local mock of
-the usage and token endpoints (`CSWITCH_USAGE_URL`, `CSWITCH_TOKEN_URL`); nothing
-touches the network or your real `~/.codex`. Tagging `v*` builds release archives for
+the usage and token endpoints (`CSWITCH_USAGE_URL`, `CSWITCH_TOKEN_URL`, and
+`CSWITCH_CLAUDE_USAGE_URL`, `CSWITCH_CLAUDE_TOKEN_URL` for Claude); tests set
+`CSWITCH_KEYCHAIN=off`, and `CSWITCH_CLAUDE_LOCK_BUDGET_MS` shortens the Claude lock
+wait. Nothing touches the network or your real `~/.codex` or `~/.claude`. Tagging `v*` builds release archives for
 macOS, Linux and Windows (`.github/workflows/release.yml`). Changes are listed in
 `CHANGELOG.md`.
 
-Design: `docs/specs/2026-09-29-cswitch-design.md`. Plan: `docs/plans/`. The research
+Design: `docs/specs/2026-09-29-cswitch-design.md` and
+`docs/specs/2026-10-07-cswitch-claude-provider-design.md`. Plans: `docs/plans/`
+(`2026-10-07-cswitch-claude-provider-phase1.md` for the Claude provider). The research
 notes that pin the `cswap` contract and the Codex mechanics are in `docs/research/`.
 
 ## License

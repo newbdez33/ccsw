@@ -46,6 +46,22 @@ pub fn live_refresh_token(email: &str, account_id: &str) -> String {
     format!("rt-live|{email}|{account_id}")
 }
 
+/// Claude: 5h 40 %, 7d 55 %, spend $7.29 / $50.00, `Fable` weekly window at 62 %.
+pub const CLAUDE_OK: &str = "cat-ok";
+/// Claude: 5h 10 %, 7d 100 % (resets tomorrow).
+pub const CLAUDE_LIMIT_7D: &str = "cat-limit-7d";
+/// Claude: HTTP 401.
+pub const CLAUDE_STALE: &str = "cat-stale";
+/// The bearer the Claude token endpoint issues: 5h 30 %, 7d 35 %.
+pub const CLAUDE_REFRESHED: &str = "cat-refreshed";
+pub const CLAUDE_ROTATED_REFRESH: &str = "crt-next";
+pub const CLAUDE_POOL_NAME: &str = "Fable";
+
+/// A Claude refresh token the mock accepts; the rotation keeps this identity.
+pub fn claude_live_refresh_token(email: &str) -> String {
+    format!("crt-live|{email}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recorded {
     pub path: String,
@@ -63,6 +79,8 @@ pub struct UsageMock {
     log: Arc<Log>,
     pub usage_url: String,
     pub token_url: String,
+    pub claude_usage_url: String,
+    pub claude_token_url: String,
 }
 
 impl UsageMock {
@@ -76,6 +94,8 @@ impl UsageMock {
         let app = Router::new()
             .route("/wham/usage", get(usage))
             .route("/oauth/token", post(token))
+            .route("/api/oauth/usage", get(claude_usage))
+            .route("/v1/oauth/token", post(claude_token))
             .with_state(log.clone());
         let listener = runtime
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
@@ -89,6 +109,8 @@ impl UsageMock {
             log,
             usage_url: format!("http://{addr}/wham/usage"),
             token_url: format!("http://{addr}/oauth/token"),
+            claude_usage_url: format!("http://{addr}/api/oauth/usage"),
+            claude_token_url: format!("http://{addr}/v1/oauth/token"),
         }
     }
 
@@ -102,6 +124,10 @@ impl UsageMock {
             .into_iter()
             .map(|r| match r.path.as_str() {
                 "/wham/usage" => format!("usage:{}", r.bearer.unwrap_or_default()),
+                "/api/oauth/usage" => format!("claude-usage:{}", r.bearer.unwrap_or_default()),
+                "/v1/oauth/token" => {
+                    format!("claude-token:{}", r.refresh_token.unwrap_or_default())
+                }
                 _ => format!("token:{}", r.refresh_token.unwrap_or_default()),
             })
             .collect()
@@ -111,6 +137,13 @@ impl UsageMock {
         self.requests()
             .iter()
             .filter(|r| r.path == "/wham/usage" && r.bearer.as_deref() == Some(bearer))
+            .count()
+    }
+
+    pub fn claude_token_calls(&self) -> usize {
+        self.requests()
+            .iter()
+            .filter(|r| r.path == "/v1/oauth/token")
             .count()
     }
 }
@@ -219,4 +252,69 @@ async fn token(State(log): State<Arc<Log>>, Json(body): Json<Value>) -> Response
         )
             .into_response(),
     }
+}
+
+fn claude_body(five: f64, seven: f64, seven_reset: &str) -> Value {
+    json!({
+        "five_hour": {"utilization": five, "resets_at": "2099-01-01T10:00:00Z"},
+        "seven_day": {"utilization": seven, "resets_at": seven_reset},
+        "seven_day_opus": null
+    })
+}
+
+async fn claude_usage(State(log): State<Arc<Log>>, headers: HeaderMap) -> Response {
+    let bearer = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string);
+    log.requests.lock().unwrap().push(Recorded {
+        path: "/api/oauth/usage".into(),
+        bearer: bearer.clone(),
+        refresh_token: None,
+    });
+    if headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) != Some("oauth-2025-04-20") {
+        return (StatusCode::BAD_REQUEST, "missing anthropic-beta").into_response();
+    }
+    match bearer.as_deref().unwrap_or("") {
+        CLAUDE_OK => {
+            let mut b = claude_body(40.0, 55.0, "2099-01-03T10:00:00Z");
+            b["extra_usage"] = json!({"is_enabled": true, "used_credits": 729, "monthly_limit": 5000, "utilization": 14.58, "currency": "USD"});
+            b["limits"] = json!([{"kind": "weekly_scoped", "percent": 62, "resets_at": "2099-01-03T10:00:00Z", "scope": {"model": {"display_name": CLAUDE_POOL_NAME}}}]);
+            Json(b).into_response()
+        }
+        CLAUDE_LIMIT_7D => Json(claude_body(10.0, 100.0, "2099-01-02T10:00:00Z")).into_response(),
+        CLAUDE_REFRESHED => Json(claude_body(30.0, 35.0, "2099-01-03T10:00:00Z")).into_response(),
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"type": "authentication_error"}})),
+        )
+            .into_response(),
+    }
+}
+
+async fn claude_token(State(log): State<Arc<Log>>, Json(body): Json<Value>) -> Response {
+    let refresh = body["refresh_token"].as_str().unwrap_or("").to_string();
+    log.requests.lock().unwrap().push(Recorded {
+        path: "/v1/oauth/token".into(),
+        bearer: None,
+        refresh_token: Some(refresh.clone()),
+    });
+    if body["grant_type"] != "refresh_token"
+        || body["client_id"] != "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid_request"})),
+        )
+            .into_response();
+    }
+    if refresh.starts_with("crt-live|") {
+        return Json(json!({"access_token": CLAUDE_REFRESHED, "expires_in": 3600, "refresh_token": CLAUDE_ROTATED_REFRESH, "scope": "user:inference user:profile"})).into_response();
+    }
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": "invalid_grant", "error_description": "unknown refresh token"})),
+    )
+        .into_response()
 }

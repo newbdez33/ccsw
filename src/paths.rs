@@ -4,30 +4,58 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::errors::{CswitchError, Result};
 
+/// `CSWITCH_KEYCHAIN=off|0|false` disables the Keychain; it is never used off macOS.
+pub fn keychain_enabled_from(value: Option<&str>) -> bool {
+    let off = value.is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false"
+        )
+    });
+    cfg!(target_os = "macos") && !off
+}
+
+/// `/a/b` + `.lock` → `/a/b.lock` (no extension games with dotfiles).
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut os = path.as_os_str().to_os_string();
+    os.push(suffix);
+    PathBuf::from(os)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
     /// `$CSWITCH_HOME`, default `~/.cswitch`.
     pub backup_root: PathBuf,
     /// `$CODEX_HOME`, default `~/.codex`.
     pub codex_home: PathBuf,
+    /// `$CLAUDE_CONFIG_DIR`, default `~/.claude`.
+    pub claude_home: PathBuf,
+    /// Where `.claude.json` lives: `$CLAUDE_CONFIG_DIR` when set, else the user home.
+    pub claude_config_base: PathBuf,
+    /// macOS with `CSWITCH_KEYCHAIN` not `off`; the file backend otherwise.
+    pub keychain_enabled: bool,
 }
 
 impl Paths {
     pub fn from_env() -> Result<Self> {
         let home = dirs::home_dir()
             .ok_or_else(|| CswitchError::config("could not determine home directory"))?;
-        Self::from_values(
+        let mut paths = Self::from_values(
             std::env::var_os("CSWITCH_HOME").map(PathBuf::from),
             std::env::var_os("CODEX_HOME").map(PathBuf::from),
+            std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
             &home,
-        )
+        )?;
+        paths.keychain_enabled =
+            keychain_enabled_from(std::env::var("CSWITCH_KEYCHAIN").ok().as_deref());
+        Ok(paths)
     }
 
-    /// Empty overrides are ignored; a `CODEX_HOME` with a `..` component is refused,
-    /// as Codex itself refuses it.
+    /// Empty overrides are ignored; a `CODEX_HOME` or `CLAUDE_CONFIG_DIR` with a `..` component is refused.
     pub fn from_values(
         cswitch_home: Option<PathBuf>,
         codex_home: Option<PathBuf>,
+        claude_config_dir: Option<PathBuf>,
         user_home: &Path,
     ) -> Result<Self> {
         let backup_root = match cswitch_home.filter(|p| !p.as_os_str().is_empty()) {
@@ -46,9 +74,29 @@ impl Paths {
             }
             None => user_home.join(".codex"),
         };
+        let claude_dir = claude_config_dir.filter(|p| !p.as_os_str().is_empty());
+        if let Some(path) = &claude_dir
+            && path.components().any(|c| matches!(c, Component::ParentDir))
+        {
+            return Err(CswitchError::config(format!(
+                "CLAUDE_CONFIG_DIR contains '..' component which is not allowed: {}",
+                path.display()
+            )));
+        }
+        let (claude_home, claude_config_base) = match claude_dir {
+            Some(path) => {
+                // `/x/cc/` must derive `/x/cc.lock`, the path Claude Code locks.
+                let path: PathBuf = path.components().collect();
+                (path.clone(), path)
+            }
+            None => (user_home.join(".claude"), user_home.to_path_buf()),
+        };
         Ok(Self {
             backup_root,
             codex_home,
+            claude_home,
+            claude_config_base,
+            keychain_enabled: false,
         })
     }
 
@@ -107,6 +155,42 @@ impl Paths {
         self.codex_home.join("config.toml")
     }
 
+    /// `<claude home>/.credentials.json`.
+    pub fn claude_credentials_file(&self) -> PathBuf {
+        self.claude_home.join(".credentials.json")
+    }
+
+    /// `<claude home>/.config.json` when it exists (legacy), else
+    /// `<base>/.claude.json` — the rule Claude Code itself applies.
+    pub fn claude_global_config_file(&self) -> PathBuf {
+        let legacy = self.claude_home.join(".config.json");
+        if legacy.exists() {
+            legacy
+        } else {
+            self.claude_config_base.join(".claude.json")
+        }
+    }
+
+    /// Claude Code's primary credential-refresh lock directory.
+    pub fn claude_refresh_lock_dir(&self) -> PathBuf {
+        self.claude_home.join(".oauth_refresh.lock")
+    }
+
+    /// `~/.claude.lock`: the legacy credential lock, a sibling of the config home.
+    pub fn claude_legacy_lock_dir(&self) -> PathBuf {
+        with_suffix(&self.claude_home, ".lock")
+    }
+
+    /// `~/.claude.json.lock`: the global-config lock.
+    pub fn claude_config_lock_dir(&self) -> PathBuf {
+        with_suffix(&self.claude_global_config_file(), ".lock")
+    }
+
+    /// Where the outgoing Claude login is backed up before a switch.
+    pub fn claude_backups_dir(&self) -> PathBuf {
+        self.backup_root.join("backups").join("claude")
+    }
+
     /// Codex must keep its credentials in `auth.json`: `cli_auth_credentials_store`
     /// absent or `"file"`. The keyring, `auto` and `ephemeral` stores bypass the file
     /// cswitch switches. A missing `config.toml` means the file store.
@@ -157,28 +241,106 @@ mod tests {
     #[test]
     fn defaults_and_overrides() {
         let home = Path::new("/home/u");
-        let paths = Paths::from_values(None, None, home).unwrap();
+        let paths = Paths::from_values(None, None, None, home).unwrap();
         assert_eq!(paths.backup_root, home.join(".cswitch"));
         assert_eq!(paths.codex_home, home.join(".codex"));
         assert_eq!(paths.live_auth_file(), home.join(".codex/auth.json"));
+        assert_eq!(paths.claude_home, home.join(".claude"));
+        assert_eq!(
+            paths.claude_credentials_file(),
+            home.join(".claude/.credentials.json")
+        );
+        assert_eq!(paths.claude_global_config_file(), home.join(".claude.json"));
+        assert_eq!(
+            paths.claude_refresh_lock_dir(),
+            home.join(".claude/.oauth_refresh.lock")
+        );
+        assert_eq!(paths.claude_legacy_lock_dir(), home.join(".claude.lock"));
+        assert_eq!(
+            paths.claude_config_lock_dir(),
+            home.join(".claude.json.lock")
+        );
+        assert_eq!(
+            paths.claude_backups_dir(),
+            home.join(".cswitch/backups/claude")
+        );
+        assert!(
+            !paths.keychain_enabled,
+            "from_values never touches the Keychain"
+        );
 
         let paths = Paths::from_values(
             Some(PathBuf::from("")),
             Some(PathBuf::from("/tmp/codex")),
+            Some(PathBuf::from("/tmp/cc")),
             home,
         )
         .unwrap();
         assert_eq!(paths.backup_root, home.join(".cswitch"));
         assert_eq!(paths.codex_home, PathBuf::from("/tmp/codex"));
+        assert_eq!(paths.claude_home, PathBuf::from("/tmp/cc"));
+        assert_eq!(
+            paths.claude_global_config_file(),
+            PathBuf::from("/tmp/cc/.claude.json"),
+            "CLAUDE_CONFIG_DIR moves .claude.json inside it"
+        );
+        assert_eq!(
+            paths.claude_config_lock_dir(),
+            PathBuf::from("/tmp/cc/.claude.json.lock")
+        );
 
-        let err = Paths::from_values(None, Some(PathBuf::from("/tmp/../x")), home).unwrap_err();
+        let err =
+            Paths::from_values(None, Some(PathBuf::from("/tmp/../x")), None, home).unwrap_err();
         assert!(err.to_string().contains(".."));
+        let err =
+            Paths::from_values(None, None, Some(PathBuf::from("/tmp/../c")), home).unwrap_err();
+        assert!(err.to_string().contains("CLAUDE_CONFIG_DIR"));
+    }
+
+    #[test]
+    fn a_trailing_slash_in_claude_config_dir_keeps_claude_codes_lock_path() {
+        let home = Path::new("/home/u");
+        for raw in ["/x/cc/", "/x/cc/.", "/x/./cc//"] {
+            let paths = Paths::from_values(None, None, Some(PathBuf::from(raw)), home).unwrap();
+            assert_eq!(paths.claude_home, PathBuf::from("/x/cc"), "{raw}");
+            assert_eq!(paths.claude_config_base, PathBuf::from("/x/cc"), "{raw}");
+            assert_eq!(
+                paths.claude_legacy_lock_dir(),
+                PathBuf::from("/x/cc.lock"),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_claude_config_wins_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_values(None, None, Some(dir.path().to_path_buf()), dir.path()).unwrap();
+        assert_eq!(
+            paths.claude_global_config_file(),
+            dir.path().join(".claude.json")
+        );
+        std::fs::write(dir.path().join(".config.json"), "{}").unwrap();
+        assert_eq!(
+            paths.claude_global_config_file(),
+            dir.path().join(".config.json")
+        );
+    }
+
+    #[test]
+    fn keychain_switch_reads_the_environment() {
+        assert!(!keychain_enabled_from(Some("off")));
+        assert!(!keychain_enabled_from(Some("0")));
+        assert_eq!(keychain_enabled_from(None), cfg!(target_os = "macos"));
+        assert_eq!(keychain_enabled_from(Some("on")), cfg!(target_os = "macos"));
     }
 
     #[test]
     fn credential_store_gate() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::from_values(None, Some(dir.path().to_path_buf()), dir.path()).unwrap();
+        let paths =
+            Paths::from_values(None, Some(dir.path().to_path_buf()), None, dir.path()).unwrap();
         assert!(paths.validate_credential_store().is_ok(), "no config.toml");
         std::fs::write(paths.codex_config_file(), "model = \"x\"\n").unwrap();
         assert!(paths.validate_credential_store().is_ok(), "key absent");
@@ -205,7 +367,8 @@ mod tests {
             "user_tag_example.com"
         );
         assert_eq!(slugify_email("bø@x.com"), "b__x.com");
-        let paths = Paths::from_values(Some(PathBuf::from("/s")), None, Path::new("/h")).unwrap();
+        let paths =
+            Paths::from_values(Some(PathBuf::from("/s")), None, None, Path::new("/h")).unwrap();
         assert_eq!(
             paths.session_dir(2, "a@b.c"),
             PathBuf::from("/s/sessions/2-a_b.c")

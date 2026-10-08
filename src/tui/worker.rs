@@ -309,7 +309,7 @@ impl Runtime {
 /// Run one action against a fresh switcher whose prompts auto-confirm.
 fn perform(action: Action, cancel: &AtomicBool, on_url: impl FnMut(String)) -> ActionResult {
     let lines = Arc::new(Mutex::new(Vec::new()));
-    let outcome: Result<Option<SwitchOutcome>> = (|| {
+    let outcome: Result<Option<(SwitchOutcome, Option<String>)>> = (|| {
         let mut switcher = Switcher::from_env()?;
         switcher.ui = Box::new(CollectingUi(lines.clone()));
         match &action {
@@ -324,12 +324,11 @@ fn perform(action: Action, cancel: &AtomicBool, on_url: impl FnMut(String)) -> A
             }
             Action::SwitchTo(number) => Ok(switcher
                 .switch_to(&number.to_string(), false, false)?
-                .map(|report| report.outcome)),
-            Action::SwitchBest => {
+                .map(|report| (report.outcome, report.followup))),
+            Action::SwitchBest(provider) => {
                 let models = switcher.settings.autoswitch.model_names();
-                Ok(Some(
-                    switcher.switch(Strategy::Best, &models, false)?.outcome,
-                ))
+                let report = switcher.switch(Some(*provider), Strategy::Best, &models, false)?;
+                Ok(Some((report.outcome, report.followup)))
             }
             Action::SetDisabled { number, disabled } => {
                 switcher.set_disabled(&number.to_string(), *disabled)?;
@@ -340,7 +339,7 @@ fn perform(action: Action, cancel: &AtomicBool, on_url: impl FnMut(String)) -> A
                 Ok(None)
             }
             Action::AddCurrent => {
-                switcher.add_account(None, None)?;
+                switcher.add_accounts(None, None, None)?;
                 Ok(None)
             }
             Action::AddToken(form) => {
@@ -351,12 +350,16 @@ fn perform(action: Action, cancel: &AtomicBool, on_url: impl FnMut(String)) -> A
     })();
     let mut lines = lines.lock().expect("ui lines").clone();
     match outcome {
-        Ok(switch) => ActionResult {
-            action,
-            ok: true,
-            lines,
-            switch,
-        },
+        Ok(switch) => {
+            let (switch, followup) = switch.unzip();
+            ActionResult {
+                action,
+                ok: true,
+                lines,
+                switch,
+                followup: followup.flatten(),
+            }
+        }
         Err(err) => {
             lines.push(UiLine::warning(format!("Error: {err}")));
             ActionResult {
@@ -364,6 +367,7 @@ fn perform(action: Action, cancel: &AtomicBool, on_url: impl FnMut(String)) -> A
                 ok: false,
                 lines,
                 switch: None,
+                followup: None,
             }
         }
     }

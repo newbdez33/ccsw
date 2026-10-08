@@ -7,12 +7,15 @@ use crate::codex::auth::AuthJson;
 use crate::codex::jwt::token_expires_at;
 use crate::errors::Result;
 use crate::jsonout;
-use crate::model::{CurrentAccount, now_unix};
+use crate::model::{ActiveSlots, CurrentAccount, now_unix};
 use crate::printer::{countdown_and_clock, format_age};
+use crate::provider::Provider;
 use crate::store::credentials;
 use crate::store::poll_policy::SERVE_TTL_S;
 use crate::store::usage_store::{UsageEntry, UsageSentinel};
-use crate::switcher::{AccountRow, Line, ListSnapshot, StatusSnapshot, Style, Switcher};
+use crate::switcher::{
+    AccountRow, Line, ListSnapshot, ProviderStatus, StatusSnapshot, Style, Switcher,
+};
 use crate::usage_math::{binding_pct, usage_rows};
 
 /// `  <n>: <label> [<tag>] (active) (disabled)`.
@@ -68,23 +71,39 @@ pub fn usage_lines(entry: &UsageEntry, now: i64, indent: &str) -> Vec<Line> {
         return lines;
     };
     let rows = usage_rows(usage, entry.fetched_at);
-    let width = rows.iter().map(|r| r.label.len() + 1).max().unwrap_or(0);
-    let mut texts: Vec<String> = rows
+    let width = rows
         .iter()
-        .map(|row| {
-            let label = format!("{}:", row.label);
-            let mut body = format!("{:>3.0}%", row.pct);
-            if let Some(reset) = row.resets_at {
-                let (countdown, clock) = countdown_and_clock(reset, now);
-                body.push_str(&format!("   resets {clock:<12}  in {countdown}"));
-            }
-            let scoped = row.label != "5h" && row.label != "7d";
-            if scoped && row.maxed {
-                body.push_str("  (!)");
-            }
-            format!("{label:<width$} {body}")
-        })
-        .collect();
+        .map(|r| r.label.len() + 1)
+        .chain(usage.spend.iter().map(|_| 3))
+        .max()
+        .unwrap_or(0);
+    let mut texts: Vec<String> = Vec::new();
+    if let Some(spend) = &usage.spend {
+        let mut body = format!("{:>3.0}%", spend.pct);
+        if let Some(reset) = spend
+            .resets_at
+            .as_deref()
+            .and_then(crate::usage_math::parse_reset)
+        {
+            let (countdown, clock) = countdown_and_clock(reset, now);
+            body.push_str(&format!("   resets {clock:<12}  in {countdown}"));
+        }
+        body.push_str(&format!("  {}", spend.amounts()));
+        texts.push(format!("{:<width$} {body}", "$$:"));
+    }
+    texts.extend(rows.iter().map(|row| {
+        let label = format!("{}:", row.label);
+        let mut body = format!("{:>3.0}%", row.pct);
+        if let Some(reset) = row.resets_at {
+            let (countdown, clock) = countdown_and_clock(reset, now);
+            body.push_str(&format!("   resets {clock:<12}  in {countdown}"));
+        }
+        let scoped = row.label != "5h" && row.label != "7d";
+        if scoped && row.maxed {
+            body.push_str("  (!)");
+        }
+        format!("{label:<width$} {body}")
+    }));
     if let Some(credits) = &usage.credits {
         match (credits.balance, credits.unlimited) {
             (Some(balance), _) => texts.push(format!("credits: ${balance:.2}")),
@@ -133,7 +152,7 @@ fn token_status(auth: &AuthJson, now: i64) -> String {
 
 /// The `--token-status` bullet lines for one account.
 fn token_status_lines(switcher: &Switcher, row: &AccountRow, now: i64) -> Vec<Line> {
-    if row.record.is_api_key() {
+    if row.record.provider == Provider::Claude || row.record.is_api_key() {
         return Vec::new();
     }
     let bullet = |text: String| Line::plain("     ").push(Style::Muted, format!("• {text}"));
@@ -158,20 +177,60 @@ fn token_status_lines(switcher: &Switcher, row: &AccountRow, now: i64) -> Vec<Li
     lines
 }
 
-/// The whole `Accounts:` block.
+/// The `Accounts:` block, or one `<Provider> accounts:` block per provider
+/// when the rows span both.
 pub fn list_lines(switcher: &Switcher, snapshot: &ListSnapshot, token_status: bool) -> Vec<Line> {
+    list_lines_for(switcher, snapshot, token_status, None)
+}
+
+/// [`list_lines`] limited to one provider. Titles follow the whole roster:
+/// blocks are titled whenever it spans both providers, even if only one shows.
+pub fn list_lines_for(
+    switcher: &Switcher,
+    snapshot: &ListSnapshot,
+    token_status: bool,
+    only: Option<Provider>,
+) -> Vec<Line> {
     let now = now_unix();
-    let mut lines = vec![Line::new().push(Style::Bold, "Accounts:")];
-    let count = snapshot.rows.len();
-    for (i, row) in snapshot.rows.iter().enumerate() {
-        lines.push(account_line(row));
-        lines.extend(usage_lines(&row.usage, now, "     "));
-        if token_status {
-            lines.extend(token_status_lines(switcher, row, now));
-        }
-        if i + 1 < count {
+    let present: Vec<Provider> = Provider::ALL
+        .into_iter()
+        .filter(|p| snapshot.rows.iter().any(|r| r.record.provider == *p))
+        .collect();
+    let titled = present.len() > 1;
+    let providers: Vec<Provider> = present
+        .into_iter()
+        .filter(|p| only.is_none_or(|o| o == *p))
+        .collect();
+    let mut lines = Vec::new();
+    for (block, provider) in providers.iter().enumerate() {
+        if block > 0 {
             lines.push(Line::new());
         }
+        let title = if titled {
+            format!("{} accounts:", provider.title())
+        } else {
+            "Accounts:".to_string()
+        };
+        lines.push(Line::new().push(Style::Bold, title));
+        let rows: Vec<&AccountRow> = snapshot
+            .rows
+            .iter()
+            .filter(|r| r.record.provider == *provider)
+            .collect();
+        let count = rows.len();
+        for (i, row) in rows.into_iter().enumerate() {
+            lines.push(account_line(row));
+            lines.extend(usage_lines(&row.usage, now, "     "));
+            if token_status {
+                lines.extend(token_status_lines(switcher, row, now));
+            }
+            if i + 1 < count {
+                lines.push(Line::new());
+            }
+        }
+    }
+    if providers.is_empty() {
+        lines.push(Line::new().push(Style::Bold, "Accounts:"));
     }
     if !snapshot.warnings.is_empty() {
         lines.push(Line::new());
@@ -183,35 +242,55 @@ pub fn list_lines(switcher: &Switcher, snapshot: &ListSnapshot, token_status: bo
 }
 
 pub fn status_lines(snapshot: &StatusSnapshot) -> Vec<Line> {
-    let header = Line::new().push(Style::Bold, "Status:");
-    match (&snapshot.current, &snapshot.row) {
-        (CurrentAccount::NoLogin, _) => {
-            vec![header.push(Style::Dimmed, " No active Codex account")]
+    let blocks: Vec<&ProviderStatus> = snapshot
+        .providers
+        .iter()
+        .filter(|s| !matches!(s.current, CurrentAccount::NoLogin))
+        .collect();
+    if blocks.is_empty() {
+        return vec![
+            Line::new()
+                .push(Style::Bold, "Status:")
+                .push(Style::Dimmed, " No active Codex or Claude account"),
+        ];
+    }
+    let labelled = blocks.len() > 1;
+    let mut lines = Vec::new();
+    for (i, status) in blocks.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::new());
         }
-        (CurrentAccount::Managed { slot, .. }, Some(row)) => {
-            let mut lines = vec![
-                header
-                    .push(Style::Plain, " ")
-                    .push(Style::Accent, format!("Account-{slot}"))
-                    .push(Style::Plain, format!(" ({} ", row.record.email))
-                    .push(Style::Muted, format!("[{}]", row.record.display_tag()))
-                    .push(Style::Plain, ")"),
-                Line::plain("  ").push(
+        let header = if labelled {
+            Line::new().push(Style::Bold, format!("{} status:", status.provider.title()))
+        } else {
+            Line::new().push(Style::Bold, "Status:")
+        };
+        match (&status.current, &status.row) {
+            (CurrentAccount::Managed { slot, .. }, Some(row)) => {
+                lines.push(
+                    header
+                        .push(Style::Plain, " ")
+                        .push(Style::Accent, format!("Account-{slot}"))
+                        .push(Style::Plain, format!(" ({} ", row.record.email))
+                        .push(Style::Muted, format!("[{}]", row.record.display_tag()))
+                        .push(Style::Plain, ")"),
+                );
+                lines.push(Line::plain("  ").push(
                     Style::Dimmed,
                     format!("Total managed accounts: {}", snapshot.total),
-                ),
-            ];
-            lines.extend(usage_lines(&row.usage, now_unix(), "  "));
-            lines
-        }
-        (current, _) => {
-            let email = current
-                .email()
-                .filter(|e| !e.is_empty())
-                .unwrap_or("API key");
-            vec![header.push(Style::Dimmed, format!(" {email} (not managed)"))]
+                ));
+                lines.extend(usage_lines(&row.usage, now_unix(), "  "));
+            }
+            (current, _) => {
+                let email = current
+                    .email()
+                    .filter(|e| !e.is_empty())
+                    .unwrap_or("API key");
+                lines.push(header.push(Style::Dimmed, format!(" {email} (not managed)")));
+            }
         }
     }
+    lines
 }
 
 pub fn print_lines(lines: &[Line]) {
@@ -221,10 +300,19 @@ pub fn print_lines(lines: &[Line]) {
 }
 
 /// `list` / `ls`.
-pub fn list_cmd(switcher: &mut Switcher, json: bool, token_status: bool) -> Result<i32> {
-    let Some(snapshot) = switcher.list_snapshot(true)? else {
+pub fn list_cmd(
+    switcher: &mut Switcher,
+    json: bool,
+    token_status: bool,
+    provider: Option<Provider>,
+) -> Result<i32> {
+    let Some(mut snapshot) = switcher.list_snapshot(true)? else {
         return first_run(switcher, json);
     };
+    let human_snapshot = snapshot.clone();
+    if let Some(p) = provider {
+        snapshot.rows.retain(|r| r.record.provider == p);
+    }
     if json {
         let now = now_unix();
         let rows: Vec<serde_json::Value> = snapshot
@@ -235,14 +323,19 @@ pub fn list_cmd(switcher: &mut Switcher, json: bool, token_status: bool) -> Resu
         print!(
             "{}",
             jsonout::render_document(&jsonout::list_payload(
-                snapshot.active,
+                &snapshot.actives,
                 rows,
                 &snapshot.warnings
             ))
         );
         return Ok(0);
     }
-    print_lines(&list_lines(switcher, &snapshot, token_status));
+    print_lines(&list_lines_for(
+        switcher,
+        &human_snapshot,
+        token_status,
+        provider,
+    ));
     Ok(0)
 }
 
@@ -251,25 +344,37 @@ fn first_run(switcher: &mut Switcher, json: bool) -> Result<i32> {
     if json {
         print!(
             "{}",
-            jsonout::render_document(&jsonout::list_payload(None, Vec::new(), &[]))
+            jsonout::render_document(&jsonout::list_payload(
+                &ActiveSlots::default(),
+                Vec::new(),
+                &[]
+            ))
         );
         return Ok(0);
     }
     print_lines(&[Line::dimmed("No accounts are managed yet.")]);
-    let current = switcher.current_account()?;
-    let (CurrentAccount::Unmanaged { email } | CurrentAccount::Managed { email, .. }) = current
-    else {
+    let mut found = Vec::new();
+    for provider in Provider::ALL {
+        if let CurrentAccount::Unmanaged { email } | CurrentAccount::Managed { email, .. } =
+            switcher.current_account_for(provider)?
+        {
+            found.push(if email.is_empty() {
+                "API key".to_string()
+            } else {
+                email
+            });
+        }
+    }
+    if found.is_empty() {
         print_lines(&[Line::dimmed(
-            "No active Codex account found. Please log in first.",
+            "No active Codex or Claude login found. Log in first.",
         )]);
         return Ok(0);
-    };
-    let shown = if email.is_empty() {
-        "API key"
-    } else {
-        email.as_str()
-    };
-    print!("No managed accounts found. Add current account ({shown}) to managed list? [Y/n] ");
+    }
+    print!(
+        "No managed accounts found. Add current account ({}) to managed list? [Y/n] ",
+        found.join(" and ")
+    );
     let _ = io::stdout().flush();
     let mut answer = String::new();
     let declined = match io::stdin().lock().read_line(&mut answer) {
@@ -282,19 +387,20 @@ fn first_run(switcher: &mut Switcher, json: bool) -> Result<i32> {
         )]);
         return Ok(0);
     }
-    switcher.add_account(None, None)?;
+    switcher.add_accounts(None, None, None)?;
     Ok(0)
 }
 
-pub fn status_cmd(switcher: &mut Switcher, json: bool) -> Result<i32> {
-    let snapshot = switcher.status()?;
+pub fn status_cmd(switcher: &mut Switcher, json: bool, provider: Option<Provider>) -> Result<i32> {
+    let mut snapshot = switcher.status()?;
+    if let Some(p) = provider {
+        snapshot.providers.retain(|s| s.provider == p);
+    }
     if json {
-        let managed = snapshot.row.as_ref().map(|row| (&row.record, &row.usage));
         print!(
             "{}",
             jsonout::render_document(&jsonout::status_payload(
-                &snapshot.current,
-                managed,
+                &snapshot.providers,
                 snapshot.total,
                 now_unix()
             ))
@@ -311,6 +417,7 @@ mod tests {
     use crate::model::{
         AccountRecord, Credits, NormalizedUsage, ScopedWindow, WindowUsage, format_iso,
     };
+    use crate::provider::Provider;
 
     fn entry() -> UsageEntry {
         UsageEntry {
@@ -385,6 +492,7 @@ mod tests {
             limited: false,
             plan_type: None,
             reset_credits: None,
+            spend: None,
         });
         e.fetched_at = Some(now as f64 - 10.0);
         e.age_s = Some(10.0);
@@ -429,39 +537,62 @@ mod tests {
 
     #[test]
     fn status_lines_variants() {
-        let no_login = StatusSnapshot {
+        let claude_none = || ProviderStatus {
+            provider: Provider::Claude,
             current: CurrentAccount::NoLogin,
-            total: 0,
             row: None,
+        };
+        let no_login = StatusSnapshot {
+            providers: vec![
+                ProviderStatus {
+                    provider: Provider::Codex,
+                    current: CurrentAccount::NoLogin,
+                    row: None,
+                },
+                claude_none(),
+            ],
+            total: 0,
         };
         assert_eq!(
             texts(&status_lines(&no_login)),
-            ["Status: No active Codex account"]
+            ["Status: No active Codex or Claude account"]
         );
         let unmanaged = StatusSnapshot {
-            current: CurrentAccount::Unmanaged {
-                email: "u@x.io".into(),
-            },
+            providers: vec![
+                ProviderStatus {
+                    provider: Provider::Codex,
+                    current: CurrentAccount::Unmanaged {
+                        email: "u@x.io".into(),
+                    },
+                    row: None,
+                },
+                claude_none(),
+            ],
             total: 1,
-            row: None,
         };
         assert_eq!(
             texts(&status_lines(&unmanaged)),
             ["Status: u@x.io (not managed)"]
         );
         let managed = StatusSnapshot {
-            current: CurrentAccount::Managed {
-                slot: 1,
-                email: "a@x.io".into(),
-                api_key: false,
-            },
+            providers: vec![
+                ProviderStatus {
+                    provider: Provider::Codex,
+                    current: CurrentAccount::Managed {
+                        slot: 1,
+                        email: "a@x.io".into(),
+                        api_key: false,
+                    },
+                    row: Some(AccountRow {
+                        slot: 1,
+                        record: AccountRecord::new("a@x.io"),
+                        usage: entry(),
+                        is_active: true,
+                    }),
+                },
+                claude_none(),
+            ],
             total: 2,
-            row: Some(AccountRow {
-                slot: 1,
-                record: AccountRecord::new("a@x.io"),
-                usage: entry(),
-                is_active: true,
-            }),
         };
         assert_eq!(
             texts(&status_lines(&managed)),
@@ -471,5 +602,144 @@ mod tests {
                 "  usage unavailable",
             ]
         );
+        let mut claude_record = AccountRecord::new("c@x.io");
+        claude_record.provider = Provider::Claude;
+        let both = StatusSnapshot {
+            providers: vec![
+                managed.providers[0].clone(),
+                ProviderStatus {
+                    provider: Provider::Claude,
+                    current: CurrentAccount::Managed {
+                        slot: 2,
+                        email: "c@x.io".into(),
+                        api_key: false,
+                    },
+                    row: Some(AccountRow {
+                        slot: 2,
+                        record: claude_record,
+                        usage: entry(),
+                        is_active: true,
+                    }),
+                },
+            ],
+            total: 2,
+        };
+        assert_eq!(
+            texts(&status_lines(&both)),
+            [
+                "Codex status: Account-1 (a@x.io [personal])",
+                "  Total managed accounts: 2",
+                "  usage unavailable",
+                "",
+                "Claude status: Account-2 (c@x.io [personal])",
+                "  Total managed accounts: 2",
+                "  usage unavailable",
+            ]
+        );
+    }
+
+    #[test]
+    fn list_lines_split_into_provider_blocks_only_for_a_mixed_roster() {
+        let (_dir, store) = crate::store::temp_store();
+        let switcher = Switcher::open(store);
+        let mut claude = AccountRecord::new("c@x.io");
+        claude.provider = crate::provider::Provider::Claude;
+        let row = |slot: u32, record: AccountRecord| AccountRow {
+            slot,
+            record,
+            usage: entry(),
+            is_active: false,
+        };
+        let mixed = ListSnapshot {
+            actives: crate::model::ActiveSlots::default(),
+            rows: vec![row(1, AccountRecord::new("a@x.io")), row(2, claude.clone())],
+            warnings: Vec::new(),
+        };
+        assert_eq!(
+            texts(&list_lines(&switcher, &mixed, false)),
+            [
+                "Codex accounts:",
+                "  1: a@x.io [personal]",
+                "     usage unavailable",
+                "",
+                "Claude accounts:",
+                "  2: c@x.io [personal]",
+                "     usage unavailable",
+            ]
+        );
+        let single = ListSnapshot {
+            actives: crate::model::ActiveSlots::default(),
+            rows: vec![row(2, claude)],
+            warnings: Vec::new(),
+        };
+        assert_eq!(
+            texts(&list_lines(&switcher, &single, false))[0],
+            "Accounts:"
+        );
+    }
+
+    #[test]
+    fn list_lines_for_one_provider_titles_by_the_whole_roster() {
+        let (_dir, store) = crate::store::temp_store();
+        let switcher = Switcher::open(store);
+        let mut claude = AccountRecord::new("c@x.io");
+        claude.provider = Provider::Claude;
+        let row = |slot: u32, record: AccountRecord| AccountRow {
+            slot,
+            record,
+            usage: entry(),
+            is_active: false,
+        };
+        let snap = |rows| ListSnapshot {
+            actives: crate::model::ActiveSlots::default(),
+            rows,
+            warnings: Vec::new(),
+        };
+        let mixed = snap(vec![row(1, AccountRecord::new("a@x.io")), row(2, claude)]);
+        assert_eq!(
+            texts(&list_lines_for(
+                &switcher,
+                &mixed,
+                false,
+                Some(Provider::Claude)
+            )),
+            [
+                "Claude accounts:",
+                "  2: c@x.io [personal]",
+                "     usage unavailable",
+            ]
+        );
+        let codex_only = snap(vec![row(1, AccountRecord::new("a@x.io"))]);
+        assert_eq!(
+            texts(&list_lines_for(
+                &switcher,
+                &codex_only,
+                false,
+                Some(Provider::Claude)
+            )),
+            ["Accounts:"]
+        );
+    }
+
+    #[test]
+    fn spend_row_comes_first_with_amounts() {
+        let now = 1_790_000_000;
+        let mut e = entry();
+        e.last_good = Some(NormalizedUsage {
+            five_hour: Some(WindowUsage {
+                pct: 10.0,
+                resets_at: None,
+            }),
+            spend: Some(crate::model::Spend {
+                used: 12.5,
+                limit: 50.0,
+                pct: 25.0,
+                currency: "USD".into(),
+                resets_at: None,
+            }),
+            ..NormalizedUsage::default()
+        });
+        let lines = texts(&usage_lines(&e, now, "  "));
+        assert_eq!(lines, ["  ├ $$:  25%  $12.50 / $50.00", "  └ 5h:  10%"]);
     }
 }

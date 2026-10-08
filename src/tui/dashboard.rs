@@ -26,6 +26,8 @@ pub enum MenuId {
     Disable(u32),
     Theme(ThemeName),
     Back,
+    /// A non-selectable provider heading inside an account submenu.
+    Header,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,8 +112,12 @@ impl DashboardScreen {
     }
 
     fn push(&mut self, level: MenuLevel) {
+        self.cursor = level
+            .entries
+            .iter()
+            .position(|e| e.id != MenuId::Header)
+            .unwrap_or(0);
         self.levels.push(level);
-        self.cursor = 0;
     }
 
     /// No-op at the root.
@@ -131,20 +137,39 @@ impl DashboardScreen {
     }
 
     fn move_cursor(&mut self, delta: i64) {
-        let len = self.entries().len() as i64;
+        let entries = self.entries();
+        let len = entries.len() as i64;
         if len == 0 {
             return;
         }
-        self.cursor = (self.cursor as i64 + delta).clamp(0, len - 1) as usize;
+        let step = delta.signum();
+        let mut next = (self.cursor as i64 + delta).clamp(0, len - 1);
+        while entries[next as usize].id == MenuId::Header {
+            let candidate = next + step;
+            if candidate < 0 || candidate >= len {
+                return;
+            }
+            next = candidate;
+        }
+        self.cursor = next as usize;
     }
 
     fn account_rows(
         snapshot: Option<&AccountsSnapshot>,
         make: impl Fn(&super::snapshot::AccountSnapshot) -> MenuEntry,
     ) -> Vec<MenuEntry> {
-        snapshot
-            .map(|s| s.accounts.iter().map(make).collect())
-            .unwrap_or_default()
+        let Some(snapshot) = snapshot else {
+            return Vec::new();
+        };
+        let mixed = snapshot.is_mixed();
+        let mut rows = Vec::new();
+        for (provider, group) in snapshot.grouped() {
+            if mixed {
+                rows.push(entry(provider.as_str(), MenuId::Header));
+            }
+            rows.extend(group.into_iter().map(&make));
+        }
+        rows
     }
 
     fn activate(&mut self, snapshot: Option<&AccountsSnapshot>, theme: ThemeName) -> Vec<Effect> {
@@ -156,6 +181,7 @@ impl DashboardScreen {
             MenuId::Watch => vec![Effect::OpenWatch],
             MenuId::Auto => vec![Effect::OpenAuto],
             MenuId::Quit => vec![Effect::Quit],
+            MenuId::Header => Vec::new(),
             MenuId::Back => {
                 self.pop();
                 Vec::new()
@@ -165,8 +191,8 @@ impl DashboardScreen {
                     title: "add account".to_string(),
                     entries: with_back(vec![
                         entry("Add new account", MenuId::AddNew),
-                        entry("From current Codex login", MenuId::AddLogin),
-                        entry("From an API key…", MenuId::AddToken),
+                        entry("From current logins", MenuId::AddLogin),
+                        entry("From a token…", MenuId::AddToken),
                     ]),
                 });
                 Vec::new()
@@ -264,11 +290,19 @@ impl DashboardScreen {
                 Vec::new()
             }
             KeyCode::Home => {
-                self.cursor = 0;
+                self.cursor = self
+                    .entries()
+                    .iter()
+                    .position(|e| e.id != MenuId::Header)
+                    .unwrap_or(0);
                 Vec::new()
             }
             KeyCode::End => {
-                self.cursor = self.entries().len().saturating_sub(1);
+                self.cursor = self
+                    .entries()
+                    .iter()
+                    .rposition(|e| e.id != MenuId::Header)
+                    .unwrap_or(0);
                 Vec::new()
             }
             KeyCode::Enter => self.activate(snapshot, theme),
@@ -292,6 +326,13 @@ impl DashboardScreen {
             Line::default(),
         ];
         for (i, entry) in self.entries().iter().enumerate() {
+            if entry.id == MenuId::Header {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", entry.label),
+                    p.muted_style(),
+                )));
+                continue;
+            }
             let highlighted = i == self.cursor;
             let label_style = if entry.id == MenuId::Back {
                 p.muted_style()
@@ -330,7 +371,7 @@ impl DashboardScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::test_support::{account, entry as usage_entry, snapshot};
+    use crate::tui::test_support::{account, claude_account, entry as usage_entry, snapshot};
     use crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -338,7 +379,7 @@ mod tests {
     }
 
     fn sample() -> AccountsSnapshot {
-        let mut disabled = account(3, "c@x.y", false, usage_entry(None, None));
+        let mut disabled = claude_account(3, "c@x.y", false, usage_entry(None, None));
         disabled.disabled = true;
         snapshot(
             vec![
@@ -401,8 +442,8 @@ mod tests {
             labels,
             [
                 "Add new account",
-                "From current Codex login",
-                "From an API key…",
+                "From current logins",
+                "From a token…",
                 "← back"
             ]
         );
@@ -420,7 +461,9 @@ mod tests {
         dash.cursor = 5;
         dash.handle_key(key(KeyCode::Enter), Some(&snap), ThemeName::Dark);
         assert_eq!(dash.breadcrumb(), "menu › remove account");
-        assert_eq!(dash.entries()[0].label, "1  a@x.y  [personal]");
+        assert_eq!(dash.entries()[0].label, "codex");
+        assert_eq!(dash.entries()[1].label, "1  a@x.y  [personal]");
+        assert_eq!(dash.cursor(), 1);
         let effects = dash.handle_key(key(KeyCode::Enter), Some(&snap), ThemeName::Dark);
         match &effects[0] {
             Effect::OpenModal(Modal::Confirm(c)) => {
@@ -445,13 +488,19 @@ mod tests {
         assert_eq!(
             labels,
             [
+                "codex",
                 "1  a@x.y   → disable",
                 "2  b@x.y   → disable",
+                "claude",
                 "3  c@x.y  (disabled)   → enable",
                 "← back"
             ]
         );
-        dash.cursor = 2;
+        assert_eq!(dash.cursor(), 1);
+        dash.handle_key(key(KeyCode::Char('j')), Some(&snap), ThemeName::Dark);
+        dash.handle_key(key(KeyCode::Char('j')), Some(&snap), ThemeName::Dark);
+        assert_eq!(dash.cursor(), 4, "the claude header is skipped");
+        dash.cursor = 4;
         let effects = dash.handle_key(key(KeyCode::Enter), Some(&snap), ThemeName::Dark);
         assert_eq!(
             effects,

@@ -13,7 +13,7 @@ fn add_first_second_and_refresh_in_place() {
     assert_eq!(run.status, 1);
     assert_eq!(
         run.stderr.trim(),
-        "Error: No active Codex account found. Please log in first."
+        "Error: No active Codex or Claude login found. Log in first."
     );
 
     let run = cli.add_chatgpt("Alice@Example.com", "acct-alice", "rt-a1");
@@ -393,7 +393,7 @@ fn help_version_menubar_and_upgrade() {
         );
         assert!(
             run.stdout
-                .contains("Multi-Account Switcher for OpenAI Codex")
+                .contains("Multi-Account Switcher for OpenAI Codex and Claude Code")
         );
         assert!(
             run.stdout
@@ -436,7 +436,7 @@ fn errors_use_the_json_envelope_in_json_mode() {
     assert_eq!(run.stderr, "");
     assert_eq!(
         run.json(),
-        json!({"schemaVersion": 1, "error": {"type": "ConfigError", "message": "No accounts are managed yet"}})
+        json!({"schemaVersion": 2, "error": {"type": "ConfigError", "message": "No accounts are managed yet"}})
     );
     let run = cli.run(&["switch", "2"]);
     assert_eq!(run.status, 1);
@@ -457,6 +457,8 @@ fn errors_use_the_json_envelope_in_json_mode() {
 #[test]
 fn credential_store_gate_refuses_keyring_mode() {
     let cli = Cli::new();
+    // The gate applies once Codex is in use (a Codex record or a live auth.json).
+    cli.add_chatgpt("alice@example.com", "acct-alice", "rt-a");
     std::fs::write(
         cli.codex_home.join("config.toml"),
         "cli_auth_credentials_store = \"keyring\"\n",

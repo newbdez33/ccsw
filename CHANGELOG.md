@@ -3,6 +3,36 @@
 All notable changes to `cswitch` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- Claude Code accounts share the roster and the global slot numbers with Codex accounts.
+  `cswitch add` captures the current Codex and Claude Code logins; `cswitch add claude`
+  and `cswitch add codex` capture one.
+- `add-token` recognises Anthropic setup-tokens (`sk-ant-oat…`) and API keys
+  (`sk-ant-api…`).
+- `cswitch switch <slot>` works across providers; `cswitch switch claude` and
+  `cswitch switch codex` rotate within one provider.
+- `list` prints a Codex block and a Claude block, and `status` reports the active
+  account of each provider.
+- The dashboard, switch and watch screens show a `codex` section and a `claude` section,
+  and Claude cards add a `$$` extra-usage spend row.
+- The outgoing Claude login is backed up under `backups/claude/` before a switch.
+- `CSWITCH_KEYCHAIN=off` limits Claude credential access to the file backend.
+
+### Changed
+
+- `--json` output is `schemaVersion: 2`: rows and switch references carry `provider`,
+  and `active` is a per-provider map on `list` and `status`.
+- `codex` and `claude` are reserved alias names. An existing alias named `codex` or
+  `claude` can no longer be reached with `cswitch switch <alias>`, because those words
+  now select a provider; switch to that account by its slot number or email instead.
+- A bare `cswitch add` captures the Claude Code login as well as the Codex one. Once the
+  store holds accounts of both providers, a bare `cswitch switch` needs a `codex` or
+  `claude` selector.
+- `sequence.json` records carry `provider`, and the roster records `activeByProvider`.
+
 ## v0.2.0 — 2026-10-07
 
 ### Added

@@ -89,15 +89,17 @@ pub fn fingerprint(value: &Value) -> Option<String> {
     if value.is_null() {
         return None;
     }
-    if let Some(token) = value
-        .pointer("/tokens/refresh_token")
-        .and_then(Value::as_str)
-        .filter(|token| !token.is_empty())
-    {
-        return Some(format!(
-            "sha256:{}",
-            hex::encode(Sha256::digest(token.as_bytes()))
-        ));
+    for pointer in ["/tokens/refresh_token", "/claudeAiOauth/refreshToken"] {
+        if let Some(token) = value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|token| !token.is_empty())
+        {
+            return Some(format!(
+                "sha256:{}",
+                hex::encode(Sha256::digest(token.as_bytes()))
+            ));
+        }
     }
     let canonical = serde_json::to_string(value).ok()?;
     Some(format!(
@@ -217,6 +219,9 @@ mod tests {
                 .starts_with("sha256-full:")
         );
         assert_eq!(fingerprint(&Value::Null), None);
+        let claude = json!({"claudeAiOauth": {"accessToken": "a", "refreshToken": "crt-1"}, "oauthAccount": {}});
+        let expected = hex::encode(Sha256::digest(b"crt-1"));
+        assert_eq!(fingerprint(&claude), Some(format!("sha256:{expected}")));
         let (_dir, store) = temp_store();
         write(&store, 1, &chatgpt("rt-1")).unwrap();
         assert_eq!(slot_fingerprint(&store, 1), fingerprint(&chatgpt("rt-1")));

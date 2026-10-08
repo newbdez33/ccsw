@@ -277,6 +277,7 @@ mod tests {
         let paths = Paths::from_values(
             Some(dir.path().join("store")),
             Some(dir.path().join("codex")),
+            None,
             dir.path(),
         )
         .unwrap();

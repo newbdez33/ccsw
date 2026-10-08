@@ -16,6 +16,7 @@ use crate::autoswitch::Event;
 use crate::cli::tui::TuiStart;
 use crate::model::SwitchOutcome;
 use crate::printer::format_duration;
+use crate::provider::Provider;
 use crate::store::AutoSwitchSettings;
 use crate::switcher::{Line as UiLine, ListSnapshot};
 
@@ -38,7 +39,7 @@ pub const TOAST_DEFAULT_S: f64 = 5.0;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     SwitchTo(u32),
-    SwitchBest,
+    SwitchBest(Provider),
     SetDisabled { number: u32, disabled: bool },
     Remove(u32),
     AddNew,
@@ -50,7 +51,7 @@ impl Action {
     pub fn label(&self) -> String {
         match self {
             Self::SwitchTo(n) => format!("Switch to account {n}"),
-            Self::SwitchBest => "Switch (best)".to_string(),
+            Self::SwitchBest(provider) => format!("Switch (best, {provider})"),
             Self::SetDisabled {
                 number,
                 disabled: true,
@@ -59,7 +60,7 @@ impl Action {
             Self::Remove(n) => format!("Remove account {n}"),
             Self::AddNew => "Add new account".to_string(),
             Self::AddCurrent => "Add current login".to_string(),
-            Self::AddToken(_) => "Add account from API key".to_string(),
+            Self::AddToken(_) => "Add account from a token".to_string(),
         }
     }
 
@@ -142,6 +143,8 @@ pub struct ActionResult {
     /// The human lines the switcher said, plus `Error: …` on failure.
     pub lines: Vec<UiLine>,
     pub switch: Option<SwitchOutcome>,
+    /// What to do next after a switch (Claude Code's restart hint), spec §12.
+    pub followup: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -493,6 +496,12 @@ impl App {
                     TOAST_DEFAULT_S,
                     now,
                 );
+                // Spec §12: the provider that acted says what happens next.
+                if outcome.provider == Provider::Claude
+                    && let Some(followup) = result.followup
+                {
+                    self.toast(followup, None, Severity::Info, TOAST_DEFAULT_S, now);
+                }
             } else {
                 let reason = if outcome.message.is_empty() {
                     if outcome.reason.is_empty() {
@@ -618,7 +627,7 @@ impl App {
         let stamp = clock_stamp(now);
         let effects = match self.screens.last_mut().expect("dashboard") {
             Screen::Dashboard(d) => d.handle_key(key, snapshot.as_ref(), theme),
-            Screen::Switch(s) => s.handle_key(key),
+            Screen::Switch(s) => s.handle_key(key, snapshot.as_ref()),
             Screen::Watch(w) => w.handle_key(key, snapshot.as_ref()),
             Screen::Auto(a) => a.handle_key(key, &stamp),
         };
@@ -919,6 +928,7 @@ fn draw_auto(
 mod tests {
     use super::*;
     use crate::model::AccountRef;
+    use crate::provider::Provider;
     use crate::tui::test_support::{account, entry, snapshot};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -975,6 +985,7 @@ mod tests {
                 lines: Vec::new(),
                 switch: Some(SwitchOutcome {
                     switched: true,
+                    provider: Provider::Codex,
                     from: None,
                     to: Some(AccountRef {
                         number: Some(2),
@@ -985,6 +996,7 @@ mod tests {
                     message: String::new(),
                     warnings: Vec::new(),
                 }),
+                followup: None,
             }),
             1002.0,
         );
@@ -997,15 +1009,49 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_switch_toasts_its_followup() {
+        let mut app = app();
+        let outcome = |provider| SwitchOutcome {
+            switched: true,
+            provider,
+            from: None,
+            to: Some(AccountRef {
+                number: Some(2),
+                email: "c@x.y".into(),
+            }),
+            strategy: "direct".into(),
+            reason: "switched".into(),
+            message: String::new(),
+            warnings: Vec::new(),
+        };
+        app.receive(
+            Inbound::ActionDone(ActionResult {
+                action: Action::SwitchTo(2),
+                ok: true,
+                lines: Vec::new(),
+                switch: Some(outcome(Provider::Claude)),
+                followup: Some(crate::claude::live::FILE_FOLLOWUP.to_string()),
+            }),
+            1.0,
+        );
+        let texts: Vec<&str> = app.toasts().iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["Switched to c@x.y", crate::claude::live::FILE_FOLLOWUP]
+        );
+    }
+
+    #[test]
     fn no_switch_failure_and_add_results() {
         let mut app = app();
         app.receive(
             Inbound::ActionDone(ActionResult {
-                action: Action::SwitchBest,
+                action: Action::SwitchBest(Provider::Codex),
                 ok: true,
                 lines: Vec::new(),
                 switch: Some(SwitchOutcome {
                     switched: false,
+                    provider: Provider::Codex,
                     from: None,
                     to: None,
                     strategy: "best".into(),
@@ -1013,6 +1059,7 @@ mod tests {
                     message: "Already on the best account".into(),
                     warnings: Vec::new(),
                 }),
+                followup: None,
             }),
             1.0,
         );
@@ -1020,6 +1067,10 @@ mod tests {
         assert_eq!(toast.text, "Already on the best account");
         assert_eq!(toast.title.as_deref(), Some("No switch"));
         assert_eq!(toast.severity, Severity::Warning);
+        assert_eq!(
+            Action::SwitchBest(Provider::Claude).label(),
+            "Switch (best, claude)"
+        );
 
         app.receive(
             Inbound::ActionDone(ActionResult {
@@ -1027,6 +1078,7 @@ mod tests {
                 ok: false,
                 lines: vec![UiLine::plain("Error: boom")],
                 switch: None,
+                followup: None,
             }),
             2.0,
         );
@@ -1043,6 +1095,7 @@ mod tests {
                 ok: true,
                 lines: vec![UiLine::plain("Added Account-4 (x@y.z)")],
                 switch: None,
+                followup: None,
             }),
             3.0,
         );
@@ -1061,6 +1114,7 @@ mod tests {
                     UiLine::plain("Disabled Account-1 (a@x.y)."),
                 ],
                 switch: None,
+                followup: None,
             }),
             4.0,
         );

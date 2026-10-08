@@ -13,6 +13,7 @@ use crate::errors::{CswitchError, Result};
 use crate::fsutil::write_json_private;
 use crate::model::{AccountRecord, Roster};
 use crate::paths::Paths;
+use crate::provider::Provider;
 
 /// Read `sequence.json`; `Ok(None)` when it does not exist.
 pub fn read(paths: &Paths) -> Result<Option<Roster>> {
@@ -111,8 +112,7 @@ impl Roster {
     }
 
     pub fn set_active(&mut self, slot: Option<u32>) {
-        self.active_account_number = slot;
-        self.touch();
+        self.set_active_for(Provider::Codex, slot);
     }
 
     /// Insert (or replace) the record for `slot` and keep it in the sorted sequence.
@@ -125,10 +125,18 @@ impl Roster {
         self.touch();
     }
 
-    /// Drop the record and its sequence entry. `activeAccountNumber` is left as-is.
+    /// Drop the record and its sequence entry, and clear every active marker
+    /// (`activeAccountNumber` and each `activeByProvider` entry) that pointed
+    /// at it. The active login is re-derived from the live files on every
+    /// command, so these fields are a cached hint and must never name a
+    /// record that no longer exists.
     pub fn remove_slot(&mut self, slot: u32) -> Option<AccountRecord> {
         let record = self.accounts.remove(&slot.to_string())?;
         self.sequence.retain(|s| *s != slot);
+        self.active_by_provider.retain(|_, active| *active != slot);
+        if self.active_account_number == Some(slot) {
+            self.active_account_number = None;
+        }
         self.touch();
         Some(record)
     }
@@ -248,6 +256,13 @@ impl Roster {
             Some(n) if n == b => Some(a),
             other => other,
         };
+        for value in self.active_by_provider.values_mut() {
+            if *value == a {
+                *value = b;
+            } else if *value == b {
+                *value = a;
+            }
+        }
         self.touch();
     }
 
@@ -280,6 +295,11 @@ pub fn normalize_alias(name: &str) -> Result<String> {
     if alias.starts_with('-') {
         return Err(CswitchError::validation(format!(
             "alias '{alias}' cannot start with '-' (would be read as a command flag)"
+        )));
+    }
+    if Provider::parse_selector(&alias).is_some() {
+        return Err(CswitchError::validation(format!(
+            "alias '{alias}' is reserved for the provider selector"
         )));
     }
     if !alias
@@ -357,6 +377,7 @@ pub fn resolve_slot(roster: &Roster, identifier: &str) -> Result<u32> {
 mod tests {
     use super::*;
     use crate::model::AccountRecord;
+    use crate::provider::Provider;
     use crate::store::temp_store;
 
     fn record(email: &str, account_id: &str) -> AccountRecord {
@@ -371,6 +392,49 @@ mod tests {
             roster.add_record(*slot, record(email, account_id));
         }
         roster
+    }
+
+    #[test]
+    fn remove_slot_clears_every_active_marker_that_pointed_at_it() {
+        let mut roster = roster_with(&[(1, "a@x.com", ""), (2, "b@x.com", "")]);
+        roster.record_mut(2).unwrap().provider = Provider::Claude;
+        roster.set_active_for(Provider::Codex, Some(1));
+        roster.set_active_for(Provider::Claude, Some(2));
+        roster.remove_slot(2);
+        assert_eq!(roster.active_for(Provider::Codex), Some(1));
+        assert_eq!(roster.active_for(Provider::Claude), None);
+        roster.remove_slot(1);
+        assert_eq!(roster.active_for(Provider::Codex), None);
+        assert_eq!(roster.active_account_number, None);
+    }
+
+    #[test]
+    fn alias_cannot_be_a_provider_selector() {
+        for word in ["codex", "Claude"] {
+            let err = normalize_alias(word).unwrap_err();
+            assert_eq!(err.type_name(), "ValidationError");
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "alias '{}' is reserved for the provider selector",
+                    word.to_lowercase()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn move_and_swap_renumber_every_provider_marker() {
+        let mut roster = roster_with(&[(1, "a@x.com", ""), (2, "b@x.com", "")]);
+        roster.record_mut(2).unwrap().provider = Provider::Claude;
+        roster.set_active_for(Provider::Codex, Some(1));
+        roster.set_active_for(Provider::Claude, Some(2));
+        roster.swap_slots(1, 2).unwrap();
+        assert_eq!(roster.active_for(Provider::Codex), Some(2));
+        assert_eq!(roster.active_for(Provider::Claude), Some(1));
+        assert_eq!(roster.active_account_number, Some(2));
+        assert_eq!(roster.move_slot(1, 7).unwrap(), MoveOutcome::Relocated);
+        assert_eq!(roster.active_for(Provider::Claude), Some(7));
     }
 
     #[test]

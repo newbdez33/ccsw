@@ -2,12 +2,14 @@
 //! §2.1–§2.2): built from a [`ListSnapshot`], reconciled so usage never
 //! regresses, and merged by generation.
 
+use crate::provider::Provider;
 use crate::store::usage_store::{UsageEntry, UsageSentinel};
 use crate::switcher::ListSnapshot;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccountSnapshot {
     pub number: u32,
+    pub provider: Provider,
     pub email: String,
     pub tag: String,
     pub alias: Option<String>,
@@ -32,7 +34,10 @@ impl AccountSnapshot {
     }
 
     fn same_account(&self, other: &AccountSnapshot) -> bool {
-        self.number == other.number && self.email == other.email && self.api_key == other.api_key
+        self.number == other.number
+            && self.provider == other.provider
+            && self.email == other.email
+            && self.api_key == other.api_key
     }
 }
 
@@ -59,6 +64,7 @@ impl AccountsSnapshot {
             .into_iter()
             .map(|row| AccountSnapshot {
                 number: row.slot,
+                provider: row.record.provider,
                 email: row.record.email.clone(),
                 tag: row.record.display_tag(),
                 alias: row.record.alias.clone().filter(|a| !a.is_empty()),
@@ -69,10 +75,33 @@ impl AccountsSnapshot {
             })
             .collect();
         Self {
-            active_number: list.active,
+            active_number: list.actives.lowest(),
             accounts,
             taken_at,
         }
+    }
+
+    pub fn is_mixed(&self) -> bool {
+        Provider::ALL
+            .iter()
+            .filter(|p| self.accounts.iter().any(|a| a.provider == **p))
+            .count()
+            > 1
+    }
+
+    /// The accounts of each present provider, in `Provider::ALL` order.
+    pub fn grouped(&self) -> Vec<(Provider, Vec<&AccountSnapshot>)> {
+        Provider::ALL
+            .into_iter()
+            .filter_map(|provider| {
+                let group: Vec<&AccountSnapshot> = self
+                    .accounts
+                    .iter()
+                    .filter(|a| a.provider == provider)
+                    .collect();
+                (!group.is_empty()).then_some((provider, group))
+            })
+            .collect()
     }
 
     pub fn account(&self, number: u32) -> Option<&AccountSnapshot> {
@@ -83,8 +112,13 @@ impl AccountsSnapshot {
         self.accounts.iter().find(|a| a.is_active)
     }
 
+    /// Slot numbers in section order (see [`Self::grouped`]), the order the
+    /// card lists draw and the cursor walks.
     pub fn numbers(&self) -> Vec<u32> {
-        self.accounts.iter().map(|a| a.number).collect()
+        self.grouped()
+            .into_iter()
+            .flat_map(|(_, group)| group.into_iter().map(|a| a.number))
+            .collect()
     }
 
     /// A newer generation replaces everything, but per account the usage
@@ -151,7 +185,7 @@ fn reconcile_usage(new: &mut UsageEntry, old: &UsageEntry, now: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AccountRecord, NormalizedUsage, WindowUsage};
+    use crate::model::{AccountRecord, ActiveSlots, NormalizedUsage, WindowUsage};
     use crate::switcher::AccountRow;
 
     fn entry(fetched_at: Option<f64>, pct: f64) -> UsageEntry {
@@ -184,6 +218,7 @@ mod tests {
             active_number: Some(1),
             accounts: vec![AccountSnapshot {
                 number: 1,
+                provider: Provider::Codex,
                 email: "a@b.c".into(),
                 tag: "personal".into(),
                 alias: None,
@@ -199,10 +234,14 @@ mod tests {
     #[test]
     fn from_list_maps_rows() {
         let mut record = AccountRecord::new("a@b.c");
+        record.provider = Provider::Claude;
         record.alias = Some("dev".into());
         record.plan_type = Some("pro".into());
         let list = ListSnapshot {
-            active: Some(3),
+            actives: ActiveSlots {
+                codex: Some(3),
+                claude: None,
+            },
             rows: vec![AccountRow {
                 slot: 3,
                 record,
@@ -214,7 +253,8 @@ mod tests {
         let snapshot = AccountsSnapshot::from_list(list, 1000.0);
         let account = &snapshot.accounts[0];
         assert_eq!(account.number, 3);
-        assert_eq!(account.tag, "Pro 20×");
+        assert_eq!(account.provider, Provider::Claude);
+        assert_eq!(account.tag, "personal", "Claude rows carry no plan label");
         assert_eq!(account.label(), "dev (a@b.c)");
         assert!(account.is_active && account.switchable());
         assert_eq!(snapshot.active_number, Some(3));
@@ -267,6 +307,7 @@ mod tests {
         let mut current = snap(Some(900.0), 50.0, 950.0);
         current.accounts.push(AccountSnapshot {
             number: 2,
+            provider: Provider::Codex,
             email: "b@b.c".into(),
             tag: "personal".into(),
             alias: None,
@@ -283,5 +324,34 @@ mod tests {
         assert_eq!(current.accounts[0].usage.age_s, Some(50.0));
         assert_eq!(current.accounts.len(), 2);
         assert_eq!(current.taken_at, 1000.0);
+    }
+
+    #[test]
+    fn grouping_and_mixed_detection() {
+        use crate::tui::test_support::{account, claude_account, entry};
+        let single = crate::tui::test_support::snapshot(
+            vec![account(1, "a@x.y", true, entry(None, None))],
+            1.0,
+        );
+        assert!(!single.is_mixed());
+        assert_eq!(single.grouped().len(), 1);
+        let mixed = crate::tui::test_support::snapshot(
+            vec![
+                account(1, "a@x.y", true, entry(None, None)),
+                claude_account(2, "c@x.y", true, entry(None, None)),
+                account(3, "b@x.y", false, entry(None, None)),
+            ],
+            1.0,
+        );
+        assert!(mixed.is_mixed());
+        let groups = mixed.grouped();
+        assert_eq!(groups[0].0, Provider::Codex);
+        assert_eq!(
+            groups[0].1.iter().map(|a| a.number).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(groups[1].0, Provider::Claude);
+        assert_eq!(groups[1].1[0].number, 2);
+        assert_eq!(mixed.active_number, Some(1), "the lowest active slot");
     }
 }

@@ -19,6 +19,7 @@ use crate::errors::{CswitchError, Result};
 use crate::fsutil;
 use crate::model::Roster;
 use crate::printer;
+use crate::provider::Provider;
 use crate::store::usage_store::UsageStore;
 use crate::store::{MappingStore, Store, credentials, ensure_private_dir, resolve_slot};
 
@@ -31,6 +32,7 @@ pub const MANIFEST_NAME: &str = ".cswitch-shared.json";
 pub const SCRUBBED_ENV: &[&str] = &["OPENAI_API_KEY", "CODEX_API_KEY"];
 
 pub const CODEX_MISSING: &str = "'codex' was not found on PATH. Install the Codex CLI first.";
+pub const CLAUDE_SESSION_LATER: &str = "Session mode for Claude Code accounts arrives in a later release; use `cswitch switch <slot>` for now.";
 pub const SHARE_HISTORY_WINDOWS: &str = "--share-history is not supported on Windows yet: sharing uses re-synced copies there, which would fork the history instead of sharing it.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +93,17 @@ pub fn source_home(store: &Store) -> PathBuf {
     }
 }
 
+/// Session mode is Codex-only in this release: refuse a Claude Code slot.
+fn codex_slot(roster: &Roster, slot: u32) -> Result<u32> {
+    if roster
+        .record(slot)
+        .is_some_and(|r| r.provider == Provider::Claude)
+    {
+        return Err(CswitchError::session(CLAUDE_SESSION_LATER));
+    }
+    Ok(slot)
+}
+
 /// The account a directory maps to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MappedAccount {
@@ -105,7 +118,7 @@ pub enum MappedAccount {
 pub fn mapped_account(store: &Store, roster: &Roster, cwd: &Path) -> MappedAccount {
     match MappingStore::load(&store.paths).resolve(cwd) {
         None => MappedAccount::None,
-        Some((_, identity)) => match roster.find_slot(&identity) {
+        Some((_, identity)) => match roster.find_slot(Provider::Codex, &identity) {
             Some(slot) => MappedAccount::Slot(slot),
             None => MappedAccount::Removed {
                 email: identity.email,
@@ -131,7 +144,8 @@ pub fn resolve_run_target(
     cwd: &Path,
 ) -> Result<RunTarget> {
     if let Some(identifier) = account {
-        return Ok(RunTarget::Slot(resolve_slot(roster, identifier)?));
+        let slot = codex_slot(roster, resolve_slot(roster, identifier)?)?;
+        return Ok(RunTarget::Slot(slot));
     }
     Ok(match mapped_account(store, roster, cwd) {
         MappedAccount::Slot(slot) => RunTarget::Slot(slot),
@@ -575,7 +589,7 @@ pub fn plan_env(
         });
     }
     let slot = match account {
-        Some(identifier) => resolve_slot(roster, identifier)?,
+        Some(identifier) => codex_slot(roster, resolve_slot(roster, identifier)?)?,
         None => match mapped_account(store, roster, cwd) {
             MappedAccount::Slot(slot) => slot,
             MappedAccount::Removed { email } => {
@@ -628,7 +642,7 @@ pub fn map(
     let Some(identifier) = account else {
         return Ok(list_mappings(&mappings, roster));
     };
-    let slot = resolve_slot(roster, identifier)?;
+    let slot = codex_slot(roster, resolve_slot(roster, identifier)?)?;
     let record = roster
         .record(slot)
         .ok_or_else(|| CswitchError::AccountNotFound(format!("Account-{slot} does not exist")))?;
@@ -668,7 +682,7 @@ fn list_mappings(mappings: &MappingStore, roster: &Roster) -> Vec<String> {
     let mut lines = vec![printer::bolded("Directory mappings:")];
     for (path, identity) in mappings.entries() {
         let arrow = printer::dimmed("→");
-        let line = match roster.find_slot(&identity) {
+        let line = match roster.find_slot(Provider::Codex, &identity) {
             Some(slot) => {
                 let tag = roster
                     .record(slot)
@@ -749,6 +763,63 @@ mod tests {
         assert_eq!(Shell::parse("zsh"), None);
     }
 
+    /// Slot 1 is a Codex account, slot 2 a Claude Code one.
+    fn mixed_roster() -> (tempfile::TempDir, Store, Roster) {
+        let (dir, store) = crate::store::temp_store();
+        let mut roster = Roster::empty();
+        roster.add_record(1, crate::model::AccountRecord::new("codex@example.com"));
+        let mut claude = crate::model::AccountRecord::new("claude@example.com");
+        claude.provider = Provider::Claude;
+        roster.add_record(2, claude);
+        credentials::write(
+            &store,
+            2,
+            &serde_json::json!({"claudeAiOauth": {"accessToken": "a"}}),
+        )
+        .unwrap();
+        (dir, store, roster)
+    }
+
+    fn assert_claude_refused(err: CswitchError) {
+        assert_eq!(err.type_name(), "SessionError");
+        assert_eq!(
+            err.to_string(),
+            "Session mode for Claude Code accounts arrives in a later release; use `cswitch switch <slot>` for now."
+        );
+    }
+
+    #[test]
+    fn run_refuses_a_claude_slot() {
+        let (dir, store, roster) = mixed_roster();
+        let err = resolve_run_target(&store, &roster, Some("2"), dir.path()).unwrap_err();
+        assert_claude_refused(err);
+        assert!(!store.paths.sessions_dir().exists(), "nothing was written");
+    }
+
+    #[test]
+    fn env_refuses_a_claude_slot() {
+        let (dir, store, roster) = mixed_roster();
+        let request = EnvRequest {
+            account: Some("2"),
+            cwd: dir.path(),
+            shell: Shell::Sh,
+            unset: false,
+            opts: ShareOptions::default(),
+        };
+        let err = plan_env(&store, &roster, &HostEnv::default(), request).unwrap_err();
+        assert_claude_refused(err);
+        assert!(!store.paths.sessions_dir().exists(), "nothing was written");
+    }
+
+    #[test]
+    fn map_refuses_a_claude_slot() {
+        let (dir, store, roster) = mixed_roster();
+        let err = map(&store, &roster, Some("2"), None, dir.path()).unwrap_err();
+        assert_claude_refused(err);
+        assert!(!store.paths.mappings_file().exists(), "nothing was written");
+        assert!(MappingStore::load(&store.paths).is_empty());
+    }
+
     #[test]
     fn source_home_skips_a_pinned_profile() {
         let (dir, store) = crate::store::temp_store();
@@ -756,6 +827,7 @@ mod tests {
         let pinned = crate::paths::Paths::from_values(
             Some(store.paths.backup_root.clone()),
             Some(store.paths.sessions_dir().join("2-x")),
+            None,
             dir.path(),
         )
         .unwrap();
