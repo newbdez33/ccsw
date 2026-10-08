@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil::{read_json, write_json_private};
 use crate::model::{Identity, now_iso};
 use crate::paths::Paths;
@@ -54,7 +54,7 @@ impl MappingStore {
             "mappings": serde_json::to_value(&self.mappings).unwrap_or(Value::Null),
         });
         write_json_private(&self.path, &value)
-            .map_err(|err| CswitchError::config(format!("{}: {err}", self.path.display())))
+            .map_err(|err| CcswError::config(format!("{}: {err}", self.path.display())))
     }
 
     /// Expand `~`, absolutize, resolve symlinks as far as the path exists, normalize the

@@ -1,4 +1,4 @@
-//! The `config` verb through `cswitch::cli::config::run_with`, with stdout and
+//! The `config` verb through `ccsw::cli::config::run_with`, with stdout and
 //! stderr captured and the store in a temp dir.
 
 use std::fs;
@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use cswitch::cli::config::run_with;
-use cswitch::paths::Paths;
+use ccsw::cli::config::run_with;
+use ccsw::paths::Paths;
 
 const KEYS: [&str; 9] = [
     "autoswitch.threshold",
@@ -325,7 +325,7 @@ fn help_lists_the_keys_and_examples() {
         assert_eq!(code, 0, "{flag}");
         assert_eq!(err, "");
         assert!(
-            out.contains("Read and edit cswitch settings (settings.json in the backup root)."),
+            out.contains("Read and edit ccsw settings (settings.json in the backup root)."),
             "{out}"
         );
         assert!(out.contains("\nKeys:\n"), "{out}");
@@ -351,7 +351,7 @@ fn help_lists_the_keys_and_examples() {
         }
         assert!(
             out.contains(
-                "\nExamples:\n  cswitch config                              # list effective settings\n  cswitch config get autoswitch.threshold\n  cswitch config set autoswitch.threshold 80\n  cswitch config unset autoswitch.threshold   # back to the default\n  cswitch config path                         # where settings.json lives"
+                "\nExamples:\n  ccsw config                              # list effective settings\n  ccsw config get autoswitch.threshold\n  ccsw config set autoswitch.threshold 80\n  ccsw config unset autoswitch.threshold   # back to the default\n  ccsw config path                         # where settings.json lives"
             ),
             "{out}"
         );

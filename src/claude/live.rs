@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil;
 use crate::model::Identity;
 use crate::paths::Paths;
@@ -78,7 +78,7 @@ fn read_text_if_present(path: &std::path::Path) -> Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(fsutil::io_error(CswitchError::CredentialRead, path, &err)),
+        Err(err) => Err(fsutil::io_error(CcswError::CredentialRead, path, &err)),
     }
 }
 
@@ -185,10 +185,10 @@ impl<'a> ClaudeLive<'a> {
     pub fn read_global_config(&self) -> Result<Option<Value>> {
         let path = self.paths.claude_global_config_file();
         let value = fsutil::read_json(&path).map_err(|err| {
-            CswitchError::config(format!("{} could not be read ({err})", path.display()))
+            CcswError::config(format!("{} could not be read ({err})", path.display()))
         })?;
         match value {
-            Some(value) if !value.is_object() => Err(CswitchError::config(format!(
+            Some(value) if !value.is_object() => Err(CcswError::config(format!(
                 "{} does not hold a JSON object",
                 path.display()
             ))),
@@ -203,7 +203,7 @@ impl<'a> ClaudeLive<'a> {
         let mut value = self.read_global_config()?.unwrap_or_else(|| json!({}));
         mutate(value.as_object_mut().expect("object checked on read"));
         fsutil::write_json_private(&path, &value)
-            .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, &path, &err))
+            .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &path, &err))
     }
 
     /// Write the OAuth login where Claude Code reads it (spec §7.2c): the
@@ -211,7 +211,7 @@ impl<'a> ClaudeLive<'a> {
     /// created), else the file (and a stale Keychain item is dropped).
     pub fn write_oauth(&self, live: &ClaudeCredential) -> Result<Backend> {
         let text = serde_json::to_string(&live.0)
-            .map_err(|err| CswitchError::credential_write(format!("invalid credential: {err}")))?;
+            .map_err(|err| CcswError::credential_write(format!("invalid credential: {err}")))?;
         let file = self.paths.claude_credentials_file();
         if self.use_keychain() {
             match self
@@ -237,7 +237,7 @@ impl<'a> ClaudeLive<'a> {
             }
         }
         fsutil::atomic_write_private(&file, text.as_bytes())
-            .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, &file, &err))?;
+            .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &file, &err))?;
         if self.paths.keychain_enabled {
             let _ = self.keychain.delete_password(LIVE_SERVICE, &self.account);
         }
@@ -299,10 +299,10 @@ impl<'a> ClaudeLive<'a> {
             object.remove(OAUTH_KEY);
             if object.is_empty() {
                 std::fs::remove_file(&file)
-                    .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, &file, &err))?;
+                    .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &file, &err))?;
             } else {
                 fsutil::write_json_private(&file, &credential.0)
-                    .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, &file, &err))?;
+                    .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &file, &err))?;
             }
         }
         Ok(())
@@ -370,7 +370,7 @@ pub fn backup_live(paths: &Paths, login: &LiveLogin) -> Result<()> {
     ensure_private_dir(&dir)?;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| CswitchError::credential_write("system clock is before the Unix epoch"))?
+        .map_err(|_| CcswError::credential_write("system clock is before the Unix epoch"))?
         .as_nanos();
     let path = (0..1000u16)
         .map(|n| {
@@ -381,13 +381,13 @@ pub fn backup_live(paths: &Paths, login: &LiveLogin) -> Result<()> {
             }
         })
         .find(|candidate| !candidate.exists())
-        .ok_or_else(|| CswitchError::credential_write("could not allocate a Claude backup path"))?;
+        .ok_or_else(|| CcswError::credential_write("could not allocate a Claude backup path"))?;
     let value = json!({
         "credentials": saved.map(|c| c.0.clone()).unwrap_or(Value::Null),
         "oauthAccount": login.oauth_account.as_ref().map(|a| a.0.clone()).unwrap_or(Value::Null),
     });
     fsutil::write_json_private(&path, &value)
-        .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, &path, &err))?;
+        .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, &path, &err))?;
     let mut backups: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
         .ok()
         .into_iter()

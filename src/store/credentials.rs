@@ -8,7 +8,7 @@ use std::path::Path;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil::{io_error, write_json_private};
 
 use super::Store;
@@ -19,16 +19,16 @@ pub fn read(store: &Store, slot: u32) -> Result<Option<Value>> {
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(io_error(CswitchError::CredentialRead, &path, &err)),
+        Err(err) => return Err(io_error(CcswError::CredentialRead, &path, &err)),
     };
     let value: Value = serde_json::from_slice(&bytes).map_err(|err| {
-        CswitchError::credential_read(format!(
+        CcswError::credential_read(format!(
             "{} exists but could not be parsed ({err})",
             path.display()
         ))
     })?;
     if !value.is_object() {
-        return Err(CswitchError::credential_read(format!(
+        return Err(CcswError::credential_read(format!(
             "{} does not hold a JSON object",
             path.display()
         )));
@@ -48,10 +48,10 @@ pub fn write(store: &Store, slot: u32, value: &Value) -> Result<()> {
     {
         let prev_path = store.paths.credential_prev_file(slot);
         copy_private(&path, &prev_path)
-            .map_err(|err| io_error(CswitchError::CredentialWrite, &prev_path, &err))?;
+            .map_err(|err| io_error(CcswError::CredentialWrite, &prev_path, &err))?;
     }
     write_json_private(&path, value)
-        .map_err(|err| io_error(CswitchError::CredentialWrite, &path, &err))
+        .map_err(|err| io_error(CcswError::CredentialWrite, &path, &err))
 }
 
 fn copy_private(from: &Path, to: &Path) -> io::Result<()> {
@@ -73,7 +73,7 @@ pub fn delete(store: &Store, slot: u32) -> Result<()> {
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(io_error(CswitchError::CredentialWrite, &path, &err)),
+            Err(err) => return Err(io_error(CcswError::CredentialWrite, &path, &err)),
         }
     }
     Ok(())

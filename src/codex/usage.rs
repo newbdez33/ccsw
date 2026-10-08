@@ -12,7 +12,7 @@ use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::model::{Credits, NormalizedUsage, ScopedWindow, WindowUsage, format_iso};
 
 use super::auth::AuthJson;
@@ -36,9 +36,9 @@ pub fn user_agent() -> String {
     )
 }
 
-/// The usage endpoint, or the `CSWITCH_USAGE_URL` override (tests).
+/// The usage endpoint, or the `CCSW_USAGE_URL` override (tests).
 pub fn usage_url() -> String {
-    std::env::var("CSWITCH_USAGE_URL")
+    std::env::var("CCSW_USAGE_URL")
         .ok()
         .filter(|url| !url.trim().is_empty())
         .unwrap_or_else(|| USAGE_URL.to_string())
@@ -51,12 +51,12 @@ pub fn build_client(proxy: Option<&str>) -> Result<reqwest::Client> {
 
 /// HTTP client with the given user agent (30 s connect / 60 s total, rustls
 /// with the OS trust store plus bundled roots). Proxy: the argument, then
-/// `CSWITCH_PROXY`, then reqwest's own `HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`
+/// `CCSW_PROXY`, then reqwest's own `HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`
 /// handling.
 pub fn build_client_with_agent(proxy: Option<&str>, agent: &str) -> Result<reqwest::Client> {
     let proxy = proxy
         .map(str::to_string)
-        .or_else(|| std::env::var("CSWITCH_PROXY").ok())
+        .or_else(|| std::env::var("CCSW_PROXY").ok())
         .map(|url| url.trim().to_string())
         .filter(|url| !url.is_empty());
     let mut builder = reqwest::Client::builder()
@@ -66,7 +66,7 @@ pub fn build_client_with_agent(proxy: Option<&str>, agent: &str) -> Result<reqwe
         .timeout(Duration::from_secs(60));
     if let Some(url) = proxy {
         let proxy = reqwest::Proxy::all(&url).map_err(|err| {
-            CswitchError::config(format!(
+            CcswError::config(format!(
                 "invalid proxy URL '{}': {err}",
                 mask_userinfo(&url)
             ))
@@ -75,7 +75,7 @@ pub fn build_client_with_agent(proxy: Option<&str>, agent: &str) -> Result<reqwe
     }
     builder
         .build()
-        .map_err(|err| CswitchError::config(format!("could not build HTTP client: {err}")))
+        .map_err(|err| CcswError::config(format!("could not build HTTP client: {err}")))
 }
 
 /// `scheme://user:pass@host` → `scheme://***:***@host`, for messages and logs.

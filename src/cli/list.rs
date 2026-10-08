@@ -383,7 +383,7 @@ fn first_run(switcher: &mut Switcher, json: bool) -> Result<i32> {
     };
     if declined {
         print_lines(&[Line::dimmed(
-            "Setup cancelled. You can run 'cswitch add' later.",
+            "Setup cancelled. You can run 'ccsw add' later.",
         )]);
         return Ok(0);
     }

@@ -1,4 +1,4 @@
-# codex-switch → cswitch porting reference (Codex CLI credential / identity / usage / refresh mechanics)
+# codex-switch → ccsw porting reference (Codex CLI credential / identity / usage / refresh mechanics)
 
 Source checkout: `/Volumes/shit/orca/workspaces/codex-switch/basketstar` (MIT). All line numbers refer to that tree.
 codex-switch declares itself contract-aligned with upstream Codex **0.144.1** (`ALIGNED_CODEX_VERSION`, `src/auth.rs:15`); daemon/`--no-daemon` behaviour is aligned with Codex 0.156/0.157.
@@ -150,7 +150,7 @@ if config.get("forced_login_method").and_then(|v| v.as_str()) == Some("api") {
 }
 ```
 
-So the API-key file shape (Codex writes `{"OPENAI_API_KEY": "sk-...", "auth_mode": "apikey", "tokens": null, ...}` or similar) is **not** modelled here; if cswitch needs it, take it from upstream Codex, not from codex-switch. Everything below assumes `tokens.id_token` exists.
+So the API-key file shape (Codex writes `{"OPENAI_API_KEY": "sk-...", "auth_mode": "apikey", "tokens": null, ...}` or similar) is **not** modelled here; if ccsw needs it, take it from upstream Codex, not from codex-switch. Everything below assumes `tokens.id_token` exists.
 
 ### 1.4 `cli_auth_credentials_store = "file"` requirement (`src/auth.rs:81-102`)
 
@@ -1071,7 +1071,7 @@ Ordering: eligible first, then score desc, then `last_used` asc, then alias. Pac
 
 ---
 
-## 13. Gotchas checklist for cswitch
+## 13. Gotchas checklist for ccsw
 
 1. Always require `cli_auth_credentials_store = "file"` (or absent) and refuse `forced_login_method = "api"`; re-check managed `forced_chatgpt_workspace_id` at every credential write.
 2. Treat `refresh_token` as single-use: persist rotations with CAS on the presented token, to profile **and** live copy; never drop a rotated token on an error path; never cancel an in-flight refresh; never keep two copies of one account.

@@ -15,7 +15,7 @@ use serde_json::json;
 use crate::codex::app_server::{codex_supports_no_daemon, command_on_path, embedded_codex_argv};
 use crate::codex::auth::{AuthJson, AuthKind};
 use crate::collect::{self, RefreshStatus};
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil;
 use crate::model::Roster;
 use crate::printer;
@@ -27,12 +27,12 @@ use crate::store::{MappingStore, Store, credentials, ensure_private_dir, resolve
 pub const SHARED_ITEMS: &[&str] = &["AGENTS.md", "prompts", "skills"];
 /// Items linked with `--share-history` (POSIX only).
 pub const HISTORY_ITEMS: &[&str] = &["sessions", "history.jsonl"];
-pub const MANIFEST_NAME: &str = ".cswitch-shared.json";
+pub const MANIFEST_NAME: &str = ".ccsw-shared.json";
 /// Environment variables that would override the selected account inside Codex.
 pub const SCRUBBED_ENV: &[&str] = &["OPENAI_API_KEY", "CODEX_API_KEY"];
 
 pub const CODEX_MISSING: &str = "'codex' was not found on PATH. Install the Codex CLI first.";
-pub const CLAUDE_SESSION_LATER: &str = "Session mode for Claude Code accounts arrives in a later release; use `cswitch switch <slot>` for now.";
+pub const CLAUDE_SESSION_LATER: &str = "Session mode for Claude Code accounts arrives in a later release; use `ccsw switch <slot>` for now.";
 pub const SHARE_HISTORY_WINDOWS: &str = "--share-history is not supported on Windows yet: sharing uses re-synced copies there, which would fork the history instead of sharing it.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,12 +75,12 @@ impl HostEnv {
     fn codex(&self) -> Result<&Path> {
         self.codex
             .as_deref()
-            .ok_or_else(|| CswitchError::session(CODEX_MISSING))
+            .ok_or_else(|| CcswError::session(CODEX_MISSING))
     }
 }
 
 /// The Codex home whose items are shared into profiles: `$CODEX_HOME`, unless
-/// that is itself a session profile (a shell pinned by `cswitch env`), in
+/// that is itself a session profile (a shell pinned by `ccsw env`), in
 /// which case the default home is the source.
 pub fn source_home(store: &Store) -> PathBuf {
     let home = &store.paths.codex_home;
@@ -99,7 +99,7 @@ fn codex_slot(roster: &Roster, slot: u32) -> Result<u32> {
         .record(slot)
         .is_some_and(|r| r.provider == Provider::Claude)
     {
-        return Err(CswitchError::session(CLAUDE_SESSION_LATER));
+        return Err(CcswError::session(CLAUDE_SESSION_LATER));
     }
     Ok(slot)
 }
@@ -183,11 +183,11 @@ pub fn prepare_profile(
     opts: ShareOptions,
 ) -> Result<Prepared> {
     if opts.share_history && cfg!(windows) {
-        return Err(CswitchError::session(SHARE_HISTORY_WINDOWS));
+        return Err(CcswError::session(SHARE_HISTORY_WINDOWS));
     }
     let record = roster
         .record(slot)
-        .ok_or_else(|| CswitchError::AccountNotFound(format!("Account-{slot} does not exist")))?;
+        .ok_or_else(|| CcswError::AccountNotFound(format!("Account-{slot} does not exist")))?;
     let profile = store.paths.session_dir(slot, &record.email);
     let mut notices = Vec::new();
 
@@ -201,8 +201,8 @@ pub fn prepare_profile(
         ))),
     }
     let stored = credentials::read(store, slot)?.ok_or_else(|| {
-        CswitchError::session(format!(
-            "Account-{slot} has no stored credentials. Re-add with: cswitch add --slot {slot}"
+        CcswError::session(format!(
+            "Account-{slot} has no stored credentials. Re-add with: ccsw add --slot {slot}"
         ))
     })?;
     ensure_private_dir(&profile)?;
@@ -214,11 +214,11 @@ pub fn prepare_profile(
         Ok(bytes) => {
             let dest = profile.join("config.toml");
             fsutil::atomic_write_private(&dest, &bytes)
-                .map_err(|err| fsutil::io_error(CswitchError::Session, &dest, &err))?;
+                .map_err(|err| fsutil::io_error(CcswError::Session, &dest, &err))?;
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
         Err(err) => {
-            return Err(fsutil::io_error(CswitchError::Session, &config, &err));
+            return Err(fsutil::io_error(CcswError::Session, &config, &err));
         }
     }
     notices.extend(sync_sharing(&profile, &source, opts)?);
@@ -273,7 +273,7 @@ pub fn sync_sharing(profile: &Path, source: &Path, opts: ShareOptions) -> Result
     }
     let previous = manifest_items(profile);
     let session_err =
-        |path: &Path, err: &io::Error| fsutil::io_error(CswitchError::Session, path, err);
+        |path: &Path, err: &io::Error| fsutil::io_error(CcswError::Session, path, err);
 
     for item in previous
         .iter()
@@ -414,7 +414,7 @@ pub fn plan_launch(
 ) -> Result<Launch> {
     let codex = host.codex()?;
     if opts.share_history && cfg!(windows) {
-        return Err(CswitchError::session(SHARE_HISTORY_WINDOWS));
+        return Err(CcswError::session(SHARE_HISTORY_WINDOWS));
     }
     let slot = match target {
         RunTarget::Default { notice } => {
@@ -430,7 +430,7 @@ pub fn plan_launch(
     };
     let record = roster
         .record(slot)
-        .ok_or_else(|| CswitchError::AccountNotFound(format!("Account-{slot} does not exist")))?;
+        .ok_or_else(|| CcswError::AccountNotFound(format!("Account-{slot} does not exist")))?;
     let mut notices = Vec::new();
     match &host.codex_home_preset {
         None => {
@@ -484,16 +484,14 @@ pub fn exec_or_wait(store: &Store, mut launch: Launch) -> Result<i32> {
         // The fold-back happens at the next bootstrap: exec never returns.
         let _ = store;
         let err = launch.command.exec();
-        Err(CswitchError::session(format!(
-            "could not launch codex: {err}"
-        )))
+        Err(CcswError::session(format!("could not launch codex: {err}")))
     }
     #[cfg(not(unix))]
     {
         let status = launch
             .command
             .status()
-            .map_err(|err| CswitchError::session(format!("could not launch codex: {err}")))?;
+            .map_err(|err| CcswError::session(format!("could not launch codex: {err}")))?;
         if let Some((slot, profile)) = &launch.session
             && let Err(err) = fold_back(store, *slot, profile)
         {
@@ -593,13 +591,13 @@ pub fn plan_env(
         None => match mapped_account(store, roster, cwd) {
             MappedAccount::Slot(slot) => slot,
             MappedAccount::Removed { email } => {
-                return Err(CswitchError::session(format!(
-                    "Nothing to prepare an environment for (the mapped account {email} no longer exists). Pass an account (cswitch env <NUM|EMAIL|ALIAS>), map this directory (cswitch map <NUM|EMAIL|ALIAS>), or clear a pinned profile with cswitch env --unset."
+                return Err(CcswError::session(format!(
+                    "Nothing to prepare an environment for (the mapped account {email} no longer exists). Pass an account (ccsw env <NUM|EMAIL|ALIAS>), map this directory (ccsw map <NUM|EMAIL|ALIAS>), or clear a pinned profile with ccsw env --unset."
                 )));
             }
             MappedAccount::None => {
-                return Err(CswitchError::session(format!(
-                    "Nothing to prepare an environment for (no account given and no mapping for {}). Pass an account (cswitch env <NUM|EMAIL|ALIAS>), map this directory (cswitch map <NUM|EMAIL|ALIAS>), or clear a pinned profile with cswitch env --unset.",
+                return Err(CcswError::session(format!(
+                    "Nothing to prepare an environment for (no account given and no mapping for {}). Pass an account (ccsw env <NUM|EMAIL|ALIAS>), map this directory (ccsw map <NUM|EMAIL|ALIAS>), or clear a pinned profile with ccsw env --unset.",
                     cwd.display()
                 )));
             }
@@ -607,7 +605,7 @@ pub fn plan_env(
     };
     let record = roster
         .record(slot)
-        .ok_or_else(|| CswitchError::AccountNotFound(format!("Account-{slot} does not exist")))?;
+        .ok_or_else(|| CcswError::AccountNotFound(format!("Account-{slot} does not exist")))?;
     if host.codex_home_preset.is_none() && collect::live_login(store, roster).slot() == Some(slot) {
         return Ok(EnvPlan::Note(format!(
             "Account-{slot} ({}) is the active default login — an unpinned shell already uses it; nothing exported.",
@@ -645,7 +643,7 @@ pub fn map(
     let slot = codex_slot(roster, resolve_slot(roster, identifier)?)?;
     let record = roster
         .record(slot)
-        .ok_or_else(|| CswitchError::AccountNotFound(format!("Account-{slot} does not exist")))?;
+        .ok_or_else(|| CcswError::AccountNotFound(format!("Account-{slot} does not exist")))?;
     let target = path.map_or_else(|| cwd.to_path_buf(), Path::to_path_buf);
     let mut lines = Vec::new();
     if !target.is_dir() {
@@ -676,7 +674,7 @@ fn list_mappings(mappings: &MappingStore, roster: &Roster) -> Vec<String> {
     if mappings.is_empty() {
         return vec![
             printer::dimmed("No directory mappings yet."),
-            printer::muted("Map one with: cswitch map <NUM|EMAIL> [PATH]"),
+            printer::muted("Map one with: ccsw map <NUM|EMAIL> [PATH]"),
         ];
     }
     let mut lines = vec![printer::bolded("Directory mappings:")];
@@ -732,18 +730,18 @@ mod tests {
 
     #[test]
     fn shell_lines_quote_the_directory() {
-        let dir = Path::new("/home/u/.cswitch/sessions/2-a_b.c");
+        let dir = Path::new("/home/u/.ccsw/sessions/2-a_b.c");
         assert_eq!(
             Shell::Sh.export_line(dir),
-            "export CODEX_HOME='/home/u/.cswitch/sessions/2-a_b.c'"
+            "export CODEX_HOME='/home/u/.ccsw/sessions/2-a_b.c'"
         );
         assert_eq!(
             Shell::Fish.export_line(dir),
-            "set -gx CODEX_HOME '/home/u/.cswitch/sessions/2-a_b.c'"
+            "set -gx CODEX_HOME '/home/u/.ccsw/sessions/2-a_b.c'"
         );
         assert_eq!(
             Shell::Pwsh.export_line(dir),
-            "$env:CODEX_HOME = '/home/u/.cswitch/sessions/2-a_b.c'"
+            "$env:CODEX_HOME = '/home/u/.ccsw/sessions/2-a_b.c'"
         );
         assert_eq!(Shell::Sh.unset_line("CODEX_HOME"), "unset CODEX_HOME");
         assert_eq!(Shell::Fish.unset_line("CODEX_HOME"), "set -e CODEX_HOME");
@@ -780,11 +778,11 @@ mod tests {
         (dir, store, roster)
     }
 
-    fn assert_claude_refused(err: CswitchError) {
+    fn assert_claude_refused(err: CcswError) {
         assert_eq!(err.type_name(), "SessionError");
         assert_eq!(
             err.to_string(),
-            "Session mode for Claude Code accounts arrives in a later release; use `cswitch switch <slot>` for now."
+            "Session mode for Claude Code accounts arrives in a later release; use `ccsw switch <slot>` for now."
         );
     }
 

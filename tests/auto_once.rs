@@ -1,4 +1,4 @@
-//! `cswitch auto --once` through `run_cli_to` with a fake facade: exit codes,
+//! `ccsw auto --once` through `run_cli_to` with a fake facade: exit codes,
 //! the JSONL event stream, dry-run, and the state a real switch records.
 //!
 //! The usage store is seeded with fresh, planned rows so no tick ever fetches.
@@ -9,17 +9,17 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 
-use cswitch::autoswitch::{AutoFacade, run_cli_to};
-use cswitch::codex::auth::AuthJson;
-use cswitch::errors::{CswitchError, Result};
-use cswitch::model::{
+use ccsw::autoswitch::{AutoFacade, run_cli_to};
+use ccsw::codex::auth::AuthJson;
+use ccsw::errors::{CcswError, Result};
+use ccsw::model::{
     AccountRecord, AccountRef, CurrentAccount, NormalizedUsage, Roster, SwitchOutcome, WindowUsage,
     now_unix,
 };
-use cswitch::paths::Paths;
-use cswitch::provider::Provider;
-use cswitch::store::usage_store::{FetchRecord, UsageStore};
-use cswitch::store::{Store, credentials, state};
+use ccsw::paths::Paths;
+use ccsw::provider::Provider;
+use ccsw::store::usage_store::{FetchRecord, UsageStore};
+use ccsw::store::{Store, credentials, state};
 
 const FAR: i64 = 4_102_444_800;
 
@@ -64,7 +64,7 @@ impl AutoFacade for Fake {
     }
     fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
         if self.fail_switch {
-            return Err(CswitchError::switch("switch exploded"));
+            return Err(CcswError::switch("switch exploded"));
         }
         self.switches.push(slot);
         let from = self.current.slot().map(|n| AccountRef {
@@ -139,7 +139,7 @@ impl World {
         let usage = NormalizedUsage {
             five_hour: Some(WindowUsage {
                 pct: five_hour,
-                resets_at: reset.map(cswitch::model::format_iso),
+                resets_at: reset.map(ccsw::model::format_iso),
             }),
             seven_day: Some(WindowUsage {
                 pct: seven_day,
@@ -233,7 +233,7 @@ fn exit_codes_follow_the_outcome() {
     assert_eq!(events[1]["event"], "all-exhausted");
     assert_eq!(
         events[1]["earliestResetAt"],
-        cswitch::model::format_iso(now + 900)
+        ccsw::model::format_iso(now + 900)
     );
 
     world.seed(2, 10.0, 10.0, None);

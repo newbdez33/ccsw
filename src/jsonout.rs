@@ -3,7 +3,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::errors::CswitchError;
+use crate::errors::CcswError;
 use crate::model::{
     AccountRecord, ActiveSlots, CurrentAccount, NormalizedUsage, SCHEMA_VERSION, SwitchOutcome,
     WindowUsage, format_iso,
@@ -240,7 +240,7 @@ pub fn switch_payload(outcome: &SwitchOutcome, models: Option<(&[String], &str)>
     payload
 }
 
-pub fn error_envelope(err: &CswitchError) -> Value {
+pub fn error_envelope(err: &CcswError) -> Value {
     json!({
         "schemaVersion": SCHEMA_VERSION,
         "error": {"type": err.type_name(), "message": err.to_string()},
@@ -501,7 +501,7 @@ mod tests {
         let value = switch_payload(&outcome, Some((&[], "cli")));
         assert!(value.get("models").is_none());
 
-        let envelope = error_envelope(&CswitchError::not_found("x"));
+        let envelope = error_envelope(&CcswError::not_found("x"));
         assert_eq!(
             envelope,
             json!({"schemaVersion": 2, "error": {"type": "AccountNotFoundError", "message": "No account found with identifier: x"}})

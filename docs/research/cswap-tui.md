@@ -1,4 +1,4 @@
-# cswap TUI — behavioral spec notes (input for the cswitch ratatui port)
+# cswap TUI — behavioral spec notes (input for the ccsw ratatui port)
 
 Sources read (2026-09-29):
 - Python reference: `/Users/jacky/projects/dev/claude-swap/src/claude_swap/tui/{__init__,app,dashboard,autoview,widgets,modals,data,theme}.py`, `tui/cswap.tcss`, `appearance.py`
@@ -539,7 +539,7 @@ Numeric constants: POLL_INTERVAL_S 3.0 · SNAPSHOT_AGE_NOTE_S 60 · FLASH_S 1.5 
 
 ## 11. Claude-specific items needing a Codex mapping
 
-| cswap (Claude) | where | cswitch (Codex) equivalent / decision needed |
+| cswap (Claude) | where | ccsw (Codex) equivalent / decision needed |
 |---|---|---|
 | Windows `five_hour` (5h) / `seven_day` (7d) with `pct`, `resets_at` ISO | rows, minis, candidates | `UsageInfo.primary` (5h) / `secondary` (weekly) with `used_percent`, `resets_at: i64` epoch, `window_minutes` (src/usage/mod.rs:37-40, 83-84). Labels could stay `5h`/`7d`, or derive from `window_minutes`. |
 | `spend` row (`$$`, `$used / $limit`) | card row 1 | Codex has `credits_balance` / `unlimited_credits` and `SpendControlLimit` (mod.rs:44-50); map to a credits row or drop. |
@@ -547,14 +547,14 @@ Numeric constants: POLL_INTERVAL_S 3.0 · SNAPSHOT_AGE_NOTE_S 60 · FLASH_S 1.5 
 | `(ahead of pace)` / `(ahead)` (weekly pace vs. elapsed week) | 7d + scoped rows | Applies to the weekly window only; needs `fetched_at` + `resets_at`. |
 | `display_tag` = org name or `personal` | headers, submenus | Codex: `plan_type` (plus/pro/team…) or workspace/org name. |
 | `kind: oauth \| api_key`; sentinel `api key` → `API key (no quota)` | sentinel branch, candidates | Codex API-key / custom provider profiles (src/provider.rs) have no rate-limit windows → same "no quota" treatment. |
-| Sentinels `token expired` (Claude Code refreshes it), `re-login needed` (…run: cswap add), `keychain unavailable`, `foreign credential` | sentinel branch | Map to cswitch `TerminalAuthError` / refresh-token failure states; wording must reference `cswitch login`, not `cswap add`; no macOS Keychain state (Codex stores `~/.codex/auth.json`). |
+| Sentinels `token expired` (Claude Code refreshes it), `re-login needed` (…run: cswap add), `keychain unavailable`, `foreign credential` | sentinel branch | Map to ccsw `TerminalAuthError` / refresh-token failure states; wording must reference `ccsw login`, not `cswap add`; no macOS Keychain state (Codex stores `~/.codex/auth.json`). |
 | Empty-state text "…from your current Claude Code login, or from a setup-token / API key." | AccountsPanel | Reword to Codex login / import flow. |
 | Add menu: `From current Claude Code login`, `From a setup-token / API key…`; token modal body `sk-ant-oat… / sk-ant-api…` | dashboard, modal | Codex: "From current Codex login (~/.codex/auth.json)", "Import auth.json…" or device login; no sk-ant prefixes. |
-| Confirm text "Back up the current Claude Code login…" and "Go live? claude-swap will switch…(Same behavior as running `cswap auto`…)" | modals | Rename to cswitch / `cswitch auto` equivalent. |
-| Slot **numbers** as primary identity (`{number:>2}`, `remove:{n}`, `Slot 3 is occupied`) | everywhere | cswitch profiles are keyed by **alias** (`Use { alias }`, `Rename`, `Delete`); decide whether to show an index column or alias-first rows. |
-| Engine text `Account-{n} ({email})`, `cswap --add-account --slot {n}` recovery hint, triggers proactive/at-limit/failover/consume-first | event log | Depends on cswitch's auto-switch engine naming and its "reset card" concept (`ResetCard`, `consume_reset_credit`). |
-| Switch strategies: `best` only in TUI (`b`) | Switch screen | cswitch "unified scoring" auto-select (`Use` with no alias) is the analogue of best pick. |
-| `disabled` flag ("held out of auto-rotation") | minis, submenu | Needs a cswitch profile field if not present. |
+| Confirm text "Back up the current Claude Code login…" and "Go live? claude-swap will switch…(Same behavior as running `cswap auto`…)" | modals | Rename to ccsw / `ccsw auto` equivalent. |
+| Slot **numbers** as primary identity (`{number:>2}`, `remove:{n}`, `Slot 3 is occupied`) | everywhere | ccsw profiles are keyed by **alias** (`Use { alias }`, `Rename`, `Delete`); decide whether to show an index column or alias-first rows. |
+| Engine text `Account-{n} ({email})`, `cswap --add-account --slot {n}` recovery hint, triggers proactive/at-limit/failover/consume-first | event log | Depends on ccsw's auto-switch engine naming and its "reset card" concept (`ResetCard`, `consume_reset_credit`). |
+| Switch strategies: `best` only in TUI (`b`) | Switch screen | ccsw "unified scoring" auto-select (`Use` with no alias) is the analogue of best pick. |
+| `disabled` flag ("held out of auto-rotation") | minis, submenu | Needs a ccsw profile field if not present. |
 | macOS ~30 s Keychain latency rationale, `~/.claude.json` active detection | comments only | Not applicable; Codex switch = rewrite auth.json + restart app-server daemon (see recent commit 7e57076). |
 | `printer.force_color()` + ANSI capture of CLI output into OutputModal | actions | Rust: return structured results/log lines from commands; render in the modal without ANSI round-tripping (deliberate departure). |
 | OSC 11 terminal-background probe before driver start, `ui.theme` auto | appearance.py | ratatui: probe before entering raw mode (same constraints: skip in tmux/screen, TERM=dumb, non-tty; 1 s cap; drain stdin after). |

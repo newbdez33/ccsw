@@ -11,7 +11,7 @@ pub mod usage_store;
 use std::fs;
 use std::path::Path;
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil::{FileLock, io_error};
 use crate::paths::Paths;
 
@@ -64,12 +64,12 @@ impl Store {
 
 /// `mkdir -p` plus `chmod 0700` on the leaf.
 pub(crate) fn ensure_private_dir(dir: &Path) -> Result<()> {
-    fs::create_dir_all(dir).map_err(|err| io_error(CswitchError::Config, dir, &err))?;
+    fs::create_dir_all(dir).map_err(|err| io_error(CcswError::Config, dir, &err))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-            .map_err(|err| io_error(CswitchError::Config, dir, &err))?;
+            .map_err(|err| io_error(CcswError::Config, dir, &err))?;
     }
     Ok(())
 }

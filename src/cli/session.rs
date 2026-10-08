@@ -1,4 +1,4 @@
-//! `cswitch run`, `env`, `map`, `unmap` — each parses its own arguments
+//! `ccsw run`, `env`, `map`, `unmap` — each parses its own arguments
 //! (contract §9). `argv` excludes the program name and the verb.
 
 use std::path::PathBuf;
@@ -12,21 +12,21 @@ use crate::session::{self, EnvPlan, EnvRequest, HostEnv, ShareOptions, Shell};
 use crate::store::{Store, roster};
 
 const RUN_EPILOG: &str = "Examples:
-  cswitch run 2
-  cswitch run user@example.com
-  cswitch run 2 --no-share
-  cswitch run 2 --share-history
-  cswitch run 2 -- --resume";
+  ccsw run 2
+  ccsw run user@example.com
+  ccsw run 2 --no-share
+  ccsw run 2 --share-history
+  ccsw run 2 -- --resume";
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "cswitch run",
+    name = "ccsw run",
     about = "[EXPERIMENTAL] Launch Codex as a stored account in this terminal only (the default login and other terminals are unaffected).",
     after_help = RUN_EPILOG,
     disable_version_flag = true
 )]
 struct RunArgs {
-    /// Account to run (number or email). Omit to use the current directory's mapping (see `cswitch map`).
+    /// Account to run (number or email). Omit to use the current directory's mapping (see `ccsw map`).
     account: Option<String>,
     /// Don't share AGENTS.md/prompts/skills from the Codex home into the session profile (and remove previously shared items)
     #[arg(long)]
@@ -43,8 +43,8 @@ struct RunArgs {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "cswitch env",
-    about = "Print shell lines that pin this shell to a stored account's session profile (eval \"$(cswitch env 2)\").",
+    name = "ccsw env",
+    about = "Print shell lines that pin this shell to a stored account's session profile (eval \"$(ccsw env 2)\").",
     disable_version_flag = true
 )]
 struct EnvArgs {
@@ -68,14 +68,14 @@ struct EnvArgs {
 }
 
 const MAP_EPILOG: &str = "Examples:
-  cswitch map 2 ~/work/client-app
-  cswitch map user@example.com          # map the current directory
-  cswitch map                           # list all mappings";
+  ccsw map 2 ~/work/client-app
+  ccsw map user@example.com          # map the current directory
+  ccsw map                           # list all mappings";
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "cswitch map",
-    about = "Map a stored account to a directory so `cswitch run` (with no account) auto-launches it there. With no arguments, lists all mappings.",
+    name = "ccsw map",
+    about = "Map a stored account to a directory so `ccsw run` (with no account) auto-launches it there. With no arguments, lists all mappings.",
     after_help = MAP_EPILOG,
     disable_version_flag = true
 )]
@@ -91,7 +91,7 @@ struct MapArgs {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "cswitch unmap",
+    name = "ccsw unmap",
     about = "Remove a directory → account mapping (default: current directory).",
     disable_version_flag = true
 )]
@@ -136,18 +136,18 @@ fn open_store(check_credential_store: bool) -> Result<(Store, Roster)> {
 
 fn cwd() -> Result<PathBuf> {
     std::env::current_dir().map_err(|err| {
-        crate::errors::CswitchError::session(format!("could not read the current directory: {err}"))
+        crate::errors::CcswError::session(format!("could not read the current directory: {err}"))
     })
 }
 
-fn report(err: &crate::errors::CswitchError) -> i32 {
+fn report(err: &crate::errors::CcswError) -> i32 {
     eprintln!("Error: {err}");
     1
 }
 
 pub fn run_cmd(argv: Vec<String>) -> i32 {
     let (head, tail) = split_tail(argv);
-    let args: RunArgs = match parse("cswitch run", head) {
+    let args: RunArgs = match parse("ccsw run", head) {
         Ok(args) => args,
         Err(code) => return code,
     };
@@ -181,12 +181,12 @@ pub fn run_cmd(argv: Vec<String>) -> i32 {
 }
 
 pub fn env_cmd(argv: Vec<String>) -> i32 {
-    let args: EnvArgs = match parse("cswitch env", argv) {
+    let args: EnvArgs = match parse("ccsw env", argv) {
         Ok(args) => args,
         Err(code) => return code,
     };
     if args.unset && args.account.is_some() {
-        eprintln!("cswitch env: error: --unset does not take a NUM|EMAIL|ALIAS argument");
+        eprintln!("ccsw env: error: --unset does not take a NUM|EMAIL|ALIAS argument");
         return 2;
     }
     if let Some(code) = root_guard() {
@@ -242,7 +242,7 @@ pub fn env_cmd(argv: Vec<String>) -> i32 {
 }
 
 pub fn map_cmd(argv: Vec<String>) -> i32 {
-    let args: MapArgs = match parse("cswitch map", argv) {
+    let args: MapArgs = match parse("ccsw map", argv) {
         Ok(args) => args,
         Err(code) => return code,
     };
@@ -272,7 +272,7 @@ pub fn map_cmd(argv: Vec<String>) -> i32 {
 }
 
 pub fn unmap_cmd(argv: Vec<String>) -> i32 {
-    let args: UnmapArgs = match parse("cswitch unmap", argv) {
+    let args: UnmapArgs = match parse("ccsw unmap", argv) {
         Ok(args) => args,
         Err(code) => return code,
     };
@@ -315,45 +315,45 @@ mod tests {
     #[test]
     fn run_flags_parse_with_last_history_flag_winning() {
         let args: RunArgs = parse(
-            "cswitch run",
+            "ccsw run",
             argv(&["2", "--share-history", "--no-share-history"]),
         )
         .unwrap();
         assert_eq!(args.account.as_deref(), Some("2"));
         assert!(!args.share_history);
         let args: RunArgs = parse(
-            "cswitch run",
+            "ccsw run",
             argv(&["--no-share-history", "--share-history", "--no-share"]),
         )
         .unwrap();
         assert!(args.share_history && args.no_share);
         assert_eq!(
-            parse::<RunArgs>("cswitch run", argv(&["--bogus"])).unwrap_err(),
+            parse::<RunArgs>("ccsw run", argv(&["--bogus"])).unwrap_err(),
             2
         );
         assert_eq!(
-            parse::<RunArgs>("cswitch run", argv(&["--help"])).unwrap_err(),
+            parse::<RunArgs>("ccsw run", argv(&["--help"])).unwrap_err(),
             0
         );
     }
 
     #[test]
     fn env_and_map_flags_parse() {
-        let args: EnvArgs = parse("cswitch env", argv(&["--shell", "fish", "--unset"])).unwrap();
+        let args: EnvArgs = parse("ccsw env", argv(&["--shell", "fish", "--unset"])).unwrap();
         assert_eq!(args.shell, "fish");
         assert!(args.unset);
         assert_eq!(
-            parse::<EnvArgs>("cswitch env", argv(&["--shell", "zsh"])).unwrap_err(),
+            parse::<EnvArgs>("ccsw env", argv(&["--shell", "zsh"])).unwrap_err(),
             2
         );
         assert_eq!(env_cmd(argv(&["--unset", "2"])), 2);
-        let args: MapArgs = parse("cswitch map", argv(&["dev", "/tmp/x"])).unwrap();
+        let args: MapArgs = parse("ccsw map", argv(&["dev", "/tmp/x"])).unwrap();
         assert_eq!(args.account.as_deref(), Some("dev"));
         assert_eq!(args.path.as_deref(), Some(Path::new("/tmp/x")));
-        let args: UnmapArgs = parse("cswitch unmap", argv(&[])).unwrap();
+        let args: UnmapArgs = parse("ccsw unmap", argv(&[])).unwrap();
         assert!(args.path.is_none());
         assert_eq!(
-            parse::<UnmapArgs>("cswitch unmap", argv(&["a", "b"])).unwrap_err(),
+            parse::<UnmapArgs>("ccsw unmap", argv(&["a", "b"])).unwrap_err(),
             2
         );
     }

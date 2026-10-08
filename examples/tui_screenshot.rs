@@ -10,13 +10,13 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 
-use cswitch::cli::tui::TuiStart;
-use cswitch::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso};
-use cswitch::provider::Provider;
-use cswitch::store::usage_store::UsageEntry;
-use cswitch::tui::app::App;
-use cswitch::tui::snapshot::{AccountSnapshot, AccountsSnapshot};
-use cswitch::tui::theme::{DARK, ThemeName};
+use ccsw::cli::tui::TuiStart;
+use ccsw::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso};
+use ccsw::provider::Provider;
+use ccsw::store::usage_store::UsageEntry;
+use ccsw::tui::app::App;
+use ccsw::tui::snapshot::{AccountSnapshot, AccountsSnapshot};
+use ccsw::tui::theme::{DARK, ThemeName};
 
 const NOW: f64 = 1_790_000_000.0;
 const COLS: u16 = 96;

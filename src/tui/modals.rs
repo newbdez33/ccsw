@@ -76,7 +76,7 @@ impl ConfirmModal {
     pub fn go_live() -> Self {
         Self::new(
             "Go live",
-            "Go live? cswitch will switch your active account automatically when the threshold is reached.\n\n(Same behavior as running `cswitch auto` in a terminal.)",
+            "Go live? ccsw will switch your active account automatically when the threshold is reached.\n\n(Same behavior as running `ccsw auto` in a terminal.)",
             "Go live",
             PendingAction::GoLive,
         )
@@ -639,8 +639,8 @@ mod tests {
             );
         }
         let live = ConfirmModal::go_live();
-        assert!(live.message.starts_with("Go live? cswitch will switch"));
-        assert!(live.message.contains("`cswitch auto`"));
+        assert!(live.message.starts_with("Go live? ccsw will switch"));
+        assert!(live.message.contains("`ccsw auto`"));
         assert!(
             ConfirmModal::add_current()
                 .message

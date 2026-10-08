@@ -12,14 +12,14 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 
-use cswitch::codex::auth::AuthJson;
-use cswitch::model::{AccountKind, AccountRecord, Roster};
-use cswitch::paths::Paths;
-use cswitch::session::{
+use ccsw::codex::auth::AuthJson;
+use ccsw::model::{AccountKind, AccountRecord, Roster};
+use ccsw::paths::Paths;
+use ccsw::session::{
     self, CODEX_MISSING, EnvPlan, EnvRequest, HostEnv, MANIFEST_NAME, MappedAccount, RunTarget,
     ShareOptions, Shell,
 };
-use cswitch::store::{MappingStore, Store, credentials, roster};
+use ccsw::store::{MappingStore, Store, credentials, roster};
 
 const FAR: i64 = 4_102_444_800;
 
@@ -52,9 +52,9 @@ if [ "$1" = "--help" ]; then
   echo "  --no-daemon  Run in process"
   exit 0
 fi
-: > "$CSWITCH_TEST_RECORD"
-for arg in "$@"; do printf '%s\n' "$arg" >> "$CSWITCH_TEST_RECORD"; done
-printf 'HOME=%s\n' "${CODEX_HOME-unset}" >> "$CSWITCH_TEST_RECORD"
+: > "$CCSW_TEST_RECORD"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$CCSW_TEST_RECORD"; done
+printf 'HOME=%s\n' "${CODEX_HOME-unset}" >> "$CCSW_TEST_RECORD"
 exit 7
 "#;
 
@@ -144,7 +144,7 @@ impl World {
         ));
         let status = launch
             .command
-            .env("CSWITCH_TEST_RECORD", &record)
+            .env("CCSW_TEST_RECORD", &record)
             .status()
             .unwrap();
         let text = fs::read_to_string(&record).unwrap();
@@ -534,7 +534,7 @@ fn missing_codex_and_missing_credentials_are_session_errors() {
     assert_eq!(err.type_name(), "SessionError");
     assert_eq!(
         err.to_string(),
-        "Account-2 has no stored credentials. Re-add with: cswitch add --slot 2"
+        "Account-2 has no stored credentials. Re-add with: ccsw add --slot 2"
     );
     assert!(
         session::plan_launch(
@@ -733,7 +733,7 @@ fn env_prints_eval_lines_and_notes() {
     );
     assert!(
         err.to_string()
-            .ends_with("or clear a pinned profile with cswitch env --unset.")
+            .ends_with("or clear a pinned profile with ccsw env --unset.")
     );
 
     // The active login with no preset: nothing exported.
@@ -793,7 +793,7 @@ fn map_unmap_and_run_target_resolution() {
     let lines = session::map(&world.store, &world.roster, None, None, &cwd).unwrap();
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains("No directory mappings yet."));
-    assert!(lines[1].contains("Map one with: cswitch map <NUM|EMAIL> [PATH]"));
+    assert!(lines[1].contains("Map one with: ccsw map <NUM|EMAIL> [PATH]"));
 
     let lines = session::map(&world.store, &world.roster, Some("2"), Some(&work), &cwd).unwrap();
     assert_eq!(lines.len(), 1);

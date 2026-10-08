@@ -865,7 +865,7 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
         .enable_all()
         .build()
         .map_err(|err| {
-            crate::errors::CswitchError::config(format!("could not start async runtime: {err}"))
+            crate::errors::CcswError::config(format!("could not start async runtime: {err}"))
         })
 }
 
@@ -1416,14 +1416,14 @@ mod tests {
             // SAFETY: set once, before any test in this module reads the
             // overrides; the process-wide OnceLock serializes the initialization.
             unsafe {
-                std::env::set_var("CSWITCH_USAGE_URL", format!("http://{addr}/usage"));
-                std::env::set_var("CSWITCH_TOKEN_URL", format!("http://{addr}/token"));
+                std::env::set_var("CCSW_USAGE_URL", format!("http://{addr}/usage"));
+                std::env::set_var("CCSW_TOKEN_URL", format!("http://{addr}/token"));
                 std::env::set_var(
-                    "CSWITCH_CLAUDE_USAGE_URL",
+                    "CCSW_CLAUDE_USAGE_URL",
                     format!("http://{addr}/claude/usage"),
                 );
                 std::env::set_var(
-                    "CSWITCH_CLAUDE_TOKEN_URL",
+                    "CCSW_CLAUDE_TOKEN_URL",
                     format!("http://{addr}/claude/token"),
                 );
             }

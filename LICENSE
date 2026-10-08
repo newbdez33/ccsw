@@ -22,7 +22,7 @@ SOFTWARE.
 
 ---
 
-cswitch mirrors the command-line interface, dashboard and on-disk conventions of
+ccsw mirrors the command-line interface, dashboard and on-disk conventions of
 claude-swap (https://github.com/realiti4/claude-swap, MIT, Onur Cetinkol) and
 ports the Codex credential, usage and app-server mechanics of codex-switch
 (https://github.com/xjoker/codex-switch, MIT). Both are used under their MIT

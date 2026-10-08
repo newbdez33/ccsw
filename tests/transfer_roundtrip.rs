@@ -1,4 +1,4 @@
-//! Export / import through the library functions in `cswitch::transfer`, against
+//! Export / import through the library functions in `ccsw::transfer`, against
 //! temp stores (no binary needed).
 
 use std::collections::BTreeMap;
@@ -9,13 +9,13 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 
-use cswitch::codex::auth::AuthJson;
-use cswitch::errors::CswitchError;
-use cswitch::model::{AccountKind, AccountRecord, Identity, Roster, now_unix, parse_iso};
-use cswitch::paths::Paths;
-use cswitch::store::usage_store::{FetchRecord, UsageStore};
-use cswitch::store::{Store, credentials, roster};
-use cswitch::transfer::{
+use ccsw::codex::auth::AuthJson;
+use ccsw::errors::CcswError;
+use ccsw::model::{AccountKind, AccountRecord, Identity, Roster, now_unix, parse_iso};
+use ccsw::paths::Paths;
+use ccsw::store::usage_store::{FetchRecord, UsageStore};
+use ccsw::store::{Store, credentials, roster};
+use ccsw::transfer::{
     ExportTarget, ImportReport, ImportSource, export_accounts, export_cmd, import_accounts,
     import_cmd, platform_name,
 };
@@ -166,6 +166,7 @@ fn entry(number: u32, email: &str, account_id: &str, creds: Value) -> Value {
 }
 
 fn envelope(accounts: Vec<Value>, active: Option<u32>) -> Value {
+    // Keep the old metadata name to verify imports from before the rename.
     json!({
         "version": 1,
         "exportedAt": "2026-09-29T00:00:00Z",
@@ -178,7 +179,7 @@ fn envelope(accounts: Vec<Value>, active: Option<u32>) -> Value {
     })
 }
 
-fn import_value(fx: &Fx, value: &Value, force: bool) -> Result<ImportReport, CswitchError> {
+fn import_value(fx: &Fx, value: &Value, force: bool) -> Result<ImportReport, CcswError> {
     let path = fx.root.join("in.cswitch");
     fs::write(&path, value.to_string()).unwrap();
     import_accounts(&fx.paths, ImportSource::File(path), force)
@@ -221,7 +222,7 @@ fn export_bulk_writes_the_envelope_file() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&out_dir, fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let path = out_dir.join("backup.cswitch");
+    let path = out_dir.join("backup.ccsw");
 
     let report = export_accounts(&fx.paths, ExportTarget::File(path.clone()), None, false).unwrap();
     assert_eq!(report.written, 3);
@@ -243,8 +244,8 @@ fn export_bulk_writes_the_envelope_file() {
     assert!(value["exportedAt"].as_str().unwrap().ends_with('Z'));
     assert_eq!(value["exportedFrom"], platform_name());
     assert!(["macos", "linux", "wsl", "windows", "unknown"].contains(&platform_name()));
-    assert_eq!(value["cswitchVersion"], cswitch::VERSION);
-    assert_eq!(value["swapVersion"], cswitch::VERSION);
+    assert_eq!(value["ccswVersion"], ccsw::VERSION);
+    assert_eq!(value["swapVersion"], ccsw::VERSION);
     assert_eq!(value["encrypted"], false);
     assert_eq!(value["activeAccountNumber"], 3);
 
@@ -305,7 +306,7 @@ fn export_active_uses_the_snapshot_unless_the_live_login_matches() {
     let export = |fx: &Fx| {
         export_accounts(
             &fx.paths,
-            ExportTarget::File(fx.root.join("b.cswitch")),
+            ExportTarget::File(fx.root.join("b.ccsw")),
             None,
             false,
         )
@@ -347,14 +348,14 @@ fn export_skips_slots_without_stored_credentials() {
     ro.set_active(Some(2));
     roster::write(&fx.paths, &ro).unwrap();
 
-    let path = fx.root.join("b.cswitch");
+    let path = fx.root.join("b.ccsw");
     let report = export_accounts(&fx.paths, ExportTarget::File(path.clone()), None, false).unwrap();
     assert_eq!(report.written, 1);
     assert_eq!(report.skipped, vec![2]);
     assert_eq!(
         report.notices,
         vec![
-            "Skipping Account-2 (b@example.com): no stored credentials — re-add with: cswitch add --slot 2".to_string(),
+            "Skipping Account-2 (b@example.com): no stored credentials — re-add with: ccsw add --slot 2".to_string(),
             format!("Exported 1 account(s) to {}", path.display()),
         ]
     );
@@ -371,13 +372,13 @@ fn export_with_every_slot_skipped_is_a_transfer_error() {
     let fx = fixture();
     let mut ro = Roster::empty();
     add(&fx, &mut ro, 1, record("a@example.com", "acct-a"), None);
-    let path = fx.root.join("b.cswitch");
+    let path = fx.root.join("b.ccsw");
     let err =
         export_accounts(&fx.paths, ExportTarget::File(path.clone()), None, false).unwrap_err();
     assert_eq!(err.type_name(), "TransferError");
     assert_eq!(
         err.to_string(),
-        "no exportable accounts — all managed slots are missing stored credentials. Re-add with: cswitch add --slot <number>"
+        "no exportable accounts — all managed slots are missing stored credentials. Re-add with: ccsw add --slot <number>"
     );
     assert!(!path.exists());
 }
@@ -385,7 +386,7 @@ fn export_with_every_slot_skipped_is_a_transfer_error() {
 #[test]
 fn export_without_accounts_is_a_transfer_error() {
     let fx = fixture();
-    let path = fx.root.join("b.cswitch");
+    let path = fx.root.join("b.ccsw");
     for prepared in [false, true] {
         if prepared {
             roster::write(&fx.paths, &Roster::empty()).unwrap();
@@ -395,7 +396,7 @@ fn export_without_accounts_is_a_transfer_error() {
         assert_eq!(err.type_name(), "TransferError");
         assert_eq!(
             err.to_string(),
-            "no accounts to export — run cswitch add first"
+            "no accounts to export — run ccsw add first"
         );
     }
     assert!(!path.exists());
@@ -405,7 +406,7 @@ fn export_without_accounts_is_a_transfer_error() {
 fn export_one_account_by_number_alias_or_email() {
     let fx = fixture();
     seed_three(&fx);
-    let path = fx.root.join("one.cswitch");
+    let path = fx.root.join("one.ccsw");
     for id in ["1", "dev", "DEV", "a@example.com"] {
         // `--full` is accepted and changes nothing.
         let report =
@@ -451,7 +452,7 @@ fn export_one_account_without_credentials_is_a_hard_error() {
     add(&fx, &mut ro, 2, record("b@example.com", "acct-b"), None);
     let err = export_accounts(
         &fx.paths,
-        ExportTarget::File(fx.root.join("b.cswitch")),
+        ExportTarget::File(fx.root.join("b.ccsw")),
         Some("2"),
         false,
     )
@@ -478,7 +479,7 @@ fn export_to_stdout_prints_no_summary() {
 fn import_round_trips_an_export_into_an_empty_store() {
     let source = fixture();
     seed_three(&source);
-    let path = source.root.join("backup.cswitch");
+    let path = source.root.join("backup.ccsw");
     export_accounts(&source.paths, ExportTarget::File(path.clone()), None, false).unwrap();
 
     let target = fixture();
@@ -793,7 +794,7 @@ fn import_validates_the_envelope_before_writing_anything() {
         ),
         (
             json!({"version": 1, "encrypted": true, "accounts": [1]}),
-            "encrypted exports are not supported in this version — decrypt before piping (e.g. gpg -d backup.gpg | cswitch import -)",
+            "encrypted exports are not supported in this version — decrypt before piping (e.g. gpg -d backup.gpg | ccsw import -)",
         ),
         (
             json!({"version": 1, "accounts": []}),
@@ -911,14 +912,14 @@ fn import_validates_the_envelope_before_writing_anything() {
         "a rejected import writes nothing"
     );
 
-    let missing = fx.root.join("missing.cswitch");
+    let missing = fx.root.join("missing.ccsw");
     let err = import_accounts(&fx.paths, ImportSource::File(missing.clone()), false).unwrap_err();
     assert_eq!(err.type_name(), "TransferError");
     assert_eq!(
         err.to_string(),
         format!("import file not found: {}", missing.display())
     );
-    let bad = fx.root.join("bad.cswitch");
+    let bad = fx.root.join("bad.ccsw");
     fs::write(&bad, "{nope").unwrap();
     let err = import_accounts(&fx.paths, ImportSource::File(bad), false).unwrap_err();
     assert!(
@@ -1003,7 +1004,7 @@ fn import_notes_when_the_live_login_slot_was_written() {
         vec![
             "Imported a@example.com → slot 4",
             "Done: 1 imported, 0 overwritten, 0 skipped",
-            "Note: a@example.com is your current live login — activate the imported credentials with: cswitch switch 4 --force",
+            "Note: a@example.com is your current live login — activate the imported credentials with: ccsw switch 4 --force",
         ]
     );
     // A second import skips the slot: nothing written, no note.
@@ -1021,7 +1022,7 @@ fn import_notes_when_the_live_login_slot_was_written() {
     let report = import_value(&fx, &envelope(vec![e], None), false).unwrap();
     assert_eq!(
         report.notices.last().unwrap(),
-        "Note: api-key-1@token.local is your current live login — activate the imported credentials with: cswitch switch 1 --force"
+        "Note: api-key-1@token.local is your current live login — activate the imported credentials with: ccsw switch 1 --force"
     );
     assert!(roster_of(&fx).record(1).unwrap().is_api_key());
 }
@@ -1122,7 +1123,7 @@ fn import_seeds_the_active_slot_only_when_unset() {
 #[test]
 fn cmd_wrappers_map_results_to_exit_codes() {
     let fx = fixture();
-    let path = fx.root.join("x.cswitch");
+    let path = fx.root.join("x.ccsw");
     let path_str = path.to_str().unwrap();
     assert_eq!(
         export_cmd(&fx.paths, path_str, None, false),
@@ -1138,7 +1139,7 @@ fn cmd_wrappers_map_results_to_exit_codes() {
     let target = fixture();
     assert_eq!(import_cmd(&target.paths, path_str, false), 0);
     assert_eq!(roster_of(&target).sequence, vec![1, 2, 3]);
-    let missing = target.root.join("missing.cswitch");
+    let missing = target.root.join("missing.ccsw");
     assert_eq!(
         import_cmd(&target.paths, missing.to_str().unwrap(), false),
         1

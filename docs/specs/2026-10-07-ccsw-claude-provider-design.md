@@ -1,20 +1,20 @@
-# cswitch — Claude provider design
+# ccsw — Claude provider design
 
 Status: draft, 2026-10-07. Author: Jacky (with Claude). Amends
-`docs/specs/2026-09-29-cswitch-design.md` (the v0.1 design). Where this document is
+`docs/specs/2026-09-29-ccsw-design.md` (the v0.1 design). Where this document is
 silent, the v0.1 design and the research notes in `docs/research/` (cswap CLI contract,
 cswap TUI, cswap data model / auto-switch) are the contract; where they disagree with this
 document, this document wins.
 
 ## 1. Purpose
 
-`cswitch` becomes a multi-account switcher for **both** the OpenAI Codex CLI and Claude
+`ccsw` becomes a multi-account switcher for **both** the OpenAI Codex CLI and Claude
 Code. One roster, one dashboard, one set of commands. The Claude mechanics are ported
 from claude-swap (`cswap` 0.25.0, MIT, already attributed in `NOTICE`) into a `src/claude/`
 module tree that mirrors `src/codex/`; nothing shells out to the Python `cswap`.
 
 The user-facing rule that shapes everything else: **account numbers are one global space.**
-`cswitch switch 2` looks the slot up and acts on whichever provider the account belongs to.
+`ccsw switch 2` looks the slot up and acts on whichever provider the account belongs to.
 No command needs a provider prefix to name an account.
 
 ## 2. Scope
@@ -53,7 +53,7 @@ and `activeByProvider` carries both.
 
 ## 4. Claude mapping (cswap → `src/claude/`)
 
-| cswap (Python) | cswitch (`src/claude/`) |
+| cswap (Python) | ccsw (`src/claude/`) |
 |---|---|
 | config home `CLAUDE_CONFIG_DIR` else `~/.claude`; global config `<home>/.config.json` if it exists (legacy) else `(CLAUDE_CONFIG_DIR \|\| $HOME)/.claude.json`; credentials `<home>/.credentials.json` | `paths.rs`, same three rules; `..` components rejected as for `CODEX_HOME` |
 | live OAuth credential: Keychain service `Claude Code-credentials`, account `$USER` (else the OS user name, else `claude-code-user`); then `.credentials.json`; then the managed API key (Keychain service `Claude Code`, then `primaryApiKey` in the global config) | `credentials.rs::read_live()` in that order; a Keychain failure flips the process to the file backend for the rest of the run (sticky) and reports `keychain_unavailable` when nothing else covered it |
@@ -61,16 +61,16 @@ and `activeByProvider` carries both.
 | credential object `{"claudeAiOauth": {accessToken, refreshToken, expiresAt (ms), scopes, …}, …siblings}`; siblings such as `mcpOAuth` are machine-scoped and must survive a switch | the slot file stores the account's `claudeAiOauth` plus its `oauthAccount`; a switch replaces only `claudeAiOauth` inside the live object and keeps every other top-level key |
 | managed API key `sk-ant-api…` (`kind: api_key`); setup-token `sk-ant-oat…` wrapped as `{"claudeAiOauth": {"accessToken": …, "scopes": ["user:inference"]}}` | same wrapping; the slot file is `{"primaryApiKey": "sk-ant-api…", "oauthAccount": {…}}` for a managed key |
 | Claude Code locks (`claude_locks.py`): directory locks `<home>/.oauth_refresh.lock` then `<home>.lock` (`~/.claude.lock`), stale 60 s; `~/.claude.json.lock`, stale 10 s; touched every 3 s; 9 s wait budget per lock with 1–2 s jittered sleeps | `locks.rs`, identical protocol and constants; timeout → `LockError("Claude Code is holding <lock>; retry in a moment")`; no network while held |
-| refresh `POST https://platform.claude.com/v1/oauth/token`, JSON `{grant_type: "refresh_token", refresh_token, client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e"}`; response `access_token`, `expires_in`, optional `refresh_token`, `scope` | `oauth.rs`; `expiresAt = now_ms + expires_in·1000`, `scopes = scope.split(' ')`; expiring = `now_ms + 300 000 ≥ expiresAt`; override `CSWITCH_CLAUDE_TOKEN_URL` |
-| usage `GET https://api.anthropic.com/api/oauth/usage`, headers `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`, `User-Agent: claude-swap/1.0` | `usage.rs`; same headers, `User-Agent: cswitch/<version>`; override `CSWITCH_CLAUDE_USAGE_URL`; timeouts as the Codex client |
+| refresh `POST https://platform.claude.com/v1/oauth/token`, JSON `{grant_type: "refresh_token", refresh_token, client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e"}`; response `access_token`, `expires_in`, optional `refresh_token`, `scope` | `oauth.rs`; `expiresAt = now_ms + expires_in·1000`, `scopes = scope.split(' ')`; expiring = `now_ms + 300 000 ≥ expiresAt`; override `CCSW_CLAUDE_TOKEN_URL` |
+| usage `GET https://api.anthropic.com/api/oauth/usage`, headers `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`, `User-Agent: claude-swap/1.0` | `usage.rs`; same headers, `User-Agent: ccsw/<version>`; override `CCSW_CLAUDE_USAGE_URL`; timeouts as the Codex client |
 | windows `five_hour`, `seven_day`, `extra_usage` → `spend`, `limits[]` with `scope.model.display_name` → `scoped[]` | `NormalizedUsage` gains `spend: Option<Spend>`; `five_hour`/`seven_day`/`scoped` as today; `limited` false, `plan_type` and `reset_credits` absent |
 | restart follow-up: Keychain `Restart Claude Code to apply immediately — otherwise the session can take up to ~30 seconds to pick up the new account.`; file `New account is active on your next message — no restart needed.` | verbatim, chosen by the backend the live write landed on |
 | session profile `CLAUDE_CONFIG_DIR`, Keychain service `Claude Code-credentials-<sha256(dir)[:8]>` per profile | `session.rs` (phase 3, §10) |
 | env scrub `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR` | same list, `run` only |
 | `'claude' was not found on PATH. Install Claude Code first.` | same text |
-| sentinels `token expired — refresh deferred this pass; retries automatically`, `keychain unavailable — locked or in use; try again`, `re-login needed — refresh token dead; log in with Claude Code, then run: cswap add` | same text with `cswitch add`; `UsageSentinel::KeychainUnavailable` added, `usageStatus: keychain_unavailable` |
+| sentinels `token expired — refresh deferred this pass; retries automatically`, `keychain unavailable — locked or in use; try again`, `re-login needed — refresh token dead; log in with Claude Code, then run: cswap add` | same text with `ccsw add`; `UsageSentinel::KeychainUnavailable` added, `usageStatus: keychain_unavailable` |
 
-## 5. On-disk layout (`$CSWITCH_HOME`)
+## 5. On-disk layout (`$CCSW_HOME`)
 
 Unchanged files keep their v0.1 shape. Deltas:
 
@@ -121,21 +121,21 @@ emails (contain `@`) or aliases (the two words are rejected by alias validation 
 
 When a command that takes an optional identifier gets none and **both providers have
 accounts**, it needs the selector: `ConfigError("Both Codex and Claude accounts are managed —
-say which: cswitch <verb> codex | cswitch <verb> claude")`. When only one provider has
+say which: ccsw <verb> codex | ccsw <verb> claude")`. When only one provider has
 accounts the command behaves exactly as v0.1, so single-provider stores see no change.
 
 ### 6.2 Deltas per command
 
 | command | delta |
 |---|---|
-| `add [codex\|claude] [--slot N] [--alias NAME]` | Without a selector, reads both live logins. Each login that is **not** yet managed is added (so one run may add two accounts, each with its own `Added Account <n>: <email> [<tag>]` line). A login that is already managed is refreshed in place as in v0.1 and reported with `Updated credentials for Account <n> …`. When both live logins were already managed, those two lines are followed by `Both current logins were already managed: Account-2 (codex), Account-5 (claude) — nothing new was added.` (exit 0). No live login at all → `ConfigError("No active Codex or Claude login found. Log in first.")`; with a selector and no login for that provider → `ConfigError("No active Claude account found. Please log in first.")` (or `Codex`). `--slot` / `--alias` require exactly one login to be added; with two → `ValidationError("--slot/--alias need a single login; two new logins were found. Add one at a time: cswitch add codex …")`. A live Claude managed API key is captured like a Codex one (kind `api_key`, email `api-key-<slot>@token.local`). |
+| `add [codex\|claude] [--slot N] [--alias NAME]` | Without a selector, reads both live logins. Each login that is **not** yet managed is added (so one run may add two accounts, each with its own `Added Account <n>: <email> [<tag>]` line). A login that is already managed is refreshed in place as in v0.1 and reported with `Updated credentials for Account <n> …`. When both live logins were already managed, those two lines are followed by `Both current logins were already managed: Account-2 (codex), Account-5 (claude) — nothing new was added.` (exit 0). No live login at all → `ConfigError("No active Codex or Claude login found. Log in first.")`; with a selector and no login for that provider → `ConfigError("No active Claude account found. Please log in first.")` (or `Codex`). `--slot` / `--alias` require exactly one login to be added; with two → `ValidationError("--slot/--alias need a single login; two new logins were found. Add one at a time: ccsw add codex …")`. A live Claude managed API key is captured like a Codex one (kind `api_key`, email `api-key-<slot>@token.local`). |
 | `add-token [TOKEN\|-] [--email] [--slot]` | Kind by prefix: `sk-ant-api…` → Claude API key; `sk-ant-oat…` → Claude setup-token (OAuth object, no refresh token, never refreshed, sentinel-free); anything else not starting with `{` → OpenAI API key (v0.1). Emails default to `api-key-<n>@token.local` / `setup-token-<n>@token.local`. |
 | `switch [ID\|codex\|claude] [--strategy] [--model] [--force]` | `ID` resolves across the whole roster and the switch runs on the record's provider (§7). Rotation and `--strategy` operate within one provider: the selector, else the only provider with accounts, else the §6.1 error. `--model NAMES` is matched against the target provider's windows only. |
 | `list [codex\|claude]` | Human: when both providers have accounts the table is two blocks, `Codex accounts:` then `Claude accounts:`, each with the v0.1 row format and the global slot numbers; a single-provider store prints the v0.1 `Accounts:` block. Claude rows add `$$: $<used> / $<limit>` first when `spend` is present. The selector filters. |
 | `status [codex\|claude]` | One `Active account:` block per provider that has a live login (`Codex:` / `Claude:` prefixes when both exist). |
 | `remove` / `disable` / `enable` / `alias` / `move` / `swap` | Unchanged: they already act on slots. |
 | `run [ID\|codex\|claude] [-- …]` / `env ID` / `map ID DIR` / `unmap DIR [codex\|claude]` | Provider from the record. `run` executes `codex` or `claude` with `CODEX_HOME` or `CLAUDE_CONFIG_DIR` pinned; `env` prints the matching export. A bare `run` in a mapped directory with mappings for both providers needs the selector (§6.1 error). `unmap DIR` with two mappings removes both unless a selector is given. |
-| `auto [claude] …` | Runs the Claude Code engine (§9). `auto codex`, or `auto` on a roster with no Claude Code accounts, fails with `Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'cswitch add claude' first.` (exit 1). |
+| `auto [claude] …` | Runs the Claude Code engine (§9). `auto codex`, or `auto` on a roster with no Claude Code accounts, fails with `Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'ccsw add claude' first.` (exit 1). |
 | `config` | Unchanged keys. `autoswitch.model` is matched against the Claude accounts' window names (`Fable`, …); a name no account reports raises a one-shot `config-warning` event (§9). |
 | `export` / `import` | §11. |
 | `purge` | Also removes `backups/`. Never touches `$CODEX_HOME` or the Claude config home. |
@@ -197,7 +197,7 @@ A Codex switch is unchanged (v0.1 §7.2) and never touches Claude files, and vic
 - Refresh discipline: an **inactive** Claude account is refreshed when `expiresAt` is within
   the 5-minute buffer (and reactively on 401/403); the rotation is persisted into the slot
   file with compare-and-swap on the presented refresh token. The **active** Claude account
-  is never refreshed by cswitch — Claude Code owns it; a 401 on it yields the `token
+  is never refreshed by ccsw — Claude Code owns it; a 401 on it yields the `token
   expired` sentinel until Claude Code rotates the token. Terminal verdicts
   (`invalid_grant`, `invalid_client`, any 4xx except 429/408 that names the grant) →
   `relogin_required`, strike bound to the SHA-256 of the refresh token (v0.1 §8.3).
@@ -216,14 +216,14 @@ what the manual `switch` follow-up already says. Claude Code picks a switched lo
 inside the running session (next message on the file backend, ~30 s on the Keychain), so
 proactive switching is useful there and nowhere else. v0.1's Codex auto-switch is withdrawn.
 
-- `cswitch auto [claude] …` runs one engine over the Claude Code accounts: the active
+- `ccsw auto [claude] …` runs one engine over the Claude Code accounts: the active
   account is the live Claude login (`collect::live_login_for(Claude)`), the candidates are
   the switchable Claude slots, refresh and switch go through the phase-1 Claude paths.
   Settings, flags, exit codes, events, `no-switch` reasons, banner and signal handling are
   v0.1 §9.
 - `auto codex`, or `auto` on a roster without a Claude Code account, fails before any tick
   with `Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a
-  switched account without a restart. Add a Claude Code account with 'cswitch add claude'
+  switched account without a restart. Add a Claude Code account with 'ccsw add claude'
   first.` (exit 1).
 - The engine body is v0.1 §9 unchanged, with two Claude additions: a `keychain unavailable`
   active account is held like `token expired` (`no-switch active-idle`, up to 30 min, never
@@ -259,7 +259,7 @@ proactive switching is useful there and nowhere else. v0.1's Codex auto-switch i
 
 - Envelope `version: 2`; `accounts[]` gain `provider`; `credentials` is the slot-file object
   of §5 for either provider. Identity matching is `(provider, email, organizationUuid)`.
-- Import accepts: a v2 `.cswitch`; a v1 `.cswitch` (every account `codex`); a cswap
+- Import accepts: a v2 `.ccsw`; a v1 `.ccsw` (every account `codex`); a cswap
   `.cswap` export (`swapVersion` present, no `provider`) — every account `claude`, its
   `credentials` string parsed into the object and `config.oauthAccount` lifted into
   `oauthAccount`; a bare `sk-ant-api…` credential becomes `{"primaryApiKey": …}`.
@@ -280,7 +280,7 @@ The screens keep the v0.1 §12 layout, bars, keys, modals and refresh lanes. Del
   order; `enter` emits `SwitchTo(n)` unchanged. `b` (best) applies to the provider of the
   account under the cursor.
 - **Menu.** `Add account…` → `From current logins` (the §6.2 dual capture, confirm text
-  `Back up the current Codex and Claude Code logins into cswitch?`) and `From a token…`
+  `Back up the current Codex and Claude Code logins into ccsw?`) and `From a token…`
   (modal body: `OpenAI API key, or an Anthropic setup-token / API key (sk-ant-…)`). The
   Remove and Disable submenus list accounts under the same section headers (header rows are
   not selectable). Empty state: `Use the menu below: Add account — from your current Codex or
@@ -332,8 +332,8 @@ gains the Claude paths and honours `CLAUDE_CONFIG_DIR`.
   decisions, `--once` exit-code folding.
 - Integration tests follow the v0.1 pattern: a fake `claude` on `PATH` (records argv), the
   axum mock gains `/api/oauth/usage` and `/v1/oauth/token` in Anthropic shapes
-  (`CSWITCH_CLAUDE_USAGE_URL`, `CSWITCH_CLAUDE_TOKEN_URL`), temp `CLAUDE_CONFIG_DIR` (which
-  also relocates `.claude.json`), and `CSWITCH_KEYCHAIN=off` to force the file backend so the
+  (`CCSW_CLAUDE_USAGE_URL`, `CCSW_CLAUDE_TOKEN_URL`), temp `CLAUDE_CONFIG_DIR` (which
+  also relocates `.claude.json`), and `CCSW_KEYCHAIN=off` to force the file backend so the
   suite is identical on macOS, Linux and Windows CI. Covered: `add` with both / one / no
   live logins, `switch` across providers with the lock directories present and stale,
   fold-back freshness, `list --json` v2 shapes, `auto --once` on a mixed roster (the Claude engine switches Claude accounts; `auth.json` is untouched), v1 store and
@@ -360,13 +360,13 @@ Each phase ships green on the quality gate and is usable on its own.
 
 1. This work starts from the `add-account-browser-login` branch once it is merged (it
    touches the same TUI files and carries the v0.2.0 bump).
-2. Claude backups and slot credentials are plain 0600 files under `~/.cswitch`, not Keychain
-   items (cswap keeps macOS backups in the Keychain; cswitch stays file-based like the Codex
+2. Claude backups and slot credentials are plain 0600 files under `~/.ccsw`, not Keychain
+   items (cswap keeps macOS backups in the Keychain; ccsw stays file-based like the Codex
    side).
 3. A live Claude managed API key is captured by `add` (cswap refuses it).
-4. The active Claude account is never refreshed by cswitch.
+4. The active Claude account is never refreshed by ccsw.
 5. `--json` moves to `schemaVersion: 2`; `status.active` changes shape.
-6. The usage `User-Agent` is `cswitch/<version>`; if the endpoint's non-first-party budget
+6. The usage `User-Agent` is `ccsw/<version>`; if the endpoint's non-first-party budget
    proves tighter under that string than under cswap's, the string is the only knob to turn.
 7. Claude accounts show `organizationName` or `personal` as their tag; no plan label.
 8. The v1 omissions of §2 stand.

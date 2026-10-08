@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use fs4::{FileExt, TryLockError};
 use serde_json::Value;
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 
 /// Write `contents` to `path` atomically: temp file in the same directory, fsync,
 /// rename. The file becomes 0600; with `private_parent` the directory becomes 0700.
@@ -65,7 +65,7 @@ pub fn write_json_private(path: &Path, value: &Value) -> io::Result<()> {
 }
 
 /// Map an I/O failure on `path` to a domain error with the path in the message.
-pub fn io_error(kind: fn(String) -> CswitchError, path: &Path, err: &io::Error) -> CswitchError {
+pub fn io_error(kind: fn(String) -> CcswError, path: &Path, err: &io::Error) -> CcswError {
     kind(format!("{}: {err}", path.display()))
 }
 
@@ -82,7 +82,7 @@ impl FileLock {
 
     pub fn acquire(path: &Path, timeout: Duration) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|err| io_error(CswitchError::Lock, parent, &err))?;
+            fs::create_dir_all(parent).map_err(|err| io_error(CcswError::Lock, parent, &err))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -95,18 +95,18 @@ impl FileLock {
             .create(true)
             .truncate(false)
             .open(path)
-            .map_err(|err| io_error(CswitchError::Lock, path, &err))?;
+            .map_err(|err| io_error(CcswError::Lock, path, &err))?;
         let started = Instant::now();
         loop {
             match <File as FileExt>::try_lock(&file) {
                 Ok(()) => break,
                 Err(TryLockError::WouldBlock) => {}
                 Err(TryLockError::Error(err)) => {
-                    return Err(io_error(CswitchError::Lock, path, &err));
+                    return Err(io_error(CcswError::Lock, path, &err));
                 }
             }
             if started.elapsed() >= timeout {
-                return Err(CswitchError::lock(
+                return Err(CcswError::lock(
                     "Failed to acquire lock - another instance may be running",
                 ));
             }

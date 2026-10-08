@@ -1,35 +1,47 @@
 # Changelog
 
-All notable changes to `cswitch` are recorded here. The format follows
+All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## Unreleased
+
+### Changed
+
+- Use `ccsw` as the project, crate, binary, and release archive name.
+- Use `~/.ccsw` for the store, `ccsw.log` for logs, and `.ccsw-shared.json` for
+  session sharing manifests. Existing installations require a manual move.
+- Use the `CCSW_*` prefix for environment variables.
+- Use `.ccsw` for export file examples and `ccswVersion` in export metadata.
+  Existing export files can still be imported.
+- Move the repository to `https://github.com/newbdez33/ccsw`.
 
 ## v0.3.0 — 2026-10-08
 
 ### Added
 
 - Claude Code accounts share the roster and the global slot numbers with Codex accounts.
-  `cswitch add` captures the current Codex and Claude Code logins; `cswitch add claude`
-  and `cswitch add codex` capture one.
+  `ccsw add` captures the current Codex and Claude Code logins; `ccsw add claude`
+  and `ccsw add codex` capture one.
 - `add-token` recognises Anthropic setup-tokens (`sk-ant-oat…`) and API keys
   (`sk-ant-api…`).
-- `cswitch switch <slot>` works across providers; `cswitch switch claude` and
-  `cswitch switch codex` rotate within one provider.
+- `ccsw switch <slot>` works across providers; `ccsw switch claude` and
+  `ccsw switch codex` rotate within one provider.
 - `list` prints a Codex block and a Claude block, and `status` reports the active
   account of each provider.
 - The dashboard, switch and watch screens show a `codex` section and a `claude` section,
   and Claude cards add a `$$` extra-usage spend row.
 - The outgoing Claude login is backed up under `backups/claude/` before a switch.
-- `CSWITCH_KEYCHAIN=off` limits Claude credential access to the file backend.
+- `CCSW_KEYCHAIN=off` limits Claude credential access to the file backend.
 
 ### Changed
 
 - `--json` output is `schemaVersion: 2`: rows and switch references carry `provider`,
   and `active` is a per-provider map on `list` and `status`.
 - `codex` and `claude` are reserved alias names. An existing alias named `codex` or
-  `claude` can no longer be reached with `cswitch switch <alias>`, because those words
+  `claude` can no longer be reached with `ccsw switch <alias>`, because those words
   now select a provider; switch to that account by its slot number or email instead.
-- A bare `cswitch add` captures the Claude Code login as well as the Codex one. Once the
-  store holds accounts of both providers, a bare `cswitch switch` needs a `codex` or
+- A bare `ccsw add` captures the Claude Code login as well as the Codex one. Once the
+  store holds accounts of both providers, a bare `ccsw switch` needs a `codex` or
   `claude` selector.
 - `sequence.json` records carry `provider`, and the roster records `activeByProvider`.
 
@@ -89,7 +101,7 @@ macOS (Apple silicon and Intel), Linux (x86_64) and Windows (x86_64).
   `account-quarantined`, `sleep`, `error`), `--threshold`, `--interval`, `--cooldown`,
   `--model`, `--include-api-key-accounts`, `--strategy best|consume-first`,
   `--dry-run`, `--debug`.
-- Settings in `settings.json` via `cswitch config list|get|set|unset|path`.
+- Settings in `settings.json` via `ccsw config list|get|set|unset|path`.
 - State (`lastSwitchAt/To/From`, quarantine) in `autoswitch_state.json`.
 
 ### Session mode
@@ -101,12 +113,12 @@ macOS (Apple silicon and Intel), Linux (x86_64) and Windows (x86_64).
 
 ### Export / import
 
-- `.cswitch` envelope (`export <path>|-`, `--account`, `--full` accepted), `import`
+- `.ccsw` envelope (`export <path>|-`, `--account`, `--full` accepted), `import`
   with identity matching, `--force`, dead-token auto-replace and the `Done:` summary.
 
 ### TUI
 
-- `cswitch` / `cswitch tui` / `cswitch watch`: dashboard, switch, watch and auto
+- `ccsw` / `ccsw tui` / `ccsw watch`: dashboard, switch, watch and auto
   screens, modals, toasts, dark and light themes (`ctrl+t`, persisted as `ui.theme`).
 
 ### Codex mechanics
@@ -119,16 +131,16 @@ macOS (Apple silicon and Intel), Linux (x86_64) and Windows (x86_64).
   as `auth.json.bak.<nanos>` (three kept), writes the target atomically, and restarts
   the Codex app-server daemon when one is running.
 - Usage from `GET https://chatgpt.com/backend-api/wham/usage`, refresh through
-  `POST https://auth.openai.com/oauth/token`; `CSWITCH_USAGE_URL` and
-  `CSWITCH_TOKEN_URL` override them for tests.
-- Rotating log `cswitch.log` (1 MiB, three backups) in the backup root, created on
+  `POST https://auth.openai.com/oauth/token`; `CCSW_USAGE_URL` and
+  `CCSW_TOKEN_URL` override them for tests.
+- Rotating log `ccsw.log` (1 MiB, three backups) in the backup root, created on
   the first record; `--debug` mirrors records to stderr.
 
 ### Deviations from cswap in v0.1
 
-Documented in `docs/specs/2026-09-29-cswitch-design.md` (§2, §9):
+Documented in `docs/specs/2026-09-29-ccsw-design.md` (§2, §9):
 
-- `menubar` exits 1 (`The menu bar is not available in cswitch.`); `unclaimed` is not
+- `menubar` exits 1 (`The menu bar is not available in ccsw.`); `unclaimed` is not
   provided (no forensic stash of foreign credentials); `upgrade` / `update` print
   reinstall guidance only.
 - JSON `usage.credits` (`{"balance","unlimited"}`) replaces cswap's `spend`; the
@@ -145,5 +157,5 @@ Documented in `docs/specs/2026-09-29-cswitch-design.md` (§2, §9):
   `soonest-reset` strategy.
 - No macOS Keychain, `~/.claude.json`, Claude Code lock protocol, process detection
   (`Running instances:`) or passive update notice.
-- The store lives in `~/.cswitch` on every platform (`CSWITCH_HOME` override), not in
+- The store lives in `~/.ccsw` on every platform (`CCSW_HOME` override), not in
   cswap's XDG split.

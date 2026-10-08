@@ -1,4 +1,4 @@
-# cswap (claude-swap) — data model, settings, usage handling, auto-switch: spec notes for the `cswitch` (Codex) Rust port
+# cswap (claude-swap) — data model, settings, usage handling, auto-switch: spec notes for the `ccsw` (Codex) Rust port
 
 Sources read (all verbatim, exhaustive):
 
@@ -874,7 +874,7 @@ Reads Claude Code's `<config>/sessions/{pid}.json` (`pid`, `sessionId`, `cwd`, `
 
 ---
 
-## 10. Claude-specific facts (to be replaced by Codex equivalents in `cswitch`)
+## 10. Claude-specific facts (to be replaced by Codex equivalents in `ccsw`)
 
 Paths and env:
 - Config home: `CLAUDE_CONFIG_DIR` if set else `~/.claude`. Global config: `<config_home>/.config.json` if it exists (legacy) else `(CLAUDE_CONFIG_DIR or $HOME)/.claude.json` (note: at home root, not inside `.claude/`). Credentials file: `<config_home>/.credentials.json`. Default-profile variants ignore `CLAUDE_CONFIG_DIR`.

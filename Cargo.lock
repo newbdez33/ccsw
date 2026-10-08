@@ -265,6 +265,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccsw"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "filetime",
+ "fs4",
+ "hex",
+ "libc",
+ "owo-colors",
+ "rand 0.10.3",
+ "ratatui",
+ "reqwest",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "supports-color",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "urlencoding",
+ "webbrowser",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -504,41 +539,6 @@ checksum = "eb2a7d3066da2de787b7f032c736763eb7ae5d355f81a68bab2675a96008b0bf"
 dependencies = [
  "lab",
  "phf",
-]
-
-[[package]]
-name = "cswitch"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.22.1",
- "chrono",
- "clap",
- "crossterm",
- "dirs",
- "filetime",
- "fs4",
- "hex",
- "libc",
- "owo-colors",
- "rand 0.10.3",
- "ratatui",
- "reqwest",
- "rpassword",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "supports-color",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "toml",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "urlencoding",
- "webbrowser",
 ]
 
 [[package]]

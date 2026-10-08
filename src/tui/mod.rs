@@ -46,7 +46,7 @@ impl Drop for RestoreGuard {
 /// exit codes.
 pub fn run(start: TuiStart) -> i32 {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        eprintln!("Error: cswitch tui needs an interactive terminal (stdin and stdout)");
+        eprintln!("Error: ccsw tui needs an interactive terminal (stdin and stdout)");
         return 1;
     }
     let paths = match Paths::from_env() {

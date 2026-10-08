@@ -1,4 +1,4 @@
-//! Export / import of managed accounts as a `.cswitch` envelope (spec §11;
+//! Export / import of managed accounts as a `.ccsw` envelope (spec §11;
 //! research notes `cswap-cli-contract.md` §13 and `cswap-model-autoswitch.md` §8).
 //!
 //! Notices are printed to stderr as they happen, so a piped `export -` keeps
@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::codex::auth::{AuthJson, AuthKind};
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::model::{AccountKind, AccountRecord, Identity, Roster, now_iso, now_unix};
 use crate::paths::Paths;
 use crate::printer;
@@ -67,7 +67,7 @@ struct Envelope {
     version: u64,
     exported_at: String,
     exported_from: &'static str,
-    cswitch_version: &'static str,
+    ccsw_version: &'static str,
     /// The same value under cswap's name, for readers that look for it.
     swap_version: &'static str,
     encrypted: bool,
@@ -187,14 +187,12 @@ pub fn export_accounts(
     let store = Store::open(paths.clone());
     let roster = roster::read(paths)?
         .filter(|roster| !roster.accounts.is_empty())
-        .ok_or_else(|| CswitchError::transfer("no accounts to export — run cswitch add first"))?;
+        .ok_or_else(|| CcswError::transfer("no accounts to export — run ccsw add first"))?;
     let slots = match account {
         Some(identifier) => vec![
             resolve_identifier(&roster, identifier)?
                 .filter(|slot| roster.record(*slot).is_some())
-                .ok_or_else(|| {
-                    CswitchError::transfer(format!("account not found: {identifier}"))
-                })?,
+                .ok_or_else(|| CcswError::transfer(format!("account not found: {identifier}")))?,
         ],
         None => roster.sorted_slots(),
     };
@@ -225,7 +223,7 @@ pub fn export_accounts(
         match export_credentials(&store, &roster, slot, record, live.as_ref())? {
             Some(value) => accounts.push(ExportedAccount::new(slot, record, value)),
             None if account.is_some() => {
-                return Err(CswitchError::credential_read(format!(
+                return Err(CcswError::credential_read(format!(
                     "no backup credentials found for account {slot} ({})",
                     record.email
                 )));
@@ -234,7 +232,7 @@ pub fn export_accounts(
                 notice(
                     &mut notices,
                     format!(
-                        "Skipping Account-{slot} ({}): no stored credentials — re-add with: cswitch add --slot {slot}",
+                        "Skipping Account-{slot} ({}): no stored credentials — re-add with: ccsw add --slot {slot}",
                         record.email
                     ),
                 );
@@ -243,11 +241,11 @@ pub fn export_accounts(
         }
     }
     if accounts.is_empty() && skipped.is_empty() {
-        return Err(CswitchError::transfer("no exportable accounts"));
+        return Err(CcswError::transfer("no exportable accounts"));
     }
     if accounts.is_empty() {
-        return Err(CswitchError::transfer(
-            "no exportable accounts — all managed slots are missing stored credentials. Re-add with: cswitch add --slot <number>",
+        return Err(CcswError::transfer(
+            "no exportable accounts — all managed slots are missing stored credentials. Re-add with: ccsw add --slot <number>",
         ));
     }
 
@@ -255,7 +253,7 @@ pub fn export_accounts(
         version: FORMAT_VERSION,
         exported_at: now_iso(),
         exported_from: platform_name(),
-        cswitch_version: crate::VERSION,
+        ccsw_version: crate::VERSION,
         swap_version: crate::VERSION,
         encrypted: false,
         active_account_number: roster
@@ -265,7 +263,7 @@ pub fn export_accounts(
     };
     let written = envelope.accounts.len();
     let serialize_err = |err: serde_json::Error| {
-        CswitchError::transfer(format!("could not serialize the export: {err}"))
+        CcswError::transfer(format!("could not serialize the export: {err}"))
     };
     let mut text = serde_json::to_string_pretty(&envelope).map_err(serialize_err)?;
     text.push('\n');
@@ -277,9 +275,7 @@ pub fn export_accounts(
             stdout
                 .write_all(text.as_bytes())
                 .and_then(|()| stdout.flush())
-                .map_err(|err| {
-                    CswitchError::transfer(format!("could not write to stdout: {err}"))
-                })?;
+                .map_err(|err| CcswError::transfer(format!("could not write to stdout: {err}")))?;
         }
         ExportTarget::File(path) => {
             write_export_file(path, text.as_bytes())?;
@@ -326,7 +322,7 @@ fn write_export_file(path: &Path, contents: &[u8]) -> Result<()> {
     let written = write_private(&tmp, contents).and_then(|()| fs::rename(&tmp, path));
     if let Err(err) = written {
         let _ = fs::remove_file(&tmp);
-        return Err(CswitchError::transfer(format!(
+        return Err(CcswError::transfer(format!(
             "could not write {}: {err}",
             path.display()
         )));
@@ -487,7 +483,7 @@ pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Resu
         notice(
             &mut report.notices,
             format!(
-                "Note: {} is your current live login — activate the imported credentials with: cswitch switch {slot} --force",
+                "Note: {} is your current live login — activate the imported credentials with: ccsw switch {slot} --force",
                 record.email
             ),
         );
@@ -501,15 +497,16 @@ fn read_source(source: &ImportSource) -> Result<Vec<u8>> {
             let mut bytes = Vec::new();
             io::stdin()
                 .read_to_end(&mut bytes)
-                .map_err(|err| CswitchError::transfer(format!("could not read stdin: {err}")))?;
+                .map_err(|err| CcswError::transfer(format!("could not read stdin: {err}")))?;
             Ok(bytes)
         }
         ImportSource::File(path) => match fs::read(path) {
             Ok(bytes) => Ok(bytes),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Err(CswitchError::transfer(
-                format!("import file not found: {}", path.display()),
-            )),
-            Err(err) => Err(CswitchError::transfer(format!(
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Err(CcswError::transfer(format!(
+                "import file not found: {}",
+                path.display()
+            ))),
+            Err(err) => Err(CcswError::transfer(format!(
                 "could not read {}: {err}",
                 path.display()
             ))),
@@ -519,28 +516,26 @@ fn read_source(source: &ImportSource) -> Result<Vec<u8>> {
 
 fn parse_envelope(bytes: &[u8]) -> Result<ParsedEnvelope> {
     let value: Value = serde_json::from_slice(bytes)
-        .map_err(|err| CswitchError::transfer(format!("export file is not valid JSON: {err}")))?;
+        .map_err(|err| CcswError::transfer(format!("export file is not valid JSON: {err}")))?;
     let Value::Object(root) = value else {
-        return Err(CswitchError::transfer("export file must be a JSON object"));
+        return Err(CcswError::transfer("export file must be a JSON object"));
     };
     let version = root.get("version");
     if version.and_then(Value::as_f64) != Some(FORMAT_VERSION as f64) {
-        return Err(CswitchError::transfer(format!(
+        return Err(CcswError::transfer(format!(
             "unsupported export version: {} (expected 1)",
             python_repr(version)
         )));
     }
     if root.get("encrypted") == Some(&Value::Bool(true)) {
-        return Err(CswitchError::transfer(
-            "encrypted exports are not supported in this version — decrypt before piping (e.g. gpg -d backup.gpg | cswitch import -)",
+        return Err(CcswError::transfer(
+            "encrypted exports are not supported in this version — decrypt before piping (e.g. gpg -d backup.gpg | ccsw import -)",
         ));
     }
     let accounts = match root.get("accounts") {
         Some(Value::Array(list)) if !list.is_empty() => list.clone(),
         _ => {
-            return Err(CswitchError::transfer(
-                "export file has no accounts to import",
-            ));
+            return Err(CcswError::transfer("export file has no accounts to import"));
         }
     };
     Ok(ParsedEnvelope {
@@ -561,14 +556,12 @@ fn validate_entries(
     let mut aliases = BTreeSet::new();
     for item in raw {
         let Value::Object(entry) = item else {
-            return Err(CswitchError::transfer(
-                "account entry must be a JSON object",
-            ));
+            return Err(CcswError::transfer("account entry must be a JSON object"));
         };
         let email = match entry.get("email") {
             Some(Value::String(email)) if is_valid_email(email) => email.clone(),
             other => {
-                return Err(CswitchError::transfer(format!(
+                return Err(CcswError::transfer(format!(
                     "invalid or missing email in imported account: {}",
                     python_repr(other)
                 )));
@@ -580,7 +573,7 @@ fn validate_entries(
             .and_then(|n| u32::try_from(n).ok())
             .filter(|n| *n >= 1)
             .ok_or_else(|| {
-                CswitchError::transfer(format!(
+                CcswError::transfer(format!(
                     "invalid slot number in imported account ({email}): {}",
                     python_repr(entry.get("number"))
                 ))
@@ -589,7 +582,7 @@ fn validate_entries(
             match entry.get(field) {
                 None | Some(Value::Null) => Ok(None),
                 Some(Value::String(text)) => Ok(Some(text.clone())),
-                Some(other) => Err(CswitchError::transfer(format!(
+                Some(other) => Err(CcswError::transfer(format!(
                     "{field} for {email} must be a string, got {}",
                     python_type_name(other)
                 ))),
@@ -601,17 +594,18 @@ fn validate_entries(
         let added = text_field("added")?
             .filter(|text| !text.is_empty())
             .unwrap_or_else(now_iso);
-        let mut alias = match text_field("alias")? {
-            None => None,
-            Some(raw_alias) => Some(normalize_alias(&raw_alias).map_err(|err| {
-                CswitchError::transfer(format!("invalid alias for {email}: {err}"))
-            })?),
-        };
+        let mut alias =
+            match text_field("alias")? {
+                None => None,
+                Some(raw_alias) => Some(normalize_alias(&raw_alias).map_err(|err| {
+                    CcswError::transfer(format!("invalid alias for {email}: {err}"))
+                })?),
+            };
         let plan_type = text_field("planType")?.filter(|text| !text.is_empty());
         let auth = match entry.get("credentials") {
             Some(value @ Value::Object(_)) => AuthJson::from_value(value.clone()),
             _ => {
-                return Err(CswitchError::transfer(format!(
+                return Err(CcswError::transfer(format!(
                     "credentials for {email} must be a JSON object"
                 )));
             }
@@ -626,14 +620,14 @@ fn validate_entries(
             } else {
                 organization_uuid.as_str()
             };
-            return Err(CswitchError::transfer(format!(
+            return Err(CcswError::transfer(format!(
                 "duplicate account in export: {email} (org={org})"
             )));
         }
         let identity = Identity::new(email.clone(), organization_uuid.clone());
         if let Some(name) = alias.clone() {
             if !aliases.insert(name.clone()) {
-                return Err(CswitchError::transfer(format!(
+                return Err(CcswError::transfer(format!(
                     "duplicate alias in export: {name}"
                 )));
             }
@@ -815,7 +809,7 @@ mod tests {
         assert!(["macos", "linux", "wsl", "windows", "unknown"].contains(&platform_name()));
         let home = dirs::home_dir().unwrap();
         assert_eq!(expand_tilde("~"), home);
-        assert_eq!(expand_tilde("~/b.cswitch"), home.join("b.cswitch"));
+        assert_eq!(expand_tilde("~/b.ccsw"), home.join("b.ccsw"));
         assert_eq!(expand_tilde("~x/b"), PathBuf::from("~x/b"));
         assert_eq!(expand_tilde("/tmp/b"), PathBuf::from("/tmp/b"));
     }
@@ -842,7 +836,7 @@ mod tests {
     #[test]
     fn export_skips_claude_slots() {
         let (dir, store) = mixed_store();
-        let path = dir.path().join("out.cswitch");
+        let path = dir.path().join("out.ccsw");
         let report =
             export_accounts(&store.paths, ExportTarget::File(path.clone()), None, false).unwrap();
         assert_eq!(report.written, 1);
@@ -861,7 +855,7 @@ mod tests {
         assert!(!written.contains("claude@example.com"));
         assert!(!written.contains("claudeAiOauth"));
 
-        let only_claude = dir.path().join("claude.cswitch");
+        let only_claude = dir.path().join("claude.ccsw");
         let err = export_accounts(
             &store.paths,
             ExportTarget::File(only_claude.clone()),
@@ -876,7 +870,7 @@ mod tests {
     #[test]
     fn export_file_is_private_and_leaves_no_temp() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("out.cswitch");
+        let path = dir.path().join("out.ccsw");
         write_export_file(&path, b"{}\n").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "{}\n");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
@@ -888,7 +882,7 @@ mod tests {
                 0o600
             );
         }
-        let err = write_export_file(&dir.path().join("missing/out.cswitch"), b"{}").unwrap_err();
+        let err = write_export_file(&dir.path().join("missing/out.ccsw"), b"{}").unwrap_err();
         assert_eq!(err.type_name(), "TransferError");
         assert!(err.to_string().starts_with("could not write "));
     }

@@ -1,4 +1,4 @@
-//! The two account providers cswitch manages and the selector grammar.
+//! The two account providers ccsw manages and the selector grammar.
 
 use std::fmt;
 

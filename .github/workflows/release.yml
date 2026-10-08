@@ -38,16 +38,16 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          name="cswitch-${tag}-${TARGET}"
+          name="ccsw-${tag}-${TARGET}"
           mkdir -p "dist/${name}"
           cp README.md LICENSE NOTICE CHANGELOG.md "dist/${name}/"
           case "$TARGET" in
             *windows*)
-              cp "target/${TARGET}/release/cswitch.exe" "dist/${name}/"
+              cp "target/${TARGET}/release/ccsw.exe" "dist/${name}/"
               (cd dist && 7z a -tzip "${name}.zip" "${name}" > /dev/null)
               ;;
             *)
-              cp "target/${TARGET}/release/cswitch" "dist/${name}/"
+              cp "target/${TARGET}/release/ccsw" "dist/${name}/"
               tar -C dist -czf "dist/${name}.tar.gz" "${name}"
               ;;
           esac

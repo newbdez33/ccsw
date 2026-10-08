@@ -1,4 +1,4 @@
-//! Auto-switch engine, events, loop, and the `cswitch auto` front end (spec §9;
+//! Auto-switch engine, events, loop, and the `ccsw auto` front end (spec §9;
 //! research notes `cswap-model-autoswitch.md` §6 and `cswap-cli-contract.md` §10).
 //!
 //! The engine talks to the switcher through [`AutoFacade`] so it can be driven
@@ -314,7 +314,7 @@ impl Event {
                 email,
                 reason,
             } => format!(
-                "Account-{number} ({email}) quarantined: {reason}. Log in with it and run 'cswitch add --slot {number}' to recover."
+                "Account-{number} ({email}) quarantined: {reason}. Log in with it and run 'ccsw add --slot {number}' to recover."
             ),
             Self::AccountUnquarantined {
                 number,
@@ -476,11 +476,11 @@ impl<'a> Engine<'a> {
                 });
                 match other {
                     CurrentAccount::NoLogin => {
-                        self.no_switch("no-active-account", "log in and run 'cswitch add' first");
+                        self.no_switch("no-active-account", "log in and run 'ccsw add' first");
                     }
                     _ => self.no_switch(
                         "unmanaged-active-account",
-                        "run 'cswitch add' to include it in rotation",
+                        "run 'ccsw add' to include it in rotation",
                     ),
                 }
                 return Ok(TickOutcome::NoAction);
@@ -1092,18 +1092,18 @@ const AUTO_EPILOG: &str = "Exit codes with --once:
   3  blocked: wanted to switch but no viable target / all exhausted
 
 Examples:
-  cswitch auto                       # foreground loop, switch at 90% used
-  cswitch auto --threshold 80        # switch earlier
-  cswitch auto --model GPT-5.3-Codex-Spark   # also switch when that model pool's weekly limit is hit
-  cswitch auto --json                # one JSON event per line (for scripts)
-  cswitch auto --once; echo $?       # single tick, outcome in exit code
-  cswitch auto --dry-run             # log decisions, never actually switch
+  ccsw auto                       # foreground loop, switch at 90% used
+  ccsw auto --threshold 80        # switch earlier
+  ccsw auto --model GPT-5.3-Codex-Spark   # also switch when that model pool's weekly limit is hit
+  ccsw auto --json                # one JSON event per line (for scripts)
+  ccsw auto --once; echo $?       # single tick, outcome in exit code
+  ccsw auto --dry-run             # log decisions, never actually switch
 
 Defaults live in settings.json in the backup root; flags override them.";
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "cswitch auto",
+    name = "ccsw auto",
     about = "Automatically switch accounts when the active one nears its 5h/7d rate limit. Runs a foreground polling loop; use --once for a single tick (cron-friendly).",
     after_help = AUTO_EPILOG,
     disable_version_flag = true
@@ -1255,21 +1255,21 @@ fn install_signal_handlers(stop: Arc<AtomicBool>, interrupted: Arc<AtomicBool>) 
     });
 }
 
-/// `cswitch auto` (everything after the verb). Returns the exit status.
+/// `ccsw auto` (everything after the verb). Returns the exit status.
 pub fn run_cli(argv: Vec<String>, facade: &mut dyn AutoFacade) -> i32 {
     run_cli_to(argv, facade, &mut std::io::stdout())
 }
 
 /// [`run_cli`] with the event stream (and banner) written to `out`.
 pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn Write) -> i32 {
-    let args =
-        match AutoArgs::try_parse_from(std::iter::once("cswitch auto".to_string()).chain(argv)) {
-            Ok(args) => args,
-            Err(err) => {
-                let _ = err.print();
-                return err.exit_code();
-            }
-        };
+    let args = match AutoArgs::try_parse_from(std::iter::once("ccsw auto".to_string()).chain(argv))
+    {
+        Ok(args) => args,
+        Err(err) => {
+            let _ = err.print();
+            return err.exit_code();
+        }
+    };
     if let Some(code) = root_guard() {
         return code;
     }
@@ -1350,7 +1350,7 @@ mod tests {
         }
         fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
             if self.fail_switch {
-                return Err(crate::errors::CswitchError::switch("boom"));
+                return Err(crate::errors::CcswError::switch("boom"));
             }
             self.switches.push(slot);
             let from = match &self.current {
@@ -1700,7 +1700,7 @@ mod tests {
         assert_eq!(json["number"], "3", "number is a string");
         assert_eq!(
             quarantined.human(),
-            "Account-3 (c@x) quarantined: invalid_grant. Log in with it and run 'cswitch add --slot 3' to recover."
+            "Account-3 (c@x) quarantined: invalid_grant. Log in with it and run 'ccsw add --slot 3' to recover."
         );
         let back = Event::AccountUnquarantined {
             number: 3,
@@ -1928,7 +1928,7 @@ mod tests {
             no_switch_reason(&events),
             Some((
                 "no-active-account".into(),
-                "log in and run 'cswitch add' first".into()
+                "log in and run 'ccsw add' first".into()
             ))
         );
         fixture.fake.current = CurrentAccount::Unmanaged {
@@ -2523,7 +2523,7 @@ mod tests {
             2
         );
         let args = AutoArgs::try_parse_from(argv(&[
-            "cswitch auto",
+            "ccsw auto",
             "--interval",
             "1",
             "--cooldown",
@@ -2542,14 +2542,14 @@ mod tests {
         assert_eq!(merged.strategy, "consume-first");
         assert!(!merged.include_api_key_accounts);
         assert_eq!(
-            AutoArgs::try_parse_from(argv(&["cswitch auto", "--include-api-key-accounts"]))
+            AutoArgs::try_parse_from(argv(&["ccsw auto", "--include-api-key-accounts"]))
                 .unwrap()
                 .overrides()
                 .include_api_key_accounts,
             Some(true)
         );
         assert_eq!(
-            AutoArgs::try_parse_from(argv(&["cswitch auto"]))
+            AutoArgs::try_parse_from(argv(&["ccsw auto"]))
                 .unwrap()
                 .overrides()
                 .include_api_key_accounts,

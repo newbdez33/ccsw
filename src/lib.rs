@@ -1,6 +1,6 @@
-//! cswitch — multi-account switcher for the OpenAI Codex CLI.
+//! ccsw — multi-account switcher for the OpenAI Codex CLI.
 //!
-//! Layering (see `docs/specs/2026-09-29-cswitch-design.md` §14): `cli` and `tui`
+//! Layering (see `docs/specs/2026-09-29-ccsw-design.md` §14): `cli` and `tui`
 //! sit on the `switcher` façade and the `autoswitch` engine; those sit on the
 //! `store` and `codex` layers; everything shares `model`, `paths`, `fsutil`,
 //! `errors`, `printer`, and `jsonout`.

@@ -1,12 +1,12 @@
 //! Claude Code's credential object (`{"claudeAiOauth": …}` plus machine-scoped
 //! siblings, or a managed `sk-ant-api…` key), the global config's
-//! `oauthAccount` (the identity), and the slot file cswitch stores for a
+//! `oauthAccount` (the identity), and the slot file ccsw stores for a
 //! Claude account (spec §5).
 
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::model::Identity;
 
 pub const OAUTH_KEY: &str = "claudeAiOauth";
@@ -46,9 +46,9 @@ impl ClaudeCredential {
 
     pub fn parse(text: &str) -> Result<Self> {
         let value: Value = serde_json::from_str(text)
-            .map_err(|err| CswitchError::credential_read(format!("invalid JSON: {err}")))?;
+            .map_err(|err| CcswError::credential_read(format!("invalid JSON: {err}")))?;
         if !value.is_object() {
-            return Err(CswitchError::credential_read("not a JSON object"));
+            return Err(CcswError::credential_read("not a JSON object"));
         }
         Ok(Self(value))
     }
@@ -269,13 +269,13 @@ impl SlotFile {
 
     pub fn from_value(value: &Value) -> Result<Self> {
         let mut map = value.as_object().cloned().ok_or_else(|| {
-            CswitchError::credential_read("stored Claude credentials are not a JSON object")
+            CcswError::credential_read("stored Claude credentials are not a JSON object")
         })?;
         let account = map
             .remove(OAUTH_ACCOUNT_KEY)
             .filter(Value::is_object)
             .ok_or_else(|| {
-                CswitchError::credential_read("stored Claude credentials carry no oauthAccount")
+                CcswError::credential_read("stored Claude credentials carry no oauthAccount")
             })?;
         Ok(Self {
             credential: ClaudeCredential(Value::Object(map)),

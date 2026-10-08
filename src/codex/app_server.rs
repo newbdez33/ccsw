@@ -2,7 +2,7 @@
 //!
 //! Codex CLI 0.157 and newer attaches interactive sessions to a managed local
 //! app-server daemon. That daemon loads `auth.json` once and re-reads it only
-//! for the account it already holds, so after cswitch replaces the file every
+//! for the account it already holds, so after ccsw replaces the file every
 //! new Codex session keeps the previous account until the daemon restarts.
 //! `codex exec` and `codex --no-daemon` run in process and read the file at
 //! startup, so they are not affected.
@@ -430,6 +430,6 @@ mod tests {
         assert!(!codex_supports_no_daemon(&dir.path().join("absent")));
 
         assert!(command_on_path("sh").is_some());
-        assert!(command_on_path("cswitch-surely-not-installed-xyz").is_none());
+        assert!(command_on_path("ccsw-surely-not-installed-xyz").is_none());
     }
 }

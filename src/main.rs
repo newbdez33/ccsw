@@ -1,3 +1,3 @@
 fn main() {
-    std::process::exit(cswitch::cli::run());
+    std::process::exit(ccsw::cli::run());
 }

@@ -193,7 +193,7 @@ fn switch_claude_keeps_sibling_keys() {
     );
     assert_eq!(cli.claude_config()["numStartups"], 7);
     let backup = support::read_json(
-        &cli.cswitch_home
+        &cli.ccsw_home
             .join("backups")
             .join("claude")
             .join(&cli.claude_backups()[0]),
@@ -212,7 +212,7 @@ fn bare_switch_needs_a_selector_when_both_providers_exist() {
     assert_eq!(run.status, 1);
     assert_eq!(
         run.stderr.trim(),
-        "Error: Both Codex and Claude accounts are managed — say which: cswitch switch codex | cswitch switch claude"
+        "Error: Both Codex and Claude accounts are managed — say which: ccsw switch codex | ccsw switch claude"
     );
     let run = cli.run(&["switch", "claude", "--json"]);
     assert_eq!(run.status, 0, "{}", run.stderr);
@@ -312,7 +312,7 @@ fn v1_roster_is_read_as_codex() {
         .unwrap()
         .remove("provider");
     roster.as_object_mut().unwrap().remove("activeByProvider");
-    std::fs::write(cli.cswitch_home.join("sequence.json"), roster.to_string()).unwrap();
+    std::fs::write(cli.ccsw_home.join("sequence.json"), roster.to_string()).unwrap();
     let run = cli.run(&["list"]);
     assert_eq!(run.status, 0, "{}", run.stderr);
     assert_eq!(run.lines()[0], "Accounts:");
@@ -392,7 +392,7 @@ fn claude_usage_rows_refresh_and_the_active_login_is_never_refreshed() {
     );
     // The poll policy keeps the first pass's results for 180 s, so drop the usage cache to make
     // both rows due again.
-    std::fs::remove_file(cli.cswitch_home.join("cache").join("usage.json")).unwrap();
+    std::fs::remove_file(cli.ccsw_home.join("cache").join("usage.json")).unwrap();
     let run = cli.run(&["list", "--json"]);
     assert_eq!(run.status, 0, "{}", run.stderr);
     let payload = run.json();
@@ -467,7 +467,7 @@ fn auto_once_never_refreshes_or_targets_the_live_claude_login() {
     // The live Claude login expires within the 5-minute refresh buffer.
     let refresh = usage_mock::claude_live_refresh_token("two@example.com");
     let mut creds = claude_creds(&refresh, CLAUDE_OK);
-    creds["claudeAiOauth"]["expiresAt"] = json!(cswitch::model::now_unix() * 1000 + 60_000);
+    creds["claudeAiOauth"]["expiresAt"] = json!(ccsw::model::now_unix() * 1000 + 60_000);
     cli.write_claude_live_with(&creds, &claude_config("two@example.com", "org-2", ""));
     let run = cli.run(&["add", "claude"]);
     assert_eq!(run.status, 0, "{}", run.stderr);
@@ -504,7 +504,7 @@ fn the_codex_credential_store_gate_applies_only_once_codex_is_in_use() {
     cli.add_claude("one@example.com", "org-1", "", "crt-1");
     let config = cli.codex_home.join("config.toml");
     std::fs::write(&config, "cli_auth_credentials_store = \"keyring\"\n").unwrap();
-    let gate = "cswitch requires file-based Codex credentials";
+    let gate = "ccsw requires file-based Codex credentials";
 
     // Claude only, no auth.json: every command runs.
     let run = cli.run(&["list"]);

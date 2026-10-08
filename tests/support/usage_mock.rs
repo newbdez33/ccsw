@@ -13,7 +13,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use cswitch::model::now_unix;
+use ccsw::model::now_unix;
 
 /// 5h 35 %, 7d 60 %, a credit balance.
 pub const OK: &str = "at-ok-35";

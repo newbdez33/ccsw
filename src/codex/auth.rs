@@ -1,6 +1,6 @@
 //! `auth.json` model, backups, identity, freshness rule.
 //!
-//! The file is kept as a raw JSON object so keys cswitch does not know about
+//! The file is kept as a raw JSON object so keys ccsw does not know about
 //! survive a round trip; Codex owns the format.
 
 use std::io;
@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil;
 use crate::model::{Identity, now_iso, parse_iso};
 
@@ -20,7 +20,7 @@ use super::jwt::AccountInfo;
 const MAX_BACKUPS: usize = 3;
 
 /// The contents of an `auth.json`: a ChatGPT OAuth login, an API key, or
-/// something cswitch does not recognize.
+/// something ccsw does not recognize.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuthJson(pub Value);
 
@@ -45,9 +45,9 @@ impl AuthJson {
     /// Parse the text of an `auth.json`; it must be a JSON object.
     pub fn parse(text: &str) -> Result<Self> {
         let value: Value = serde_json::from_str(text)
-            .map_err(|err| CswitchError::credential_read(format!("invalid JSON: {err}")))?;
+            .map_err(|err| CcswError::credential_read(format!("invalid JSON: {err}")))?;
         if !value.is_object() {
-            return Err(CswitchError::credential_read("not a JSON object"));
+            return Err(CcswError::credential_read("not a JSON object"));
         }
         Ok(Self(value))
     }
@@ -59,18 +59,18 @@ impl AuthJson {
             Ok(text) => text,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(err) => {
-                return Err(fsutil::io_error(CswitchError::CredentialRead, path, &err));
+                return Err(fsutil::io_error(CcswError::CredentialRead, path, &err));
             }
         };
         Self::parse(&text)
             .map(Some)
-            .map_err(|err| CswitchError::credential_read(format!("{}: {err}", path.display())))
+            .map_err(|err| CcswError::credential_read(format!("{}: {err}", path.display())))
     }
 
     /// Pretty JSON, written atomically with mode 0600.
     pub fn write(&self, path: &Path) -> Result<()> {
         fsutil::write_json_private(path, &self.0)
-            .map_err(|err| fsutil::io_error(CswitchError::CredentialWrite, path, &err))
+            .map_err(|err| fsutil::io_error(CcswError::CredentialWrite, path, &err))
     }
 
     pub fn kind(&self) -> AuthKind {
@@ -135,7 +135,7 @@ impl AuthJson {
 
     /// Replace the three token fields in place and stamp `last_refresh`.
     /// Codex refreshes proactively when `last_refresh` is older than 8 days,
-    /// so the stamp keeps cswitch's refreshes recognized.
+    /// so the stamp keeps ccsw's refreshes recognized.
     pub fn apply_tokens(&mut self, id_token: &str, access_token: &str, refresh_token: &str) {
         if !self.0.is_object() {
             self.0 = json!({});
@@ -172,7 +172,7 @@ impl AuthJson {
     }
 
     /// SHA-256 of the bytes `write` produces, so it equals the hash of a file
-    /// cswitch wrote from this value.
+    /// ccsw wrote from this value.
     pub fn sha256_hex(&self) -> String {
         let mut text = serde_json::to_string_pretty(&self.0).unwrap_or_default();
         text.push('\n');
@@ -192,7 +192,7 @@ pub fn backup_live(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let write_err = |err: &io::Error| fsutil::io_error(CswitchError::CredentialWrite, path, err);
+    let write_err = |err: &io::Error| fsutil::io_error(CcswError::CredentialWrite, path, err);
     let contents = std::fs::read(path).map_err(|err| write_err(&err))?;
     let backup = allocate_backup_path(path)?;
     fsutil::atomic_write_private(&backup, &contents).map_err(|err| write_err(&err))?;
@@ -205,10 +205,10 @@ pub fn backup_live(path: &Path) -> Result<()> {
 fn allocate_backup_path(path: &Path) -> Result<PathBuf> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| CswitchError::credential_write("system clock is before the Unix epoch"))?
+        .map_err(|_| CcswError::credential_write("system clock is before the Unix epoch"))?
         .as_nanos();
     backup_path_for(path, nanos).ok_or_else(|| {
-        CswitchError::credential_write(format!(
+        CcswError::credential_write(format!(
             "could not allocate a unique backup path for {}",
             path.display()
         ))

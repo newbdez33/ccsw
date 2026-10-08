@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{CswitchError, Result};
+use crate::errors::{CcswError, Result};
 use crate::fsutil::{self, FileLock};
 use crate::model::{Identity, NormalizedUsage};
 use crate::paths::Paths;
@@ -60,7 +60,7 @@ impl UsageSentinel {
             }
             Self::ApiKey => "API key (no quota)",
             Self::ReloginNeeded => {
-                "re-login needed — refresh token dead; log in with Codex, then run: cswitch add"
+                "re-login needed — refresh token dead; log in with Codex, then run: ccsw add"
             }
             Self::KeychainUnavailable => "keychain unavailable — locked or in use; try again",
         }
@@ -301,9 +301,9 @@ impl Table {
 
     fn save(&self, path: &Path) -> Result<()> {
         let value = serde_json::to_value(self)
-            .map_err(|err| CswitchError::config(format!("{}: {err}", path.display())))?;
+            .map_err(|err| CcswError::config(format!("{}: {err}", path.display())))?;
         fsutil::write_json_private(path, &value)
-            .map_err(|err| fsutil::io_error(CswitchError::Config, path, &err))
+            .map_err(|err| fsutil::io_error(CcswError::Config, path, &err))
     }
 
     fn row(&self, slot: u32) -> Option<&Row> {
@@ -661,7 +661,7 @@ mod tests {
         assert_eq!(UsageSentinel::ApiKey.usage_status(), "api_key");
         assert_eq!(
             UsageSentinel::ReloginNeeded.label(),
-            "re-login needed — refresh token dead; log in with Codex, then run: cswitch add"
+            "re-login needed — refresh token dead; log in with Codex, then run: ccsw add"
         );
         assert_eq!(
             UsageSentinel::ReloginNeeded.usage_status(),

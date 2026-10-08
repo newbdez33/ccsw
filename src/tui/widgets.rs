@@ -694,7 +694,7 @@ mod tests {
         let line = mini_line(&acc, now, p);
         assert_eq!(
             text(&line),
-            " 2  work@acme.dev  [personal]  (disabled)   re-login needed — refresh token dead; log in with Codex, then run: cswitch add"
+            " 2  work@acme.dev  [personal]  (disabled)   re-login needed — refresh token dead; log in with Codex, then run: ccsw add"
         );
         let unknown = account(3, "u@v.w", false, entry(None, None));
         assert_eq!(
