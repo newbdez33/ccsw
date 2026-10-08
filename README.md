@@ -12,17 +12,18 @@ The dashboard (`ccsw`) and the live monitor (`ccsw watch`):
 
 <img src="docs/tui-watch.png" width="760" alt="ccsw watch: live 5h, 7d and per-model usage bars for every account with reset times and the active account marked">
 
-`ccsw` is [claude-swap (`cswap`)](https://github.com/realiti4/claude-swap) for Codex:
-the commands, options, JSON output, settings and full-screen dashboard follow `cswap`,
-so `cswap list` becomes `ccsw list`. The Codex-specific mechanics (credential file,
-identity, usage API, token refresh, app-server daemon) come from
-[codex-switch](https://github.com/xjoker/codex-switch). Both are MIT licensed; see
-[NOTICE](NOTICE).
+`ccsw` is a Rust port of [claude-swap (`cswap`)](https://github.com/realiti4/claude-swap)
+that manages Claude Code and Codex accounts in one roster: the commands, options, JSON
+output, settings, export format and full-screen dashboard follow `cswap`, so `cswap list`
+becomes `ccsw list` and a `.cswap` export imports as is.
 
-Claude session support is ported from
-[cswap's session implementation](https://github.com/realiti4/claude-swap/blob/3a4e5c14873eb5b32f182d55c68da98ac8c0db45/src/claude_swap/session.py),
-with its credential and process guards adapted to Rust and the shared provider store.
-The source reference is commit `3a4e5c1`; the upstream MIT license is included in
+The Claude Code mechanics (Keychain and credentials file, `oauthAccount` identity, Claude
+Code's lock files, OAuth refresh, the usage API and
+[session profiles](https://github.com/realiti4/claude-swap/blob/3a4e5c14873eb5b32f182d55c68da98ac8c0db45/src/claude_swap/session.py))
+are ported from `cswap` at commit `3a4e5c1`, with the credential and process guards adapted
+to Rust and the shared store. The Codex mechanics (credential file, identity, usage API,
+token refresh, app-server daemon) come from
+[codex-switch](https://github.com/xjoker/codex-switch). Both are MIT licensed; see
 [NOTICE](NOTICE).
 
 > `ccsw` manages local credential files. Never publish `~/.ccsw`, `auth.json`,
@@ -50,11 +51,12 @@ from `~/.claude/.credentials.json`, and the account identity from `~/.claude.jso
 
 ### Add your first account
 
-Run `ccsw`, then select **Add account… → Add new account**. Codex opens your
-browser for sign-in. After sign-in, ccsw saves and activates the account.
-The Codex CLI must be on your `PATH`. Press `Esc` to cancel.
+Run `ccsw` and open **Add account…**. **From current logins** saves the logins Codex and
+Claude Code already hold. **Add new account** signs a new Codex account in through your
+browser and activates it (the Codex CLI must be on your `PATH`; press `Esc` to cancel).
+**From a token…** registers an OpenAI API key or an Anthropic setup-token / API key.
 
-If you are already signed into Codex, you can snapshot that login instead:
+From the command line, `ccsw add` snapshots the logins you already have:
 
 ```bash
 ccsw add            # the current Codex login and the current Claude Code login
@@ -66,8 +68,8 @@ ccsw add codex      # only the Codex login
 
 ### Add more accounts
 
-Select **Add account… → Add new account** again and sign in with the next account.
-The login runs in a temporary Codex home, so it does not revoke the previous login.
+For Codex, select **Add account… → Add new account** again and sign in with the next
+account. The login runs in a temporary Codex home, so it does not revoke the previous login.
 Signing into a managed account again updates its stored credentials in place.
 
 Do **not** run `codex logout` first: it can revoke a saved refresh token. Recent
@@ -91,7 +93,7 @@ ccsw add-token sk-ant-api03-...              # Anthropic API key
 ### Switch accounts
 
 ```bash
-ccsw switch                  # rotate to the next account
+ccsw switch                  # rotate to the next account (say codex|claude when both are managed)
 ccsw switch 2                # by slot number
 ccsw switch 5                # by slot: slots are one list across Codex and Claude
 ccsw switch claude           # rotate among the Claude accounts
@@ -135,8 +137,8 @@ Account rows and switch references carry `provider`. `active` is
 `{"codex": n, "claude": n}` on `list` and a per-provider object on `status`.
 
 ```bash
-ccsw list --json                     # accounts[] with usage.fiveHour / sevenDay / scoped[] / credits
-ccsw status --json                   # the active account, or {"active": null}
+ccsw list --json                     # accounts[] with usage.fiveHour / sevenDay / scoped[], plus credits (Codex) or spend (Claude)
+ccsw status --json                   # {"active": {"codex": row|null, "claude": row|null}}
 ccsw switch --strategy best --json   # {"switched": true, "from": ..., "to": ..., "reason": "switched"}
 ccsw auto --once --json              # one compact JSON event per line
 ```
@@ -272,8 +274,8 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-The integration tests run the built binary against a fake `codex` and a local mock of
-the usage and token endpoints (`CCSW_USAGE_URL`, `CCSW_TOKEN_URL`, and
+The integration tests run the built binary against fake `codex` and `claude` executables
+and a local mock of the usage and token endpoints (`CCSW_USAGE_URL`, `CCSW_TOKEN_URL`, and
 `CCSW_CLAUDE_USAGE_URL`, `CCSW_CLAUDE_TOKEN_URL` for Claude); tests set
 `CCSW_KEYCHAIN=off`, and `CCSW_CLAUDE_LOCK_BUDGET_MS` shortens the Claude lock
 wait. Nothing touches the network or your real `~/.codex` or `~/.claude`. Tagging `v*` builds release archives for
@@ -281,9 +283,9 @@ macOS, Linux and Windows (`.github/workflows/release.yml`). Changes are listed i
 `CHANGELOG.md`.
 
 Design: `docs/specs/2026-09-29-ccsw-design.md` and
-`docs/specs/2026-10-07-ccsw-claude-provider-design.md`. Plans: `docs/plans/`
-(`2026-10-07-ccsw-claude-provider-phase1.md` for the Claude provider). The research
-notes that pin the `cswap` contract and the Codex mechanics are in `docs/research/`.
+`docs/specs/2026-10-07-ccsw-claude-provider-design.md`. Plans: one per phase in
+`docs/plans/`. The research notes that pin the `cswap` contract and the Codex mechanics
+are in `docs/research/`.
 
 ## License
 
