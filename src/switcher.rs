@@ -1485,23 +1485,37 @@ impl Switcher {
             }
         }
         if root.exists() {
-            let parent = root
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            let tombstone = tempfile::Builder::new()
-                .prefix(".ccsw-purge-")
-                .tempdir_in(parent)
-                .map_err(|err| CcswError::config(err.to_string()))?;
-            let detached = tombstone.path().join("store");
-            fs::rename(&root, &detached).map_err(|err| {
-                CcswError::config(format!("could not detach {}: {err}", root.display()))
-            })?;
-            drop(consume_locks);
-            drop(store_lock);
-            fs::remove_dir_all(&detached).map_err(|err| {
-                CcswError::config(format!("could not remove {}: {err}", detached.display()))
-            })?;
+            #[cfg(windows)]
+            {
+                // Open descendants prevent a directory rename on Windows.
+                // Rust opens the lock files with delete sharing; keep the
+                // guards until removal completes, then close those handles.
+                fs::remove_dir_all(&root).map_err(|err| {
+                    CcswError::config(format!("could not remove {}: {err}", root.display()))
+                })?;
+                drop(consume_locks);
+                drop(store_lock);
+            }
+            #[cfg(not(windows))]
+            {
+                let parent = root
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                let tombstone = tempfile::Builder::new()
+                    .prefix(".ccsw-purge-")
+                    .tempdir_in(parent)
+                    .map_err(|err| CcswError::config(err.to_string()))?;
+                let detached = tombstone.path().join("store");
+                fs::rename(&root, &detached).map_err(|err| {
+                    CcswError::config(format!("could not detach {}: {err}", root.display()))
+                })?;
+                drop(consume_locks);
+                drop(store_lock);
+                fs::remove_dir_all(&detached).map_err(|err| {
+                    CcswError::config(format!("could not remove {}: {err}", detached.display()))
+                })?;
+            }
             self.say(Line::new().push(Style::Accent, "Removed:"));
             self.say(Line::plain(format!("  - {}", root.display())));
         } else {

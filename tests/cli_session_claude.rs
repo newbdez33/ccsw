@@ -22,10 +22,7 @@ fn runs_the_selected_provider_and_forwards_arguments_without_daemon_flags() {
     .unwrap();
     let result = cli.run(&["run", "2", "--", "--resume", "conversation-id"]);
     assert_eq!(result.status, 0, "{}", result.stderr);
-    assert_eq!(
-        std::fs::read_to_string(&cli.claude_log).unwrap(),
-        "--resume conversation-id\n"
-    );
+    assert_eq!(cli.claude_calls(), ["--resume conversation-id"]);
     let profile = cli.ccsw_home.join("sessions/2-session_example.com");
     assert_eq!(
         read_json(&profile.join(".credentials.json"))
