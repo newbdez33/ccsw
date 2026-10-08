@@ -35,6 +35,10 @@ pub const NO_RESET_FALLBACK_S: f64 = 300.0;
 /// Longest idle-hold on a `token expired` active account before unhealthy counting resumes.
 pub const IDLE_HOLD_MAX_S: f64 = 1800.0;
 
+/// Why `auto` is Claude-only (spec §9): Codex sessions keep the account they
+/// started with until they restart, so switching under them achieves nothing.
+pub const CLAUDE_ONLY_NOTICE: &str = "Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'ccsw add claude' first.";
+
 /// What the engine needs from the switcher.
 pub trait AutoFacade {
     fn store(&self) -> &Store;
@@ -1296,6 +1300,17 @@ pub fn run_cli(argv: Vec<String>, facade: &mut dyn AutoFacade) -> i32 {
 
 /// [`run_cli`] with the event stream (and banner) written to `out`.
 pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn Write) -> i32 {
+    let mut argv = argv;
+    match argv.first().and_then(|word| Provider::parse_selector(word)) {
+        Some(Provider::Claude) => {
+            argv.remove(0);
+        }
+        Some(Provider::Codex) => {
+            eprintln!("Error: {CLAUDE_ONLY_NOTICE}");
+            return 1;
+        }
+        None => {}
+    }
     let args = match AutoArgs::try_parse_from(std::iter::once("ccsw auto".to_string()).chain(argv))
     {
         Ok(args) => args,
@@ -1306,6 +1321,17 @@ pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn 
     };
     if let Some(code) = root_guard() {
         return code;
+    }
+    match facade.roster() {
+        Ok(roster) if roster.slots_of(Provider::Claude).is_empty() => {
+            eprintln!("Error: {CLAUDE_ONLY_NOTICE}");
+            return 1;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("Error: {err}");
+            return 1;
+        }
     }
     if args.debug {
         let _ = tracing_subscriber::fmt()
@@ -2751,5 +2777,52 @@ mod tests {
                 .include_api_key_accounts,
             None
         );
+    }
+    #[test]
+    fn auto_refuses_codex_and_rosters_without_a_claude_account() {
+        let argv = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A Codex-only roster: refused before any tick (no poll event, exit 1).
+        let mut codex_only = Fixture::new(&[1, 2]);
+        codex_only.seed(1, usage(95.0, 10.0, None));
+        codex_only.seed(2, usage(10.0, 10.0, None));
+        let mut out = Vec::new();
+        assert_eq!(
+            run_cli_to(argv(&["--once", "--json"]), &mut codex_only.fake, &mut out),
+            1
+        );
+        assert!(
+            out.is_empty(),
+            "no event is written: {}",
+            String::from_utf8_lossy(&out)
+        );
+        assert!(codex_only.fake.switches.is_empty());
+
+        // `auto codex` is refused even with Claude accounts around.
+        let mut claude = Fixture::claude(&[1, 2]);
+        claude.seed(1, usage(95.0, 10.0, None));
+        claude.seed(2, usage(10.0, 10.0, None));
+        let mut out = Vec::new();
+        assert_eq!(
+            run_cli_to(
+                argv(&["codex", "--once", "--json"]),
+                &mut claude.fake,
+                &mut out
+            ),
+            1
+        );
+        assert!(out.is_empty());
+
+        // `auto claude` is the bare form.
+        let mut out = Vec::new();
+        assert_eq!(
+            run_cli_to(
+                argv(&["claude", "--once", "--json", "--dry-run"]),
+                &mut claude.fake,
+                &mut out
+            ),
+            TickOutcome::Switched.code()
+        );
+        assert!(String::from_utf8_lossy(&out).contains("\"event\":\"switch\""));
+        assert!(claude.fake.switches.is_empty(), "dry-run");
     }
 }

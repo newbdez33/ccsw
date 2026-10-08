@@ -532,3 +532,37 @@ fn the_codex_credential_store_gate_applies_only_once_codex_is_in_use() {
     assert_ne!(run.status, 0);
     assert!(run.stderr.contains(gate), "{}", run.stderr);
 }
+
+#[test]
+fn auto_is_refused_on_a_codex_only_store_and_for_codex() {
+    let mock = UsageMock::start();
+    let cli = Cli::new().with_mock(&mock);
+    let notice = "Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'ccsw add claude' first.";
+    cli.add_chatgpt("alice@example.com", "acct-alice", "rt-a");
+
+    let run = cli.run(&["auto", "--once"]);
+    assert_eq!(run.status, 1, "{}{}", run.stdout, run.stderr);
+    assert_eq!(run.stdout, "");
+    assert!(run.stderr.contains(notice), "{}", run.stderr);
+
+    // With a Claude account, `auto codex` is still refused and `auto claude` runs.
+    cli.write_claude_live_with(
+        &claude_creds(
+            &usage_mock::claude_live_refresh_token("one@example.com"),
+            CLAUDE_OK,
+        ),
+        &claude_config("one@example.com", "org-1", ""),
+    );
+    let run = cli.run(&["add", "claude"]);
+    assert_eq!(run.status, 0, "{}", run.stderr);
+    let run = cli.run(&["auto", "codex", "--once"]);
+    assert_eq!(run.status, 1, "{}{}", run.stdout, run.stderr);
+    assert!(run.stderr.contains(notice), "{}", run.stderr);
+    let run = cli.run(&["auto", "claude", "--once", "--json"]);
+    assert_eq!(run.status, 2, "{}{}", run.stdout, run.stderr);
+    assert!(
+        run.stdout.contains("\"reason\":\"below-threshold\""),
+        "{}",
+        run.stdout
+    );
+}
