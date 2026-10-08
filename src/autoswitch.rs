@@ -741,18 +741,13 @@ impl<'a> Engine<'a> {
         let threshold = self.settings.threshold;
         let store = self.facade.store();
         let models = &self.models;
-        // Every live login is an active slot, whatever its provider, so the
-        // pass never treats the live Claude login as a refreshable candidate.
+        // Protect a login changed outside this tick without fetching or
+        // refreshing the other provider's accounts.
         let mut actives = vec![active];
-        for provider in Provider::ALL {
-            if roster.slots_of(provider).is_empty() {
-                continue;
-            }
-            if let Some(slot) = collect::live_login_for(store, roster, provider).slot()
-                && !actives.contains(&slot)
-            {
-                actives.push(slot);
-            }
+        if let Some(slot) = collect::live_login_for(store, roster, self.provider).slot()
+            && !actives.contains(&slot)
+        {
+            actives.push(slot);
         }
         let mut collected = collect::run_pass(
             store,
@@ -1301,7 +1296,7 @@ pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn 
         let _ = writeln!(out, "{}", printer::dimmed(&banner));
     }
     let sink = |event: &Event| write_event(out, event, json);
-    let mut engine = Engine::new(facade, Provider::Codex, settings, args.dry_run, sink);
+    let mut engine = Engine::new(facade, Provider::Claude, settings, args.dry_run, sink);
     if args.once {
         return engine.tick().code();
     }
@@ -2603,7 +2598,7 @@ mod tests {
 
     #[test]
     fn cli_parses_flags_and_runs_once() {
-        let mut fixture = Fixture::new(&[1, 2]);
+        let mut fixture = Fixture::claude(&[1, 2]);
         fixture.seed(1, usage(62.0, 10.0, None));
         fixture.seed(2, usage(10.0, 10.0, None));
         let argv = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();

@@ -462,11 +462,11 @@ fn stale_claude_lock_is_taken_over_and_a_fresh_one_fails() {
 fn auto_once_never_refreshes_or_targets_the_live_claude_login() {
     let mock = UsageMock::start();
     let cli = Cli::new().with_mock(&mock);
-    // Codex is over the threshold with no other Codex account to move to.
-    cli.add_scripted("alice@example.com", "acct-alice", usage_mock::HOT);
+    // The healthy Codex account must never become a Claude candidate.
+    cli.add_scripted("alice@example.com", "acct-alice", usage_mock::COOL);
     // The live Claude login expires within the 5-minute refresh buffer.
     let refresh = usage_mock::claude_live_refresh_token("two@example.com");
-    let mut creds = claude_creds(&refresh, CLAUDE_OK);
+    let mut creds = claude_creds(&refresh, usage_mock::CLAUDE_HOT);
     creds["claudeAiOauth"]["expiresAt"] = json!(ccsw::model::now_unix() * 1000 + 60_000);
     cli.write_claude_live_with(&creds, &claude_config("two@example.com", "org-2", ""));
     let run = cli.run(&["add", "claude"]);
@@ -477,7 +477,7 @@ fn auto_once_never_refreshes_or_targets_the_live_claude_login() {
     assert_eq!(cli.roster()["activeByProvider"]["claude"], claude_slot);
 
     let run = cli.run(&["auto", "--once", "--json"]);
-    // Blocked: the only other account is a Claude one, which auto never targets.
+    // The hot Claude login has no other Claude account to switch to.
     assert_eq!(run.status, 3, "{}{}", run.stdout, run.stderr);
     assert!(
         run.stdout.contains("\"reason\":\"no-candidates\""),
@@ -486,7 +486,7 @@ fn auto_once_never_refreshes_or_targets_the_live_claude_login() {
     );
     assert!(
         !run.stdout.contains("\"event\":\"switch\""),
-        "no switch to a Claude slot: {}",
+        "no switch to another provider: {}",
         run.stdout
     );
     assert_eq!(mock.claude_token_calls(), 0, "{:?}", mock.trail());

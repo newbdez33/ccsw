@@ -228,7 +228,7 @@ impl Runtime {
             let sink = tx.clone();
             let mut engine = Engine::new(
                 &mut switcher,
-                Provider::Codex,
+                Provider::Claude,
                 settings,
                 dry_run,
                 move |event| {
