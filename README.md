@@ -3,9 +3,9 @@
 Multi-account switcher for the [OpenAI Codex CLI](https://github.com/openai/codex) and
 Claude Code. Keep several Codex and Claude logins on one machine in one roster, switch any
 of them without logging in again, watch every account's usage in a live dashboard, let it
-switch Codex accounts for you before you hit a rate limit, and run two Codex accounts side
-by side in different terminals. Auto-switch, session mode and export/import cover Codex
-accounts only for now; Claude support for them comes in later phases.
+switch Claude Code accounts for you before you hit a rate limit, and run two Codex accounts
+side by side in different terminals. Session mode and export/import cover Codex accounts
+only for now; Claude support for them comes in later phases.
 
 The dashboard (`ccsw`) and the live monitor (`ccsw watch`):
 
@@ -136,17 +136,27 @@ ccsw switch --strategy best --json   # {"switched": true, "from": ..., "to": ...
 ccsw auto --once --json              # one compact JSON event per line
 ```
 
-### Automatic switching
+### Automatic switching (Claude Code)
 
 ```bash
-ccsw auto                    # foreground loop, switch at 90% used
+ccsw auto                    # foreground loop, switch Claude Code accounts at 90% used
 ccsw auto --threshold 80     # switch earlier
 ccsw auto --once             # one tick, outcome in the exit code (0 switched, 1 error, 2 nothing to do, 3 blocked)
 ccsw auto --dry-run          # log what it would do, never switch
-ccsw auto --json             # one JSON event per line
+ccsw auto --json             # one JSON event per line (schemaVersion 2, provider "claude")
 ```
 
+Auto-switch covers Claude Code accounts only. A running Claude Code session picks the new
+login up by itself (on the next message, or within about 30 seconds with the macOS Keychain),
+so switching early keeps you working. Codex sessions keep the account they started with
+until they restart — Codex CLI's app-server daemon loads `auth.json` once and re-reads it
+only for the account it already holds — so there is no Codex auto-switch; use `ccsw
+switch` and restart the session. `ccsw auto` on a roster without a Claude Code account
+exits 1 and says so. While the Keychain is locked, the engine holds (`active-idle`) rather
+than failing over.
+
 Defaults live in `settings.json`; change them with `ccsw config set autoswitch.threshold 80`.
+`autoswitch.model` names that no account reports produce one `config-warning` event.
 
 ### Run two accounts at once (session mode)
 

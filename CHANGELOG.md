@@ -3,6 +3,27 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Changed
+
+- `ccsw auto` now switches Claude Code accounts. Codex auto-switch is withdrawn: a
+  Codex session keeps the account it started with until it restarts (the app-server daemon
+  loads `auth.json` once and re-reads it only for the account it already holds), so an
+  automatic switch could never reach the session that hit the limit. `ccsw auto` on a
+  roster without a Claude Code account, and `ccsw auto codex`, exit 1 with an explanation.
+- `auto --json` events are `schemaVersion: 2` and carry `provider: "claude"`.
+- The TUI auto view shows the Claude Code active card and candidates; the `Go live`
+  confirmation names Claude Code. Without a Claude Code account the view shows a notice
+  instead of starting an engine.
+
+### Added
+
+- A `keychain unavailable` active account is held like an expired token (`no-switch
+  active-idle`) instead of counting toward failover.
+- `autoswitch.model` names that no account's usage windows report produce one
+  `config-warning` event per run.
+
 ## v0.4.0 — 2026-10-08
 
 ### Changed

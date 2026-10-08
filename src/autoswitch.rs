@@ -1177,14 +1177,20 @@ fn earliest_recovery(
 
 const AUTO_EPILOG: &str = "Exit codes with --once:
   0  switched to another account
-  1  error (network trouble, lock contention, ...)
+  1  error (network trouble, lock contention, no Claude Code account, ...)
   2  no action needed
   3  blocked: wanted to switch but no viable target / all exhausted
 
+Auto-switch covers Claude Code accounts: a running Claude Code session picks the
+new login up by itself (next message, or ~30 s with the macOS Keychain). Codex
+sessions keep the account they started with until they restart, so there is no
+Codex auto-switch; use `ccsw switch` and restart the session instead.
+
 Examples:
   ccsw auto                       # foreground loop, switch at 90% used
+  ccsw auto claude                # the same (claude is the only provider)
   ccsw auto --threshold 80        # switch earlier
-  ccsw auto --model GPT-5.3-Codex-Spark   # also switch when that model pool's weekly limit is hit
+  ccsw auto --model Fable         # also switch when that model's weekly limit is hit
   ccsw auto --json                # one JSON event per line (for scripts)
   ccsw auto --once; echo $?       # single tick, outcome in exit code
   ccsw auto --dry-run             # log decisions, never actually switch
@@ -1194,7 +1200,7 @@ Defaults live in settings.json in the backup root; flags override them.";
 #[derive(Debug, Parser)]
 #[command(
     name = "ccsw auto",
-    about = "Automatically switch accounts when the active one nears its 5h/7d rate limit. Runs a foreground polling loop; use --once for a single tick (cron-friendly).",
+    about = "Automatically switch Claude Code accounts when the active one nears its 5h/7d rate limit. Runs a foreground polling loop; use --once for a single tick (cron-friendly).",
     after_help = AUTO_EPILOG,
     disable_version_flag = true
 )]
@@ -1214,7 +1220,7 @@ struct AutoArgs {
     /// Minimum time between proactive switches (default 300)
     #[arg(long, value_name = "SECONDS")]
     cooldown: Option<f64>,
-    /// Also switch when a per-model weekly limit is hit, not just the account-wide 5h/7d windows. One pool name or a comma-separated list of the model pools an account reports (e.g. GPT-5.3-Codex-Spark), or 'all' for every per-model window
+    /// Also switch when a per-model weekly limit is hit, not just the account-wide 5h/7d windows. One pool name or a comma-separated list of the model pools an account reports (e.g. Fable), or 'all' for every per-model window
     #[arg(long, value_name = "NAMES")]
     model: Option<String>,
     /// Allow switching onto managed API-key accounts as a last resort (they bill per token; default: excluded)
