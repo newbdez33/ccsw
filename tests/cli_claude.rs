@@ -566,3 +566,20 @@ fn auto_is_refused_on_a_codex_only_store_and_for_codex() {
         run.stdout
     );
 }
+
+#[test]
+fn auto_on_a_fresh_store_explains_which_account_to_add() {
+    let cli = Cli::new();
+    for args in [
+        vec!["auto", "--once"],
+        vec!["auto", "claude", "--once", "--json"],
+    ] {
+        let run = cli.run(&args);
+        assert_eq!(run.status, 1, "{}{}", run.stdout, run.stderr);
+        assert!(run.stdout.is_empty(), "{}", run.stdout);
+        assert_eq!(
+            run.stderr.trim(),
+            format!("Error: {}", ccsw::autoswitch::CLAUDE_ONLY_NOTICE)
+        );
+    }
+}
