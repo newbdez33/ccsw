@@ -11,6 +11,7 @@ use crate::autoswitch::{Engine, Event};
 use crate::errors::Result;
 use crate::model::SwitchOutcome;
 use crate::paths::Paths;
+use crate::provider::Provider;
 use crate::store::settings::config_set;
 use crate::store::{AutoSwitchSettings, Settings};
 use crate::switcher::{Line as UiLine, SilentUi, Strategy, Switcher, Ui};
@@ -225,12 +226,18 @@ impl Runtime {
             };
             switcher.ui = Box::new(SilentUi);
             let sink = tx.clone();
-            let mut engine = Engine::new(&mut switcher, settings, dry_run, move |event| {
-                let _ = sink.send(Msg::Engine {
-                    id,
-                    event: event.clone(),
-                });
-            });
+            let mut engine = Engine::new(
+                &mut switcher,
+                Provider::Codex,
+                settings,
+                dry_run,
+                move |event| {
+                    let _ = sink.send(Msg::Engine {
+                        id,
+                        event: event.clone(),
+                    });
+                },
+            );
             engine.run_loop(stop);
         });
     }

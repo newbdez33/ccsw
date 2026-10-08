@@ -38,7 +38,7 @@ pub const IDLE_HOLD_MAX_S: f64 = 1800.0;
 pub trait AutoFacade {
     fn store(&self) -> &Store;
     fn roster(&mut self) -> Result<Roster>;
-    fn current_account(&mut self) -> Result<CurrentAccount>;
+    fn current_account(&mut self, provider: Provider) -> Result<CurrentAccount>;
     fn switch_to(&mut self, slot: u32) -> Result<crate::model::SwitchOutcome>;
 }
 
@@ -358,6 +358,7 @@ impl TickOutcome {
 
 pub struct Engine<'a> {
     facade: &'a mut dyn AutoFacade,
+    provider: Provider,
     settings: AutoSwitchSettings,
     models: Vec<String>,
     dry_run: bool,
@@ -382,6 +383,7 @@ struct Ranked {
 impl<'a> Engine<'a> {
     pub fn new(
         facade: &'a mut dyn AutoFacade,
+        provider: Provider,
         settings: AutoSwitchSettings,
         dry_run: bool,
         sink: impl FnMut(&Event) + 'a,
@@ -389,6 +391,7 @@ impl<'a> Engine<'a> {
         let models = settings.model_names();
         Self {
             facade,
+            provider,
             settings,
             models,
             dry_run,
@@ -401,6 +404,11 @@ impl<'a> Engine<'a> {
             idle_hold_slow: false,
             active_next_poll_at: None,
         }
+    }
+
+    /// The provider this engine rotates.
+    pub fn provider(&self) -> Provider {
+        self.provider
     }
 
     /// Replace the wall clock (tests).
@@ -460,7 +468,7 @@ impl<'a> Engine<'a> {
             .filter_map(|key| key.parse().ok())
             .collect();
 
-        let (current, email, api_key) = match self.facade.current_account()? {
+        let (current, email, api_key) = match self.facade.current_account(self.provider)? {
             CurrentAccount::Managed {
                 slot,
                 email,
@@ -491,15 +499,12 @@ impl<'a> Engine<'a> {
             email: email.clone(),
         };
         let store = self.facade.store();
-        // Phase 1: the engine rotates Codex accounts only.
+        // Keep the other provider out of this engine's candidate list.
+        let provider = self.provider;
         let candidates: Vec<u32> = roster
             .switchable_slots(|slot| credentials::exists(store, slot))
             .into_iter()
-            .filter(|slot| {
-                roster
-                    .record(*slot)
-                    .is_some_and(|r| r.provider == Provider::Codex)
-            })
+            .filter(|slot| roster.record(*slot).is_some_and(|r| r.provider == provider))
             .filter(|slot| *slot != current && !quarantined.contains(slot))
             .collect();
 
@@ -576,7 +581,10 @@ impl<'a> Engine<'a> {
                         self.idle_hold_slow = true;
                         self.no_switch(
                             "active-idle",
-                            "token expired while Codex is idle; resumes on next use",
+                            format!(
+                                "token expired while {} is idle; resumes on next use",
+                                self.provider.tool_name()
+                            ),
                         );
                         return Ok(TickOutcome::NoAction);
                     }
@@ -1293,7 +1301,7 @@ pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn 
         let _ = writeln!(out, "{}", printer::dimmed(&banner));
     }
     let sink = |event: &Event| write_event(out, event, json);
-    let mut engine = Engine::new(facade, settings, args.dry_run, sink);
+    let mut engine = Engine::new(facade, Provider::Codex, settings, args.dry_run, sink);
     if args.once {
         return engine.tick().code();
     }
@@ -1333,6 +1341,7 @@ mod tests {
     struct Fake {
         store: Store,
         roster: Roster,
+        provider: Provider,
         current: CurrentAccount,
         switches: Vec<u32>,
         fail_switch: bool,
@@ -1345,7 +1354,11 @@ mod tests {
         fn roster(&mut self) -> Result<Roster> {
             Ok(self.roster.clone())
         }
-        fn current_account(&mut self) -> Result<CurrentAccount> {
+        fn current_account(&mut self, provider: Provider) -> Result<CurrentAccount> {
+            assert_eq!(
+                provider, self.provider,
+                "the engine asks for its own provider"
+            );
             Ok(self.current.clone())
         }
         fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
@@ -1371,7 +1384,7 @@ mod tests {
             }
             Ok(SwitchOutcome {
                 switched,
-                provider: Provider::Codex,
+                provider: self.provider,
                 from,
                 to: Some(AccountRef {
                     number: Some(slot),
@@ -1388,6 +1401,20 @@ mod tests {
                 warnings: vec!["w1".into()],
             })
         }
+    }
+
+    /// A Claude slot file for `a{slot}@example.com` whose token is far from expiry.
+    fn claude_slot(slot: u32) -> Value {
+        use crate::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
+        let credential = ClaudeCredential::from_value(json!({"claudeAiOauth": {
+            "accessToken": format!("cat-{slot}"), "refreshToken": format!("crt-{slot}"),
+            "expiresAt": FAR * 1000, "scopes": ["user:inference"]
+        }}));
+        SlotFile::new(
+            &credential,
+            OauthAccount::synthesized(&format!("a{slot}@example.com")),
+        )
+        .to_value()
     }
 
     fn auth(account_id: &str, access_exp: i64, refresh: Option<&str>) -> AuthJson {
@@ -1454,14 +1481,31 @@ mod tests {
 
     impl Fixture {
         fn new(slots: &[u32]) -> Self {
+            Self::new_for(Provider::Codex, slots)
+        }
+
+        /// Claude records with Claude slot files; the first slot is the live login.
+        fn claude(slots: &[u32]) -> Self {
+            Self::new_for(Provider::Claude, slots)
+        }
+
+        fn new_for(provider: Provider, slots: &[u32]) -> Self {
             let (dir, store) = temp_store();
             let mut roster = Roster::empty();
             for &slot in slots {
                 let id = format!("a{slot}");
                 let mut record = AccountRecord::new(format!("{id}@example.com"));
                 record.organization_uuid = id.clone();
+                record.provider = provider;
                 roster.add_record(slot, record);
-                credentials::write(&store, slot, &auth(&id, FAR, Some("rt")).0).unwrap();
+                match provider {
+                    Provider::Codex => {
+                        credentials::write(&store, slot, &auth(&id, FAR, Some("rt")).0).unwrap()
+                    }
+                    Provider::Claude => {
+                        credentials::write(&store, slot, &claude_slot(slot)).unwrap()
+                    }
+                }
             }
             let current = CurrentAccount::Managed {
                 slot: slots[0],
@@ -1473,6 +1517,7 @@ mod tests {
                 fake: Fake {
                     store,
                     roster,
+                    provider,
                     current,
                     switches: Vec::new(),
                     fail_switch: false,
@@ -1530,10 +1575,15 @@ mod tests {
     ) -> (TickOutcome, Vec<Event>) {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let sink_log = log.clone();
+        let provider = fixture.fake.provider;
         let outcome = {
-            let mut engine = Engine::new(&mut fixture.fake, settings, dry_run, move |event| {
-                sink_log.borrow_mut().push(event.clone())
-            });
+            let mut engine = Engine::new(
+                &mut fixture.fake,
+                provider,
+                settings,
+                dry_run,
+                move |event| sink_log.borrow_mut().push(event.clone()),
+            );
             engine.tick()
         };
         let events = log.borrow().clone();
@@ -2024,21 +2074,15 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_record_is_never_a_candidate() {
-        use crate::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
+    fn records_of_the_other_provider_are_never_candidates() {
+        // A Codex engine ignores a Claude record …
         let mut fixture = Fixture::new(&[1, 2, 3]);
         let record = fixture.fake.roster.record_mut(3).unwrap();
         record.provider = Provider::Claude;
-        let credential = ClaudeCredential::from_value(json!({"claudeAiOauth": {
-            "accessToken": "cat", "refreshToken": "crt", "expiresAt": FAR * 1000,
-            "scopes": ["user:inference"]
-        }}));
-        let slot_file = SlotFile::new(&credential, OauthAccount::synthesized("a3@example.com"));
-        credentials::write(&fixture.fake.store, 3, &slot_file.to_value()).unwrap();
+        credentials::write(&fixture.fake.store, 3, &claude_slot(3)).unwrap();
         fixture.seed(1, usage(95.0, 10.0, None));
         fixture.seed(2, usage(40.0, 10.0, None));
         fixture.seed(3, usage(5.0, 5.0, None));
-
         let (outcome, events) = tick(&mut fixture, defaults(), true);
         assert_eq!(outcome, TickOutcome::Switched);
         let Event::Poll { headroom, .. } = &events[0] else {
@@ -2049,6 +2093,56 @@ mod tests {
             &events[1],
             Event::Switch { to: Some(to), .. } if to.number == Some(2)
         ));
+
+        // … and a Claude engine ignores a Codex record, even the best one.
+        let mut fixture = Fixture::claude(&[1, 2, 3]);
+        let record = fixture.fake.roster.record_mut(3).unwrap();
+        record.provider = Provider::Codex;
+        credentials::write(&fixture.fake.store, 3, &auth("a3", FAR, Some("rt")).0).unwrap();
+        fixture.seed(1, usage(95.0, 10.0, None));
+        fixture.seed(2, usage(40.0, 10.0, None));
+        fixture.seed(3, usage(5.0, 5.0, None));
+        let (outcome, events) = tick(&mut fixture, defaults(), true);
+        assert_eq!(outcome, TickOutcome::Switched);
+        let Event::Poll { headroom, .. } = &events[0] else {
+            panic!("poll event");
+        };
+        assert!(!headroom.contains_key(&3), "the Codex slot is not ranked");
+        assert!(matches!(
+            &events[1],
+            Event::Switch { to: Some(to), .. } if to.number == Some(2)
+        ));
+        assert!(fixture.fake.switches.is_empty(), "dry-run");
+    }
+
+    #[test]
+    fn idle_detail_names_the_engine_provider() {
+        let mut fixture = Fixture::claude(&[1, 2]);
+        fixture.seed_failure(1, "http-401");
+        fixture.seed(2, usage(20.0, 10.0, None));
+        // An expired live token: the collector derives `token expired` for the
+        // active slot when its access token is past expiry and nothing fetched it.
+        let expired = {
+            use crate::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
+            let credential = ClaudeCredential::from_value(json!({"claudeAiOauth": {
+                "accessToken": "cat-1", "refreshToken": "crt-1", "expiresAt": 1000,
+                "scopes": ["user:inference"]
+            }}));
+            SlotFile::new(&credential, OauthAccount::synthesized("a1@example.com")).to_value()
+        };
+        credentials::write(&fixture.fake.store, 1, &expired).unwrap();
+        let mut settings = defaults();
+        settings.unhealthy_ticks = 1;
+        let (outcome, events) = tick(&mut fixture, settings, false);
+        assert_eq!(outcome, TickOutcome::NoAction);
+        assert_eq!(
+            no_switch_reason(&events),
+            Some((
+                "active-idle".into(),
+                "token expired while Claude Code is idle; resumes on next use".into()
+            ))
+        );
+        assert!(fixture.fake.switches.is_empty());
     }
 
     #[test]
@@ -2093,9 +2187,13 @@ mod tests {
         settings.unhealthy_ticks = 2;
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let sink_log = log.clone();
-        let mut engine = Engine::new(&mut fixture.fake, settings, false, move |event| {
-            sink_log.borrow_mut().push(event.clone())
-        });
+        let mut engine = Engine::new(
+            &mut fixture.fake,
+            Provider::Codex,
+            settings,
+            false,
+            move |event| sink_log.borrow_mut().push(event.clone()),
+        );
         assert_eq!(engine.tick(), TickOutcome::NoAction);
         let events = log.borrow().clone();
         assert_eq!(
@@ -2148,9 +2246,13 @@ mod tests {
         let base = fixture.now;
         let clock = Rc::new(RefCell::new(base));
         let clock_ref = clock.clone();
-        let mut engine = Engine::new(&mut fixture.fake, settings, false, move |event| {
-            sink_log.borrow_mut().push(event.clone())
-        })
+        let mut engine = Engine::new(
+            &mut fixture.fake,
+            Provider::Codex,
+            settings,
+            false,
+            move |event| sink_log.borrow_mut().push(event.clone()),
+        )
         .with_clock(move || *clock_ref.borrow());
         assert_eq!(engine.tick(), TickOutcome::NoAction);
         *clock.borrow_mut() = base + IDLE_HOLD_MAX_S + 1.0;
@@ -2178,6 +2280,7 @@ mod tests {
         let sink_log = log.clone();
         let mut engine = Engine::new(
             &mut fixture.fake,
+            Provider::Codex,
             AutoSwitchSettings::default(),
             false,
             move |event| sink_log.borrow_mut().push(event.clone()),
@@ -2225,9 +2328,13 @@ mod tests {
             interval_seconds: 60.0,
             ..AutoSwitchSettings::default()
         };
-        let mut engine = Engine::new(&mut fixture.fake, settings, false, move |event| {
-            sink_log.borrow_mut().push(event.clone())
-        });
+        let mut engine = Engine::new(
+            &mut fixture.fake,
+            Provider::Codex,
+            settings,
+            false,
+            move |event| sink_log.borrow_mut().push(event.clone()),
+        );
         let outcome = engine.tick();
         assert_eq!(outcome, TickOutcome::Blocked);
         let events = log.borrow().clone();
@@ -2251,6 +2358,7 @@ mod tests {
         let sink_log = log.clone();
         let mut engine = Engine::new(
             &mut fixture.fake,
+            Provider::Codex,
             AutoSwitchSettings::default(),
             false,
             move |event| sink_log.borrow_mut().push(event.clone()),
@@ -2404,8 +2512,8 @@ mod tests {
             fn roster(&mut self) -> Result<Roster> {
                 self.0.roster()
             }
-            fn current_account(&mut self) -> Result<CurrentAccount> {
-                self.0.current_account()
+            fn current_account(&mut self, provider: Provider) -> Result<CurrentAccount> {
+                self.0.current_account(provider)
             }
             fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
                 let mut outcome = self.0.switch_to(slot)?;
@@ -2417,6 +2525,7 @@ mod tests {
         let mut stubborn = Stubborn(fixture.fake);
         let mut engine = Engine::new(
             &mut stubborn,
+            Provider::Codex,
             AutoSwitchSettings::default(),
             false,
             move |event| sink_log.borrow_mut().push(event.clone()),
@@ -2437,7 +2546,7 @@ mod tests {
             interval_seconds: 100.0,
             ..AutoSwitchSettings::default()
         };
-        let mut engine = Engine::new(&mut fixture.fake, settings, false, |_| {});
+        let mut engine = Engine::new(&mut fixture.fake, Provider::Codex, settings, false, |_| {});
         assert_eq!(engine.tick(), TickOutcome::NoAction);
         let delay = engine.next_delay(TickOutcome::NoAction);
         assert!((90.0..=110.0).contains(&delay), "{delay}");
@@ -2476,6 +2585,7 @@ mod tests {
         let counter = polls.clone();
         let mut engine = Engine::new(
             &mut fixture.fake,
+            Provider::Codex,
             AutoSwitchSettings::default(),
             false,
             move |event| {

@@ -2346,8 +2346,8 @@ impl crate::autoswitch::AutoFacade for Switcher {
         Switcher::roster(self)
     }
 
-    fn current_account(&mut self) -> Result<CurrentAccount> {
-        Switcher::current_account(self)
+    fn current_account(&mut self, provider: Provider) -> Result<CurrentAccount> {
+        Switcher::current_account_for(self, provider)
     }
 
     fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {

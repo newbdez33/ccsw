@@ -59,7 +59,7 @@ impl AutoFacade for Fake {
     fn roster(&mut self) -> Result<Roster> {
         Ok(self.roster.clone())
     }
-    fn current_account(&mut self) -> Result<CurrentAccount> {
+    fn current_account(&mut self, _provider: Provider) -> Result<CurrentAccount> {
         Ok(self.current.clone())
     }
     fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
