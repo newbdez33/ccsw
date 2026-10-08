@@ -266,11 +266,15 @@ fn dashboard_active_card_minis_menu_and_footer() {
     assert_eq!(fg(&buf, ninety_six, work_y), DARK.crit);
     let (_, key_row) = find_row(&rows, "api-key-4@token.local");
     assert!(key_row.ends_with("   API key (no quota)"), "{key_row}");
-    let (_, expired_row) = find_row(&rows, "expired@x.y");
+    let (expired_y, expired_row) = find_row(&rows, "expired@x.y");
     assert!(
-        expired_row
-            .ends_with("   token expired — refresh deferred this pass; retries automatically"),
+        expired_row.ends_with("   token expired — refresh deferred this pass; retries"),
         "{expired_row}"
+    );
+    assert_eq!(
+        rows[expired_y + 1],
+        "   automatically",
+        "the 96-column note wraps at the 92-column card width"
     );
 
     let (menu_y, _) = find_row(&rows, "   menu");
@@ -291,7 +295,7 @@ fn dashboard_active_card_minis_menu_and_footer() {
 #[test]
 fn dashboard_keeps_every_account_and_scrolls_the_menu_when_the_terminal_is_short() {
     let mut app = app_with(TuiStart::Dashboard);
-    let rows = screen_rows(&render(&mut app, 100, 20, NOW));
+    let rows = screen_rows(&render(&mut app, 110, 20, NOW));
     find_row(&rows, "expired@x.y");
     assert_eq!(rows[14], "   menu");
     assert_eq!(rows[15], "");
@@ -305,7 +309,7 @@ fn dashboard_keeps_every_account_and_scrolls_the_menu_when_the_terminal_is_short
     assert!(!rows.iter().any(|r| r == "   Quit"), "{}", rows.join("\n"));
 
     app.handle_key(key(KeyCode::End), NOW);
-    let rows = screen_rows(&render(&mut app, 100, 20, NOW));
+    let rows = screen_rows(&render(&mut app, 110, 20, NOW));
     find_row(&rows, "expired@x.y");
     assert_eq!(rows[16], "   Remove account…");
     assert_eq!(rows[17], "   Theme…");
@@ -315,7 +319,7 @@ fn dashboard_keeps_every_account_and_scrolls_the_menu_when_the_terminal_is_short
 #[test]
 fn dashboard_menu_never_shrinks_below_the_breadcrumb_and_cursor_row() {
     let mut app = app_with(TuiStart::Dashboard);
-    let rows = screen_rows(&render(&mut app, 100, 16, NOW));
+    let rows = screen_rows(&render(&mut app, 110, 16, NOW));
     assert_eq!(rows[13], "   menu");
     assert_eq!(rows[14], " ▌ Switch account…");
     assert_eq!(
@@ -327,6 +331,28 @@ fn dashboard_menu_never_shrinks_below_the_breadcrumb_and_cursor_row() {
         !rows.iter().any(|r| r.contains("expired@x.y")),
         "the panel gives up its last row instead:\n{}",
         rows.join("\n")
+    );
+}
+
+#[test]
+fn dashboard_wraps_long_rows_on_a_narrow_terminal() {
+    let mut app = app_with(TuiStart::Dashboard);
+    let rows = screen_rows(&render(&mut app, 60, 40, NOW));
+    let (header_y, header) = find_row(&rows, "john.doe@gmail.com");
+    assert_eq!(
+        header,
+        "    2  john.doe@gmail.com  [Personal]   ● active   · 6m"
+    );
+    assert_eq!(
+        rows[header_y + 1],
+        "   ago   ♥ 2",
+        "continuation rows keep the panel indent"
+    );
+    let (expired_y, expired) = find_row(&rows, "expired@x.y");
+    assert_eq!(expired, "    5  expired@x.y  [personal]   token expired —");
+    assert_eq!(
+        rows[expired_y + 1],
+        "   refresh deferred this pass; retries automatically"
     );
 }
 

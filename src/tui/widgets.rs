@@ -103,8 +103,23 @@ fn header_line(acc: &AccountSnapshot, number_style: Style, p: &Palette) -> Line<
 }
 
 /// The full card: header plus bars, a sentinel branch, or `usage unavailable`.
-/// `threshold` draws the `┃` tick (dashboard and auto panel only).
+/// `threshold` draws the `┃` tick (dashboard and auto panel only). Rows wider
+/// than `width` wrap like cswap's cards.
 pub fn account_card(
+    acc: &AccountSnapshot,
+    width: usize,
+    threshold: Option<f64>,
+    now: f64,
+    p: &Palette,
+) -> Vec<Line<'static>> {
+    card_lines(acc, width, threshold, now, p)
+        .into_iter()
+        .flat_map(|line| wrap_line(line, width))
+        .collect()
+}
+
+/// The card's rows before wrapping; see [`account_card`].
+fn card_lines(
     acc: &AccountSnapshot,
     width: usize,
     threshold: Option<f64>,
@@ -336,7 +351,7 @@ pub fn accounts_panel(
                 if last_was_card {
                     rows.push(Line::default());
                 }
-                rows.push(mini_line(acc, now, p));
+                rows.extend(wrap_line(mini_line(acc, now, p), width));
                 last_was_card = false;
             }
         }
@@ -426,6 +441,74 @@ pub fn render_toasts(buf: &mut Buffer, area: Rect, toasts: &[Toast], p: &Palette
             .render(rect, buf);
         bottom = rect.y.saturating_sub(1);
     }
+}
+
+/// Word-wrap a styled line at `width` the way cswap's cards wrap: break at
+/// spaces, split a word longer than the width, and start continuation rows
+/// at the first column. The first row keeps its leading indent.
+pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let cells: Vec<(char, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+        .collect();
+    let mut rows: Vec<Vec<(char, Style)>> = vec![Vec::new()];
+    let mut i = 0;
+    while i < cells.len() {
+        let space = cells[i].0 == ' ';
+        let mut j = i;
+        while j < cells.len() && (cells[j].0 == ' ') == space {
+            j += 1;
+        }
+        let run = &cells[i..j];
+        i = j;
+        let row = rows.last().expect("row");
+        let row_len = row.len();
+        if space {
+            // Gaps and the first row's indent stay; spaces at a break or at
+            // the start of a continuation row are dropped.
+            if row_len == 0 && rows.len() > 1 {
+                continue;
+            }
+            if row_len + run.len() <= width {
+                rows.last_mut().expect("row").extend_from_slice(run);
+            } else {
+                rows.push(Vec::new());
+            }
+            continue;
+        }
+        if row.iter().any(|(c, _)| *c != ' ') && row_len + run.len() > width {
+            rows.push(Vec::new());
+        }
+        let mut rest = run;
+        loop {
+            let row = rows.last_mut().expect("row");
+            let room = width - row.len();
+            if rest.len() <= room {
+                row.extend_from_slice(rest);
+                break;
+            }
+            row.extend_from_slice(&rest[..room]);
+            rest = &rest[room..];
+            rows.push(Vec::new());
+        }
+    }
+    rows.into_iter()
+        .map(|mut row| {
+            while row.last().is_some_and(|(c, _)| *c == ' ') {
+                row.pop();
+            }
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for (c, style) in row {
+                match spans.last_mut() {
+                    Some(span) if span.style == style => span.content.to_mut().push(c),
+                    _ => spans.push(Span::styled(c.to_string(), style)),
+                }
+            }
+            Line::from(spans).style(line.style)
+        })
+        .collect()
 }
 
 /// Rows a text takes when wrapped at `width` (word wrap, long words split).
@@ -576,15 +659,15 @@ mod tests {
 
         // Narrow: the clock is dropped per row when it does not fit. Width 48
         // rejects even the short same-day clock form, whatever the local zone.
+        // (The 61-column header wraps first, so find the bar row by label.)
         let narrow = account_card(&acc, 48, None, now, p);
-        assert_eq!(
-            text(&narrow[1]),
-            "    5h    ━━━━━━━━━───  76%  resets 2h 47m"
-        );
-        assert!(
-            !text(&narrow[1]).contains('┃'),
-            "no tick without a threshold"
-        );
+        let bar = narrow
+            .iter()
+            .map(text)
+            .find(|t| t.starts_with("    5h"))
+            .unwrap();
+        assert_eq!(bar, "    5h    ━━━━━━━━━───  76%  resets 2h 47m");
+        assert!(!bar.contains('┃'), "no tick without a threshold");
     }
 
     #[test]
@@ -850,5 +933,86 @@ mod tests {
         assert_eq!(wrap_text("abcdefgh", 3), vec!["abc", "def", "gh"]);
         assert_eq!(wrap_text("x\ny", 3), vec!["x", "y"]);
         assert_eq!(wrap_count("", 10), 1);
+    }
+
+    #[test]
+    fn wrap_line_breaks_at_spaces_keeps_styles_and_folds_long_words() {
+        let p = &DARK;
+        let line = Line::from(vec![
+            Span::raw("    5h "),
+            Span::styled("━━━━━━━━", p.warn_style()),
+            Span::styled(" 76%", p.warn_style()),
+            Span::styled("  resets 2h 47m  (ahead of pace)", p.muted_style()),
+        ]);
+        let rows = wrap_line(line.clone(), 30);
+        let texts: Vec<String> = rows.iter().map(text).collect();
+        assert_eq!(
+            texts,
+            ["    5h ━━━━━━━━ 76%  resets 2h", "47m  (ahead of pace)"]
+        );
+        assert_eq!(
+            rows[0].spans[0].content, "    5h ",
+            "the first row keeps its indent"
+        );
+        assert_eq!(
+            rows[1].spans[0].style,
+            p.muted_style(),
+            "a span split across rows keeps its style"
+        );
+        assert_eq!(wrap_line(line, 100).len(), 1, "nothing to wrap");
+        let folded: Vec<String> = wrap_line(Line::from("abcdefgh"), 3)
+            .iter()
+            .map(text)
+            .collect();
+        assert_eq!(folded, ["abc", "def", "gh"]);
+        assert_eq!(wrap_line(Line::default(), 10).len(), 1);
+    }
+
+    #[test]
+    fn narrow_cards_and_minis_wrap_like_cswap() {
+        let p = &DARK;
+        let now = 1_790_000_000.0;
+        let mut acc = account(
+            2,
+            "john.doe@gmail.com",
+            true,
+            entry(Some(now - 400.0), None),
+        );
+        acc.tag = "Personal".into();
+        acc.usage.age_s = Some(400.0);
+        acc.usage.last_good = Some(NormalizedUsage {
+            five_hour: Some(WindowUsage {
+                pct: 76.0,
+                resets_at: Some(format_iso(now as i64 + 2 * 3600 + 47 * 60)),
+            }),
+            reset_credits: Some(2),
+            ..NormalizedUsage::default()
+        });
+        let texts: Vec<String> = account_card(&acc, 36, None, now, p)
+            .iter()
+            .map(text)
+            .collect();
+        assert_eq!(texts.len(), 4, "{texts:?}");
+        assert_eq!(texts[0], " 2  john.doe@gmail.com  [Personal]");
+        assert_eq!(texts[1], "● active   · 6m ago   ♥ 2");
+        assert!(texts[2].ends_with("  76%  resets 2h"), "{}", texts[2]);
+        assert_eq!(texts[3], "47m");
+
+        let mut expired = account(5, "expired@x.y", false, entry(Some(now - 720.0), None));
+        expired.usage.sentinel = Some(UsageSentinel::TokenExpired);
+        let snap = crate::tui::test_support::snapshot(vec![acc, expired], now);
+        let texts: Vec<String> = accounts_panel(Some(&snap), 52, None, true, now, p)
+            .iter()
+            .map(text)
+            .collect();
+        let i = texts
+            .iter()
+            .position(|t| t.starts_with(" 5  expired@x.y"))
+            .unwrap();
+        assert_eq!(texts[i], " 5  expired@x.y  [personal]   token expired —");
+        assert_eq!(
+            texts[i + 1],
+            "refresh deferred this pass; retries automatically"
+        );
     }
 }
