@@ -1,6 +1,10 @@
 //! Export / import of managed accounts as a `.ccsw` envelope (spec §11;
 //! research notes `cswap-cli-contract.md` §13 and `cswap-model-autoswitch.md` §8).
 //!
+//! Export writes version 2 (both providers). Import reads version 2, the
+//! version-1 `.ccsw` files of earlier releases (every account Codex) and cswap
+//! `.cswap` exports (every account Claude Code).
+//!
 //! Notices are printed to stderr as they happen, so a piped `export -` keeps
 //! stdout pure JSON, and are also collected into the reports for callers and
 //! tests.
@@ -12,8 +16,13 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
+use crate::claude::credentials::{
+    ClaudeCredential, CredentialKind, OAUTH_ACCOUNT_KEY, OauthAccount, SlotFile, looks_like_api_key,
+};
+use crate::claude::keychain::SystemSecurity;
+use crate::claude::live::{ClaudeLive, LiveLogin};
 use crate::codex::auth::{AuthJson, AuthKind};
 use crate::errors::{CcswError, Result};
 use crate::model::{AccountKind, AccountRecord, Identity, Roster, now_iso, now_unix};
@@ -23,7 +32,7 @@ use crate::provider::Provider;
 use crate::store::usage_store::{AUTH_DEAD_STRIKES, UsageStore};
 use crate::store::{Store, alias_owner, credentials, normalize_alias, resolve_identifier, roster};
 
-pub const FORMAT_VERSION: u64 = 1;
+pub const FORMAT_VERSION: u64 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportTarget {
@@ -71,7 +80,11 @@ struct Envelope {
     /// The same value under cswap's name, for readers that look for it.
     swap_version: &'static str,
     encrypted: bool,
+    /// The Codex active slot (v1 readers); mirrors `activeByProvider.codex`.
     active_account_number: Option<u32>,
+    /// Each provider's active slot when it is in the file.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    active_by_provider: BTreeMap<String, u32>,
     accounts: Vec<ExportedAccount>,
 }
 
@@ -79,6 +92,7 @@ struct Envelope {
 #[serde(rename_all = "camelCase")]
 struct ExportedAccount {
     number: u32,
+    provider: Provider,
     email: String,
     uuid: String,
     organization_uuid: String,
@@ -97,6 +111,7 @@ impl ExportedAccount {
     fn new(number: u32, record: &AccountRecord, credentials: Value) -> Self {
         Self {
             number,
+            provider: record.provider,
             email: record.email.clone(),
             uuid: record.uuid.clone(),
             organization_uuid: record.organization_uuid.clone(),
@@ -196,31 +211,42 @@ pub fn export_accounts(
         ],
         None => roster.sorted_slots(),
     };
-    // The archive format carries Codex accounts only in this release.
-    let (slots, claude): (Vec<u32>, Vec<u32>) = slots.into_iter().partition(|slot| {
-        roster
-            .record(*slot)
-            .is_none_or(|r| r.provider == Provider::Codex)
-    });
-    let live = AuthJson::read(&paths.live_auth_file()).ok().flatten();
+    let live_codex = AuthJson::read(&paths.live_auth_file()).ok().flatten();
+    // Only a Claude active slot that is being exported justifies reading Claude's login.
+    let live_claude = roster
+        .active_for(Provider::Claude)
+        .filter(|active| slots.contains(active))
+        .and_then(|_| ClaudeLive::new(paths, &SystemSecurity).read().ok());
 
     let mut notices = Vec::new();
-    if !claude.is_empty() {
-        notice(
-            &mut notices,
-            format!(
-                "Skipped {} Claude Code account(s): export covers Codex accounts only in this release.",
-                claude.len()
-            ),
-        );
-    }
     let mut skipped = Vec::new();
     let mut accounts = Vec::new();
     for slot in slots {
         let Some(record) = roster.record(slot) else {
             continue;
         };
-        match export_credentials(&store, &roster, slot, record, live.as_ref())? {
+        // A token Claude Code rotated inside the slot's session profile is the
+        // freshest copy; fold it in before reading the snapshot.
+        if record.provider == Provider::Claude
+            && let Err(err) =
+                crate::claude::session::reconcile(&store, slot, record, &SystemSecurity)
+        {
+            notice(
+                &mut notices,
+                format!(
+                    "Warning: Account-{slot} ({}): {err}; exporting the stored snapshot",
+                    record.email
+                ),
+            );
+        }
+        match export_credentials(
+            &store,
+            &roster,
+            slot,
+            record,
+            live_codex.as_ref(),
+            live_claude.as_ref(),
+        )? {
             Some(value) => accounts.push(ExportedAccount::new(slot, record, value)),
             None if account.is_some() => {
                 return Err(CcswError::credential_read(format!(
@@ -249,6 +275,11 @@ pub fn export_accounts(
         ));
     }
 
+    let in_file = |slot: Option<u32>| slot.filter(|s| accounts.iter().any(|e| e.number == *s));
+    let active_by_provider: BTreeMap<String, u32> = Provider::ALL
+        .into_iter()
+        .filter_map(|p| in_file(roster.active_for(p)).map(|s| (p.as_str().to_string(), s)))
+        .collect();
     let envelope = Envelope {
         version: FORMAT_VERSION,
         exported_at: now_iso(),
@@ -256,9 +287,8 @@ pub fn export_accounts(
         ccsw_version: crate::VERSION,
         swap_version: crate::VERSION,
         encrypted: false,
-        active_account_number: roster
-            .active_account_number
-            .filter(|active| accounts.iter().any(|entry| entry.number == *active)),
+        active_account_number: in_file(roster.active_for(Provider::Codex)),
+        active_by_provider,
         accounts,
     };
     let written = envelope.accounts.len();
@@ -293,24 +323,54 @@ pub fn export_accounts(
     })
 }
 
-/// The active slot exports the live login when it is the same identity (the
-/// freshest tokens); everything else comes from the stored snapshot.
+/// The active slot of each provider exports the live login when it is the same
+/// identity (the freshest tokens); everything else comes from the stored
+/// snapshot. A Claude live login contributes its login part only, and only
+/// when it is the same kind of credential as the snapshot (Claude Code can
+/// move to a managed key while `oauthAccount` lingers); the slot's stored
+/// `oauthAccount` stays.
 fn export_credentials(
     store: &Store,
     roster: &Roster,
     slot: u32,
     record: &AccountRecord,
-    live: Option<&AuthJson>,
+    live_codex: Option<&AuthJson>,
+    live_claude: Option<&LiveLogin>,
 ) -> Result<Option<Value>> {
-    if roster.active_account_number == Some(slot)
-        && let Some(live) = live
-        && live
-            .identity()
-            .is_some_and(|identity| identity == record.identity())
-    {
-        return Ok(Some(live.0.clone()));
+    let active = roster.active_for(record.provider) == Some(slot);
+    let stored = credentials::read(store, slot)?;
+    match record.provider {
+        Provider::Codex => {
+            if active
+                && let Some(live) = live_codex
+                && live
+                    .identity()
+                    .is_some_and(|identity| identity == record.identity())
+            {
+                return Ok(Some(live.0.clone()));
+            }
+            Ok(stored)
+        }
+        Provider::Claude => {
+            let Some(stored) = stored else {
+                return Ok(None);
+            };
+            if active
+                && let Some(live) = live_claude
+                && let Some(credential) = live.credential.as_ref()
+                && live
+                    .identity()
+                    .is_some_and(|identity| identity == record.identity())
+                && let Ok(file) = SlotFile::from_value(&stored)
+                && credential.kind() == file.credential.kind()
+            {
+                return Ok(Some(
+                    SlotFile::new(credential, file.oauth_account).to_value(),
+                ));
+            }
+            Ok(Some(stored))
+        }
     }
-    credentials::read(store, slot)
 }
 
 /// `<path>.<pid>.tmp` beside the target, 0600, fsync, rename. The parent is a
@@ -348,13 +408,45 @@ fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
+/// Which writer produced the file, decided from the root object alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flavor {
+    /// `version: 2` — `provider` per account (absent means Codex).
+    V2,
+    /// `version: 1` with `ccswVersion` / `cswitchVersion`: accounts are Codex
+    /// unless an entry says otherwise (ccsw never wrote `provider` in v1).
+    CcswV1,
+    /// `version: 1` from cswap (`swapVersion`, no ccsw marker): accounts are
+    /// Claude unless an entry says otherwise.
+    Cswap,
+}
+
 struct ParsedEnvelope {
-    active: Option<u64>,
+    flavor: Flavor,
+    active_account_number: Option<u64>,
+    active_by_provider: BTreeMap<Provider, u64>,
     accounts: Vec<Value>,
+}
+
+impl ParsedEnvelope {
+    /// The envelope's active slot for `provider`; cswap's `0` means unset.
+    fn active_for(&self, provider: Provider) -> Option<u64> {
+        let mapped = self.active_by_provider.get(&provider).copied();
+        let number = match (self.flavor, provider) {
+            (Flavor::V2, Provider::Codex) => mapped.or(self.active_account_number),
+            (Flavor::V2, Provider::Claude) => mapped,
+            (Flavor::CcswV1, Provider::Codex) | (Flavor::Cswap, Provider::Claude) => {
+                self.active_account_number
+            }
+            (Flavor::CcswV1, Provider::Claude) | (Flavor::Cswap, Provider::Codex) => None,
+        };
+        number.filter(|n| *n > 0)
+    }
 }
 
 struct ImportEntry {
     number: u32,
+    provider: Provider,
     record: AccountRecord,
     credentials: Value,
 }
@@ -367,13 +459,19 @@ enum Outcome {
 }
 
 /// Import an envelope: validate everything first (no writes), then write in
-/// envelope order under the store lock, matching accounts on identity.
+/// envelope order under the store lock, matching accounts on
+/// `(provider, email, organizationUuid)`.
 pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Result<ImportReport> {
     let bytes = read_source(&source)?;
     let envelope = parse_envelope(&bytes)?;
     let mut report = ImportReport::default();
     let local = roster::read_or_empty(paths)?;
-    let entries = validate_entries(&envelope.accounts, &local, &mut report.notices)?;
+    let entries = validate_entries(
+        &envelope.accounts,
+        envelope.flavor,
+        &local,
+        &mut report.notices,
+    )?;
 
     let store = Store::open(paths.clone());
     let _lock = store.lock()?;
@@ -381,13 +479,14 @@ pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Resu
     let mut roster = roster::init_if_absent(paths)?;
     let usage = UsageStore::new(paths);
     let now = now_unix() as f64;
-    let mut resolved_active: Option<u32> = None;
+    let mut resolved_active: BTreeMap<Provider, u32> = BTreeMap::new();
 
     for entry in entries {
+        let provider = entry.provider;
         let identity = entry.record.identity();
         let email = identity.email.clone();
-        let envelope_active = envelope.active == Some(u64::from(entry.number));
-        let (slot, outcome) = match roster.find_slot(Provider::Codex, &identity) {
+        let envelope_active = envelope.active_for(provider) == Some(u64::from(entry.number));
+        let (slot, outcome) = match roster.find_slot(provider, &identity) {
             Some(slot) if force => (slot, Outcome::Overwrote),
             Some(slot) if slot_token_dead(&usage, &store, slot, &identity, now) => {
                 (slot, Outcome::Replaced)
@@ -399,7 +498,7 @@ pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Resu
                 );
                 report.skipped += 1;
                 if envelope_active {
-                    resolved_active = Some(slot);
+                    resolved_active.insert(provider, slot);
                 }
                 continue;
             }
@@ -409,6 +508,30 @@ pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Resu
         // What the overwrite notes report is read before the write clears it.
         let strike = (outcome == Outcome::Overwrote)
             .then(|| strike_state(&usage, slot, &identity, &entry.credentials, now));
+        // Phase-3 ownership: a Claude slot being replaced coordinates with
+        // in-flight refreshes and invalidates its session profile once idle.
+        let _consume = match (provider, roster.record(slot)) {
+            (Provider::Claude, Some(old)) => {
+                let lock = crate::claude::session::mutation_lock(&store, slot)?;
+                let profile = store.paths.session_dir(slot, &old.email);
+                if profile.exists() && !crate::claude::session::is_quiescent(&profile) {
+                    notice(
+                        &mut report.notices,
+                        format!(
+                            "Warning: {email} (slot {slot}) has a live session-mode instance; its session profile keeps the pre-import credentials until it is restarted via 'ccsw run'."
+                        ),
+                    );
+                }
+                crate::claude::session::mark_backup_replacement(
+                    &store,
+                    slot,
+                    old,
+                    &entry.credentials,
+                )?;
+                lock
+            }
+            _ => None,
+        };
 
         credentials::write(&store, slot, &entry.credentials)?;
         usage.clear_dead_token(&[slot])?;
@@ -454,16 +577,22 @@ pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Resu
         }
         report.written_slots.push(slot);
         if envelope_active {
-            resolved_active = Some(slot);
+            resolved_active.insert(provider, slot);
         }
     }
 
-    if roster
-        .active_account_number
-        .is_none_or(|active| active == 0)
-        && let Some(slot) = resolved_active
-    {
-        roster.set_active(Some(slot));
+    // Seed each provider's active slot only where the local roster has none.
+    let mut seeded = false;
+    for (provider, slot) in &resolved_active {
+        if roster
+            .active_for(*provider)
+            .is_none_or(|active| active == 0)
+        {
+            roster.set_active_for(*provider, Some(*slot));
+            seeded = true;
+        }
+    }
+    if seeded {
         roster::write(paths, &roster)?;
     }
 
@@ -476,17 +605,18 @@ pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Resu
     }
     notice(&mut report.notices, summary);
 
-    if let Some(slot) = live_login_slot(paths, &store, &roster)
-        && report.written_slots.contains(&slot)
-        && let Some(record) = roster.record(slot)
-    {
-        notice(
-            &mut report.notices,
-            format!(
-                "Note: {} is your current live login — activate the imported credentials with: ccsw switch {slot} --force",
-                record.email
-            ),
-        );
+    for (_, slot) in live_login_slots(paths, &store, &roster) {
+        if report.written_slots.contains(&slot)
+            && let Some(record) = roster.record(slot)
+        {
+            notice(
+                &mut report.notices,
+                format!(
+                    "Note: {} is your current live login — activate the imported credentials with: ccsw switch {slot} --force",
+                    record.email
+                ),
+            );
+        }
     }
     Ok(report)
 }
@@ -521,12 +651,24 @@ fn parse_envelope(bytes: &[u8]) -> Result<ParsedEnvelope> {
         return Err(CcswError::transfer("export file must be a JSON object"));
     };
     let version = root.get("version");
-    if version.and_then(Value::as_f64) != Some(FORMAT_VERSION as f64) {
-        return Err(CcswError::transfer(format!(
-            "unsupported export version: {} (expected 1)",
-            python_repr(version)
-        )));
-    }
+    let flavor = match version.and_then(Value::as_f64) {
+        Some(2.0) => Flavor::V2,
+        Some(1.0) => {
+            if root.contains_key("ccswVersion") || root.contains_key("cswitchVersion") {
+                Flavor::CcswV1
+            } else if root.contains_key("swapVersion") {
+                Flavor::Cswap
+            } else {
+                Flavor::CcswV1
+            }
+        }
+        _ => {
+            return Err(CcswError::transfer(format!(
+                "unsupported export version: {} (expected 1 or 2)",
+                python_repr(version)
+            )));
+        }
+    };
     if root.get("encrypted") == Some(&Value::Bool(true)) {
         return Err(CcswError::transfer(
             "encrypted exports are not supported in this version — decrypt before piping (e.g. gpg -d backup.gpg | ccsw import -)",
@@ -538,16 +680,29 @@ fn parse_envelope(bytes: &[u8]) -> Result<ParsedEnvelope> {
             return Err(CcswError::transfer("export file has no accounts to import"));
         }
     };
+    let active_by_provider = root
+        .get("activeByProvider")
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| Some((Provider::parse_selector(key)?, value.as_u64()?)))
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(ParsedEnvelope {
-        active: root.get("activeAccountNumber").and_then(Value::as_u64),
+        flavor,
+        active_account_number: root.get("activeAccountNumber").and_then(Value::as_u64),
+        active_by_provider,
         accounts,
     })
 }
 
-/// Pass 1: every entry checked, nothing written. Alias conflicts with a
-/// different local identity are warnings that drop the imported alias.
+/// Pass 1: every entry checked for its provider, nothing written. Alias
+/// conflicts with a different local identity are warnings that drop the
+/// imported alias.
 fn validate_entries(
     raw: &[Value],
+    flavor: Flavor,
     local: &Roster,
     notices: &mut Vec<String>,
 ) -> Result<Vec<ImportEntry>> {
@@ -566,6 +721,23 @@ fn validate_entries(
                     python_repr(other)
                 )));
             }
+        };
+        let provider = match entry.get("provider") {
+            None | Some(Value::Null) => match flavor {
+                Flavor::V2 | Flavor::CcswV1 => Provider::Codex,
+                Flavor::Cswap => Provider::Claude,
+            },
+            Some(value) => serde_json::from_value::<Provider>(value.clone()).map_err(|_| {
+                CcswError::transfer(format!(
+                    "provider for {email} must be \"codex\" or \"claude\", got {}",
+                    python_repr(Some(value))
+                ))
+            })?,
+        };
+        // Claude identities are lowercase everywhere (`OauthAccount::identity`).
+        let email = match provider {
+            Provider::Claude => email.to_lowercase(),
+            Provider::Codex => email,
         };
         let number = entry
             .get("number")
@@ -602,19 +774,33 @@ fn validate_entries(
                 })?),
             };
         let plan_type = text_field("planType")?.filter(|text| !text.is_empty());
-        let auth = match entry.get("credentials") {
-            Some(value @ Value::Object(_)) => AuthJson::from_value(value.clone()),
-            _ => {
-                return Err(CcswError::transfer(format!(
-                    "credentials for {email} must be a JSON object"
-                )));
-            }
-        };
         let flagged_api_key = entry.get("kind").and_then(Value::as_str) == Some("api_key");
-        let kind =
-            (flagged_api_key || auth.kind() == AuthKind::ApiKey).then_some(AccountKind::ApiKey);
 
-        if !identities.insert((email.clone(), organization_uuid.clone())) {
+        let mut record = AccountRecord::new(email.clone());
+        record.provider = provider;
+        record.uuid = uuid;
+        record.organization_uuid = organization_uuid.clone();
+        record.organization_name = organization_name;
+        record.plan_type = plan_type;
+        record.added = added;
+        let (credentials, is_api_key) = match provider {
+            Provider::Codex => match entry.get("credentials") {
+                Some(value @ Value::Object(_)) => {
+                    let auth = AuthJson::from_value(value.clone());
+                    let api_key = auth.kind() == AuthKind::ApiKey;
+                    (auth.0, api_key)
+                }
+                _ => {
+                    return Err(CcswError::transfer(format!(
+                        "credentials for {email} must be a JSON object"
+                    )));
+                }
+            },
+            Provider::Claude => claude_import_credentials(entry, &email, &record, flagged_api_key)?,
+        };
+        record.kind = (flagged_api_key || is_api_key).then_some(AccountKind::ApiKey);
+
+        if !identities.insert((provider, email.clone(), organization_uuid.clone())) {
             let org = if organization_uuid.is_empty() {
                 "personal"
             } else {
@@ -624,7 +810,7 @@ fn validate_entries(
                 "duplicate account in export: {email} (org={org})"
             )));
         }
-        let identity = Identity::new(email.clone(), organization_uuid.clone());
+        let identity = record.identity();
         if let Some(name) = alias.clone() {
             if !aliases.insert(name.clone()) {
                 return Err(CcswError::transfer(format!(
@@ -633,7 +819,7 @@ fn validate_entries(
             }
             let foreign_owner = alias_owner(local, &name)
                 .and_then(|owner| local.record(owner))
-                .is_some_and(|owner| owner.identity() != identity);
+                .is_some_and(|owner| owner.provider != provider || owner.identity() != identity);
             if foreign_owner {
                 notice(
                     notices,
@@ -644,22 +830,94 @@ fn validate_entries(
                 alias = None;
             }
         }
-
-        let mut record = AccountRecord::new(email);
-        record.uuid = uuid;
-        record.organization_uuid = organization_uuid;
-        record.organization_name = organization_name;
-        record.plan_type = plan_type;
-        record.added = added;
         record.alias = alias;
-        record.kind = kind;
         entries.push(ImportEntry {
             number,
+            provider,
             record,
-            credentials: auth.0,
+            credentials,
         });
     }
     Ok(entries)
+}
+
+/// cswap's and ccsw's Claude shapes: a bare `sk-ant-api…` string, a slot file
+/// (`oauthAccount` inside), or a cswap entry (`config.oauthAccount`). Only the
+/// login part is kept; an `oauthAccount` found nowhere is synthesized from the
+/// entry's own fields. Returns the slot-file object and whether it is a key.
+fn claude_import_credentials(
+    entry: &Map<String, Value>,
+    email: &str,
+    record: &AccountRecord,
+    flagged_api_key: bool,
+) -> Result<(Value, bool)> {
+    let config_account = match entry.get("config") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(config)) => config
+            .get(OAUTH_ACCOUNT_KEY)
+            .filter(|value| value.is_object())
+            .cloned(),
+        Some(_) => {
+            return Err(CcswError::transfer(format!(
+                "config for {email} must be a JSON object"
+            )));
+        }
+    };
+    let mut credential = match entry.get("credentials") {
+        Some(Value::String(text)) if looks_like_api_key(text) => {
+            ClaudeCredential::managed_key(text)
+        }
+        Some(Value::String(_)) => {
+            return Err(CcswError::transfer(format!(
+                "API-key credentials for {email} must be a raw sk-ant-api… string"
+            )));
+        }
+        Some(value @ Value::Object(_)) => ClaudeCredential::from_value(value.clone()),
+        _ => {
+            return Err(CcswError::transfer(format!(
+                "credentials for {email} must be a JSON object"
+            )));
+        }
+    };
+    let embedded_account = credential
+        .0
+        .as_object_mut()
+        .and_then(|map| map.remove(OAUTH_ACCOUNT_KEY))
+        .filter(Value::is_object);
+    if credential.kind() == CredentialKind::Unknown {
+        return Err(CcswError::transfer(format!(
+            "credentials for {email} hold no Claude login (expected claudeAiOauth or primaryApiKey)"
+        )));
+    }
+    let is_api_key = credential.kind() == CredentialKind::ApiKey;
+    if flagged_api_key && !is_api_key {
+        return Err(CcswError::transfer(format!(
+            "API-key credentials for {email} must be a raw sk-ant-api… string"
+        )));
+    }
+    let account = embedded_account
+        .or(config_account)
+        .map(OauthAccount)
+        .unwrap_or_else(|| oauth_account_from_record(record));
+    Ok((SlotFile::new(&credential, account).to_value(), is_api_key))
+}
+
+/// The `oauthAccount` an entry implies when it carries none: cswap's token
+/// shape with the entry's identity fields filled in.
+fn oauth_account_from_record(record: &AccountRecord) -> OauthAccount {
+    let text_or_null = |text: &str| {
+        if text.is_empty() {
+            Value::Null
+        } else {
+            Value::String(text.to_string())
+        }
+    };
+    OauthAccount(json!({
+        "emailAddress": record.email,
+        "accountUuid": record.uuid,
+        "organizationUuid": text_or_null(&record.organization_uuid),
+        "organizationName": text_or_null(&record.organization_name),
+    }))
 }
 
 /// A dead-token strike on the slot's row that still binds to the stored generation.
@@ -698,19 +956,46 @@ fn strike_state(
     (had_strike, same_generation)
 }
 
-/// The managed slot holding the live login: by identity, or by key for an API key.
-fn live_login_slot(paths: &Paths, store: &Store, roster: &Roster) -> Option<u32> {
-    let live = AuthJson::read(&paths.live_auth_file()).ok().flatten()?;
-    if let Some(identity) = live.identity() {
-        return roster.find_slot(Provider::Codex, &identity);
+/// The managed slot holding each provider's live login: by identity, or by key
+/// for an API key. Claude's files are read only when a Claude slot exists.
+fn live_login_slots(paths: &Paths, store: &Store, roster: &Roster) -> Vec<(Provider, u32)> {
+    let mut slots = Vec::new();
+    if let Some(live) = AuthJson::read(&paths.live_auth_file()).ok().flatten() {
+        let slot = match live.identity() {
+            Some(identity) => roster.find_slot(Provider::Codex, &identity),
+            None => live.api_key().and_then(|key| {
+                roster.slots_of(Provider::Codex).into_iter().find(|slot| {
+                    credentials::read(store, *slot)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|value| AuthJson::from_value(value).api_key() == Some(key))
+                })
+            }),
+        };
+        slots.extend(slot.map(|slot| (Provider::Codex, slot)));
     }
-    let key = live.api_key()?;
-    roster.sequence.iter().copied().find(|slot| {
-        credentials::read(store, *slot)
-            .ok()
-            .flatten()
-            .is_some_and(|value| AuthJson::from_value(value).api_key() == Some(key))
-    })
+    if !roster.slots_of(Provider::Claude).is_empty()
+        && let Ok(live) = ClaudeLive::new(paths, &SystemSecurity).read()
+        && let Some(credential) = live.credential.as_ref()
+    {
+        let slot = match credential.kind() {
+            CredentialKind::ApiKey => credential.api_key().and_then(|key| {
+                roster.slots_of(Provider::Claude).into_iter().find(|slot| {
+                    credentials::read(store, *slot)
+                        .ok()
+                        .flatten()
+                        .and_then(|value| SlotFile::from_value(&value).ok())
+                        .is_some_and(|file| file.credential.api_key() == Some(key))
+                })
+            }),
+            CredentialKind::OAuth | CredentialKind::SetupToken => live
+                .identity()
+                .and_then(|identity| roster.find_slot(Provider::Claude, &identity)),
+            CredentialKind::Unknown => None,
+        };
+        slots.extend(slot.map(|slot| (Provider::Claude, slot)));
+    }
+    slots
 }
 
 /// `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`, which also keeps the
@@ -834,37 +1119,39 @@ mod tests {
     }
 
     #[test]
-    fn export_skips_claude_slots() {
+    fn export_includes_claude_slots() {
         let (dir, store) = mixed_store();
         let path = dir.path().join("out.ccsw");
         let report =
             export_accounts(&store.paths, ExportTarget::File(path.clone()), None, false).unwrap();
-        assert_eq!(report.written, 1);
-        assert_eq!(
-            report.notices[0],
-            "Skipped 1 Claude Code account(s): export covers Codex accounts only in this release."
-        );
+        assert_eq!(report.written, 2);
+        assert_eq!(report.notices.len(), 1, "{:?}", report.notices);
         let numbers: Vec<u64> = report.envelope["accounts"]
             .as_array()
             .unwrap()
             .iter()
             .map(|a| a["number"].as_u64().unwrap())
             .collect();
-        assert_eq!(numbers, [1]);
+        assert_eq!(numbers, [1, 2]);
+        assert_eq!(report.envelope["accounts"][1]["provider"], "claude");
         let written = fs::read_to_string(&path).unwrap();
-        assert!(!written.contains("claude@example.com"));
-        assert!(!written.contains("claudeAiOauth"));
+        assert!(written.contains("claude@example.com"));
+        // A snapshot without `oauthAccount` is still exported as stored.
+        assert_eq!(
+            report.envelope["accounts"][1]["credentials"],
+            json!({"claudeAiOauth": {"accessToken": "cat"}})
+        );
 
         let only_claude = dir.path().join("claude.ccsw");
-        let err = export_accounts(
+        let report = export_accounts(
             &store.paths,
             ExportTarget::File(only_claude.clone()),
             Some("2"),
             false,
         )
-        .unwrap_err();
-        assert_eq!(err.type_name(), "TransferError");
-        assert!(!only_claude.exists(), "nothing was written");
+        .unwrap();
+        assert_eq!(report.written, 1);
+        assert!(only_claude.exists());
     }
 
     #[test]

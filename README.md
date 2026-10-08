@@ -4,8 +4,7 @@ Multi-account switcher for the [OpenAI Codex CLI](https://github.com/openai/code
 Claude Code. Keep several Codex and Claude logins on one machine in one roster, switch any
 of them without logging in again, watch every account's usage in a live dashboard, let it
 switch Claude Code accounts for you before you hit a rate limit, and run different accounts
-side by side in separate terminals. Session mode supports both providers. Export/import
-still covers Codex accounts; mixed-provider transfers are a later phase.
+side by side in separate terminals. Session mode, export and import cover both providers.
 
 The dashboard (`ccsw`) and the live monitor (`ccsw watch`):
 
@@ -236,6 +235,17 @@ ccsw config [list|get KEY|set KEY VALUE|unset KEY|path]
 ccsw export backup.ccsw [--account 2] / ccsw import backup.ccsw [--force]
 ccsw purge
 ```
+
+`ccsw export` writes a version-2 `.ccsw` file with every Codex and Claude account
+(`--account` limits it to one). The active account of each provider is exported from its
+live login when that is the same account, and a token Claude Code rotated inside a session
+profile is folded into the slot first, so an export can refresh a stored snapshot.
+`ccsw import` reads those files, version-1 `.ccsw` files from earlier releases (all Codex)
+and `cswap` exports (`.cswap`, all Claude Code), matching accounts on provider, email and
+organization; `--force` overwrites matches in place and a quarantined dead-token slot is
+replaced without it. Importing over a Claude account whose session profile is running keeps
+that session on its old login until it restarts. Exports hold credentials in plain JSON:
+keep them private.
 
 Every verb accepts `--help`; `ccsw help` lists them all. The `cswap` flag spellings
 (`ccsw --list`, `ccsw --switch-to 2`, …) keep working.

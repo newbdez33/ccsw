@@ -410,8 +410,8 @@ options:
   --force               Overwrite existing accounts during import; with 'switch
                         <num|email>', activate the stored credentials without
                         backing up the current login first
-  --full                Accepted for compatibility (use with 'export'); Codex
-                        has no per-account config to include
+  --full                Accepted for compatibility (use with 'export'); ccsw exports
+                        always carry each account's stored identity
   --provider {{codex,claude}}
                         Act on one provider; the same as the word after
                         'switch', 'add', 'list' or 'status'
