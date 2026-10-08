@@ -1,6 +1,24 @@
 # ccsw Claude auto-switch — phase 2 implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+
+**Status:** Implemented for v0.5.0. All eight tasks are complete. The following
+implementation decisions supersede the original examples below:
+
+- Collection includes the tick-start and re-read live slots of the selected provider
+  only. Fetching the other provider's active slot could refresh its credentials.
+- A Keychain-unavailable login stays held until readable, including after 30 minutes.
+  The expired-token hold keeps its existing 30-minute cap.
+- Model validation uses `UsageEntry::decision_value()` so unreadable sentinels and
+  untrusted historical measurements cannot produce a warning.
+- Provider-filtered snapshots recompute their active slot. An OFF auto screen hides
+  the unavailable engine controls.
+- Live-token ownership is checked by credential fingerprint as well as slot identity
+  during collection, target refresh, and auto selection. Unreadable live credentials
+  stop all refreshes. Recovery does not change another provider's quarantine records.
+- The Keychain injection setter is test-only. Tests use the provider-specific request
+  counters and fixtures, and compare JSON keys and values without assuming key order.
+
 
 **Goal:** `ccsw auto` watches and switches **Claude Code** accounts — the provider that picks a switched login up inside a running session — and refuses to pretend it can do the same for Codex.
 
@@ -14,9 +32,9 @@
 
 - Rust edition 2024, `rust-version = "1.88"`; the quality gate is `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all` (every task ends green). Run the suite as `env -u CODEX_HOME cargo test --all` on this machine (the host exports `CODEX_HOME`; one pre-existing test asserts it is unset).
 - The engine body (settings, flags, clamps, exit codes `0` switched / `1` error / `2` no action / `3` blocked / `130` Ctrl-C, event kinds, `no-switch` reasons, human lines, banner, signal handling) is v0.1 §9 unchanged.
-- The active Claude account is never refreshed by ccsw (spec §8); the collector's `actives` carries every live slot and `claude_may_refresh` fails safe — the engine must keep both.
+- The active Claude account is never refreshed by ccsw (spec §8); the collector's `actives` protects both the tick-start and re-read live slot of the selected provider, and `claude_may_refresh` fails safe.
 - Refusal text, verbatim (spec §9): `Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'ccsw add claude' first.` — printed to stderr, exit `1`, before any tick.
-- `active-idle` detail, verbatim: `token expired while Claude Code is idle; resumes on next use` (token) and `keychain unavailable; holding until Claude Code's login is readable` (Keychain). Both hold up to `IDLE_HOLD_MAX_S` (1800 s) and never count toward failover.
+- `active-idle` detail, verbatim: `token expired while Claude Code is idle; resumes on next use` (token) and `keychain unavailable; holding until Claude Code's login is readable` (Keychain). Keychain failures never count toward failover. Expired tokens hold up to `IDLE_HOLD_MAX_S` (1800 s) before unhealthy counting resumes.
 - Events: `{"schemaVersion": 2, "event": …, "ts": …, "provider": "claude", …}`; human lines unchanged. `autoswitch_state.json` keeps `schemaVersion: 1`.
 - Model-name warning, verbatim: `autoswitch.model: <names> matches no account's usage windows — only the 5h/7d limits are being watched for it (typo?)` as a `config-warning` event, at most once per engine run, only on a tick where every relevant slot's usage is readable; `all` never warns.
 - Unit tests never touch the real macOS Keychain, `~/.claude`, `~/.codex` or the network: `temp_store()` paths, the `FakeSecurity` seam, the in-module mock, `CCSW_KEYCHAIN=off` in the e2e harness.
@@ -65,7 +83,7 @@ No new source files. Modified files (owner task in parentheses):
 
 This task keeps the product on Codex (the CLI and the TUI pass `Provider::Codex`), so every existing test stays green; Task 2 flips the two call sites to Claude.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `src/autoswitch.rs`'s `mod tests`, change the `Fake` facade to carry a provider and implement the new trait method. Replace the struct and its `AutoFacade` impl (lines ~1333-1395) with:
 
@@ -302,12 +320,12 @@ Update `tests/auto_once.rs`'s `Fake` impl (it is a separate crate-level test and
     }
 ```
 
-- [ ] **Step 2: Run the tests to see them fail**
+- [x] **Step 2: Run the tests to see them fail**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::`
 Expected: compile errors — `method current_account has 1 parameter but the declaration in trait AutoFacade has 0`, `this function takes 4 arguments but 5 arguments were supplied` for `Engine::new`.
 
-- [ ] **Step 3: Implement the provider on the trait and the engine**
+- [x] **Step 3: Implement the provider on the trait and the engine**
 
 `src/autoswitch.rs`, the trait (lines 38-43):
 
@@ -403,12 +421,12 @@ In `tick_inner`:
 
 `src/tui/worker.rs` (~line 410): `let mut engine = Engine::new(&mut switcher, Provider::Codex, settings, dry_run, move |event| { … });` and add `use crate::provider::Provider;` to the imports if it is not there (`grep -n "provider::Provider" src/tui/worker.rs`).
 
-- [ ] **Step 4: Run the tests to see them pass**
+- [x] **Step 4: Run the tests to see them pass**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::` then `env -u CODEX_HOME cargo test --test auto_once`
 Expected: all pass, including `records_of_the_other_provider_are_never_candidates` and `idle_detail_names_the_engine_provider`.
 
-- [ ] **Step 5: Run the gate and commit**
+- [x] **Step 5: Run the gate and commit**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && env -u CODEX_HOME cargo test --all`
 Expected: green (the product still runs the Codex engine; nothing observable changed).
@@ -430,7 +448,7 @@ git commit -m "refactor(auto): give the engine a provider and scope the active l
 - Produces: the CLI (`run_cli_to`) and the TUI worker construct `Engine::new(…, Provider::Claude, …)`; `usage_mock::CLAUDE_HOT` (Claude bearer: 5h 95 %, 7d 20 %); a Claude `world()` in `tests/e2e_auto.rs`.
 - Consumes: Task 1; the phase-1 harness (`Cli::write_claude_live_with`, `claude_creds(refresh, access)`, `claude_config(email, org_uuid, org_name)`, `Cli::claude_credentials()`, `Cli::claude_config()`, `Cli::live()`, `Cli::codex_calls()`, `UsageMock::usage_calls(bearer)`, `UsageMock::claude_token_calls()`).
 
-- [ ] **Step 1: Add the `CLAUDE_HOT` bearer to the mock**
+- [x] **Step 1: Add the `CLAUDE_HOT` bearer to the mock**
 
 `tests/support/usage_mock.rs`, after `CLAUDE_OK` (line ~50):
 
@@ -445,7 +463,7 @@ and a match arm in `claude_usage` next to `CLAUDE_LIMIT_7D` (line ~286):
         CLAUDE_HOT => Json(claude_body(95.0, 20.0, "2099-01-03T10:00:00Z")).into_response(),
 ```
 
-- [ ] **Step 2: Rewrite `tests/e2e_auto.rs` as a Claude world (the failing tests)**
+- [x] **Step 2: Rewrite `tests/e2e_auto.rs` as a Claude world (the failing tests)**
 
 Replace the file's header, `world()` and the four tests with the Claude versions below. The engine rules are the same; only the accounts, bearers and the files a switch leaves behind change.
 
@@ -636,7 +654,7 @@ fn once_with_every_candidate_at_limit_exits_3() {
 
 Notes for the implementer: `CLAUDE_OK`'s `Fable` scoped window is at 62 % and the default settings have no `autoswitch.model`, so it does not affect headroom (`45.0` = 100 − max(40, 55)). `CLAUDE_REFRESHED` is 30/35 → headroom 65. `claude_backups()` lists `backups/claude/`. If `usage_calls(CLAUDE_LIMIT_7D)` counts differently because the same bearer serves three slots, assert `>= 3` and say so in the report.
 
-- [ ] **Step 3: Rewrite `tests/auto_once.rs` as a Claude world**
+- [x] **Step 3: Rewrite `tests/auto_once.rs` as a Claude world**
 
 Replace the `chatgpt(slot)` builder and the world's record loop. Imports: drop `ccsw::codex::auth::AuthJson`, `base64::Engine`, `URL_SAFE_NO_PAD`, `jwt` (if nothing else uses them); add `use ccsw::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};`.
 
@@ -665,7 +683,7 @@ In `World::new`:
 
 In the `Fake::switch_to` impl: `provider: Provider::Claude,`. Everything else (seeded rows, `run`, `run_json`, the four tests) is unchanged — the engine rules are provider-independent.
 
-- [ ] **Step 4: Point the CLI and the TUI at Claude**
+- [x] **Step 4: Point the CLI and the TUI at Claude**
 
 `src/autoswitch.rs` `run_cli_to`: `let mut engine = Engine::new(facade, Provider::Claude, settings, args.dry_run, sink);`
 
@@ -675,12 +693,12 @@ In the `Fake::switch_to` impl: `provider: Provider::Claude,`. Everything else (s
 
 `tests/cli_claude.rs`, in `auto_once_never_refreshes_or_targets_the_live_claude_login`: the comment `// Blocked: the only other account is a Claude one, which auto never targets.` becomes `// Blocked: the live Claude slot is the only Claude account, so there is no candidate; the Codex account is never one.`; the assertions are unchanged (exit 3, `no-candidates`, zero token calls, credentials byte-identical) — they now prove the active Claude login is never refreshed by the engine that owns it.
 
-- [ ] **Step 5: Run the tests to see them pass**
+- [x] **Step 5: Run the tests to see them pass**
 
 Run: `env -u CODEX_HOME cargo test --test e2e_auto` and `env -u CODEX_HOME cargo test --test auto_once` and `env -u CODEX_HOME cargo test --test cli_claude auto_once`
 Expected: all pass. If `once_switches_when_the_active_account_is_over_the_threshold` fails on `claude_config()["oauthAccount"]["emailAddress"]`, check what `claude_config()` returns for the synthesized vs. live object — the switch splices the slot's stored `oauthAccount`, which `world()` wrote with `claude_config(email, …)`, so the email is `user1@example.com`.
 
-- [ ] **Step 6: Run the gate and commit**
+- [x] **Step 6: Run the gate and commit**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && env -u CODEX_HOME cargo test --all`
 Expected: green.
@@ -703,7 +721,7 @@ git commit -m "feat(auto): run the engine for Claude Code accounts"
 
 Why the seam: the engine's unit test must make the collector see a Keychain failure for the live Claude slot, and the only Keychain the collector can be pointed at without touching the real `/usr/bin/security` is a `SecurityCli` fake. The engine therefore holds `security: &'a dyn SecurityCli` and passes it to every collector call (`run_pass_with`, `refresh_slot_with`, `live_login_for_with`); the product passes `&SystemSecurity` by default. Without this, a unit test with `keychain_enabled = true` would read the developer's real Claude Code item.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `src/autoswitch.rs`'s `mod tests`, after `idle_detail_names_the_engine_provider`:
 
@@ -764,12 +782,12 @@ In `src/autoswitch.rs`'s `mod tests`, after `idle_detail_names_the_engine_provid
     }
 ```
 
-- [ ] **Step 2: Run the test to see it fail**
+- [x] **Step 2: Run the test to see it fail**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::keychain_unavailable`
 Expected: compile errors — `could not find test_support in keychain`, `no method named with_security`.
 
-- [ ] **Step 3: Add the fake and the collector seams**
+- [x] **Step 3: Add the fake and the collector seams**
 
 `src/claude/keychain.rs`, at the end of the file (before or after the existing `#[cfg(test)] mod tests`):
 
@@ -824,7 +842,7 @@ pub(crate) fn live_login_for_with(
 
 and make `live_login_for` delegate to it with `&SystemSecurity` (if it does not already: `grep -n "fn live_login_for" src/collect.rs`).
 
-- [ ] **Step 4: Implement the seam and the hold in the engine**
+- [x] **Step 4: Implement the seam and the hold in the engine**
 
 `src/autoswitch.rs` imports: add `use crate::claude::keychain::{SecurityCli, SystemSecurity};`.
 
@@ -906,12 +924,12 @@ In the switch loop (line ~698): `collect::refresh_slot_with(self.facade.store(),
 
 Borrow note: `self.security` is a `&'a dyn SecurityCli` copied out of `self` — bind it to a local (`let security = self.security;`) before the calls that also borrow `self.facade`, as the existing code does for `store`.
 
-- [ ] **Step 5: Run the tests to see them pass**
+- [x] **Step 5: Run the tests to see them pass**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::` and `env -u CODEX_HOME cargo test --lib collect::`
 Expected: all pass; `expired_active_token_idles_instead_of_counting_unhealthy` still reads `token expired while Codex is idle; resumes on next use` (Codex fixture).
 
-- [ ] **Step 6: Run the gate and commit**
+- [x] **Step 6: Run the gate and commit**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && env -u CODEX_HOME cargo test --all`
 Expected: green.
@@ -933,7 +951,7 @@ git commit -m "feat(auto): hold a keychain-unavailable active account like an ex
 - Produces: `pub const CLAUDE_ONLY_NOTICE: &str`; `run_cli_to` consumes a leading `claude` word, refuses a leading `codex` word and a roster with no Claude slots (stderr `Error: <notice>`, exit `1`, before parsing flags / before any tick).
 - Consumes: `Provider::parse_selector`, `Roster::slots_of(Provider::Claude)`.
 
-- [ ] **Step 1: Write the failing unit test**
+- [x] **Step 1: Write the failing unit test**
 
 In `src/autoswitch.rs`'s `mod tests`, after `cli_parses_flags_and_runs_once`:
 
@@ -979,12 +997,12 @@ In `src/autoswitch.rs`'s `mod tests`, after `cli_parses_flags_and_runs_once`:
     }
 ```
 
-- [ ] **Step 2: Run the test to see it fail**
+- [x] **Step 2: Run the test to see it fail**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::auto_refuses`
 Expected: FAIL — the Codex-only run returns `2`/`3` and writes a poll event; the `codex` word makes clap exit `2` (`unexpected argument 'codex'`).
 
-- [ ] **Step 3: Implement the notice and the checks**
+- [x] **Step 3: Implement the notice and the checks**
 
 `src/autoswitch.rs`, next to `IDLE_HOLD_MAX_S`:
 
@@ -1034,7 +1052,7 @@ pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn 
     // … unchanged: --debug, settings, banner, engine
 ```
 
-- [ ] **Step 4: Write the e2e test**
+- [x] **Step 4: Write the e2e test**
 
 `tests/cli_claude.rs`, after `auto_once_never_refreshes_or_targets_the_live_claude_login` (imports already include `CLAUDE_OK`, `claude_config`, `claude_creds`, `usage_mock`):
 
@@ -1071,12 +1089,12 @@ fn auto_is_refused_on_a_codex_only_store_and_for_codex() {
 }
 ```
 
-- [ ] **Step 5: Run the tests to see them pass**
+- [x] **Step 5: Run the tests to see them pass**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::` and `env -u CODEX_HOME cargo test --test cli_claude auto_`
 Expected: all pass.
 
-- [ ] **Step 6: Run the gate and commit**
+- [x] **Step 6: Run the gate and commit**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && env -u CODEX_HOME cargo test --all`
 Expected: green.
@@ -1097,7 +1115,7 @@ git commit -m "feat(auto): accept the claude selector and refuse codex and roste
 - Produces: `Event::to_json(&self, provider: Provider) -> Value` emitting `{"schemaVersion": 2, "event": …, "ts": …, "provider": "<provider>", …}`; `write_event(out, event, provider, json)`.
 - Consumes: Task 2 (the CLI engine is Claude). The TUI only uses `Event::human()` and is untouched. `autoswitch_state.json` keeps `schemaVersion: 1` (`src/store/state.rs` untouched; its pins in `tests/auto_once.rs:270`, `tests/e2e_auto.rs` and `src/store/state.rs` stay at `1`).
 
-- [ ] **Step 1: Update the failing assertions**
+- [x] **Step 1: Update the failing assertions**
 
 `src/autoswitch.rs`, test `events_serialize_per_contract`: every `.to_json()` call in the test becomes `.to_json(Provider::Claude)`, and the header assertions become:
 
@@ -1127,12 +1145,12 @@ Add, at the end of that test, a check that the key order is header-first and tha
 
 `tests/e2e_auto.rs`, in `once_switches_when_the_active_account_is_over_the_threshold`, after `assert_eq!(poll["event"], "poll");`: `assert_eq!(poll["schemaVersion"], 2); assert_eq!(poll["provider"], "claude");` and after `assert_eq!(switch["event"], "switch");`: `assert_eq!(switch["provider"], "claude");`. The state-file `schemaVersion == 1` assertion stays.
 
-- [ ] **Step 2: Run the tests to see them fail**
+- [x] **Step 2: Run the tests to see them fail**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::events_serialize`
 Expected: compile error `this method takes 0 arguments but 1 argument was supplied`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/autoswitch.rs`, `Event::to_json` (line ~148):
 
@@ -1152,12 +1170,12 @@ Expected: compile error `this method takes 0 arguments but 1 argument was suppli
 
 `run_cli_to`: `let sink = |event: &Event| write_event(out, event, Provider::Claude, json);`.
 
-- [ ] **Step 4: Run the tests to see them pass**
+- [x] **Step 4: Run the tests to see them pass**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::` and `env -u CODEX_HOME cargo test --test auto_once` and `env -u CODEX_HOME cargo test --test e2e_auto`
 Expected: all pass.
 
-- [ ] **Step 5: Run the gate and commit**
+- [x] **Step 5: Run the gate and commit**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && env -u CODEX_HOME cargo test --all`
 Expected: green.
@@ -1181,7 +1199,7 @@ git commit -m "feat(auto): events carry the provider and move to schemaVersion 2
 
 Rules (cswap §6.12): `wanted` = the configured names minus `all` (case-insensitive); a bare `all` never warns. The check runs at most once per engine run, on the first tick where every slot in the pass that is not an API-key account has a readable usage dict (`last_good`); if some slot is unreadable the check waits for a later tick. `seen` = the lowercased `scoped[].name` across those slots; every wanted name not in `seen` goes into one warning. The check never forces a fetch.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `src/autoswitch.rs`'s `mod tests`:
 
@@ -1267,12 +1285,12 @@ In `src/autoswitch.rs`'s `mod tests`:
     }
 ```
 
-- [ ] **Step 2: Run the test to see it fail**
+- [x] **Step 2: Run the test to see it fail**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::model_typo`
 Expected: FAIL — `config_warnings` is empty for `Fabel`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/autoswitch.rs`: `use std::collections::{BTreeMap, BTreeSet};`. Add the field `model_warning_pending: bool,` to `Engine` and initialise it in `new()` as
 
@@ -1337,12 +1355,12 @@ Call it in `tick_inner` right after the `Event::Poll` is emitted (line ~535) and
         self.warn_unknown_models(&entries, &in_pass);
 ```
 
-- [ ] **Step 4: Run the tests to see them pass**
+- [x] **Step 4: Run the tests to see them pass**
 
 Run: `env -u CODEX_HOME cargo test --lib autoswitch::`
 Expected: all pass.
 
-- [ ] **Step 5: Run the gate and commit**
+- [x] **Step 5: Run the gate and commit**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && env -u CODEX_HOME cargo test --all`
 Expected: green.
@@ -1363,7 +1381,7 @@ git commit -m "feat(auto): warn once about autoswitch.model names no account rep
 - Produces: `AccountsSnapshot::only(&self, provider: Provider) -> AccountsSnapshot` (same `active_number` and `taken_at`, only that provider's accounts); `AutoScreen::without_claude(settings, stamp) -> AutoScreen` (no engine; first log line `— no Claude Code account: auto-switch covers Claude Code only (ccsw add claude) —`; badge ` OFF `); `AutoScreen::engine_available(&self) -> bool`; `App::open_auto` starts no engine when the current snapshot has no Claude account.
 - Consumes: Task 2 (the worker starts a Claude engine); `AccountSnapshot.provider`; `tests/tui_render.rs` `mixed_fixture()` (phase 1: Claude accounts `6 bob@gmail.com` active with `$$`/7d 100/`Fable`, `7 bob@work.com`) and `fixture()` (Codex only); `App::apply_snapshot(snapshot, generation, now)`.
 
-- [ ] **Step 1: Write the failing unit tests**
+- [x] **Step 1: Write the failing unit tests**
 
 `src/tui/auto.rs` `mod tests`, after `opens_in_dry_run_and_needs_confirm_to_go_live`:
 
@@ -1468,12 +1486,12 @@ fn auto_view_without_a_claude_account_shows_the_notice_and_starts_no_engine() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to see them fail**
+- [x] **Step 2: Run the tests to see them fail**
 
 Run: `env -u CODEX_HOME cargo test --lib tui::` and `env -u CODEX_HOME cargo test --test tui_render auto_`
 Expected: compile errors (`without_claude`, `engine_available`, `only` missing); the render test expects Claude rows the Codex-only view does not show.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/tui/snapshot.rs`:
 
@@ -1562,12 +1580,12 @@ In `handle_key`, first arm: when `!self.engine_available`, only `Esc` / `q` pop 
 
 `src/tui/modals.rs` `go_live()` body: `"Go live? ccsw will switch your active Claude Code account automatically when the threshold is reached.\n\n(Same behavior as running `ccsw auto` in a terminal.)"`.
 
-- [ ] **Step 4: Run the tests to see them pass**
+- [x] **Step 4: Run the tests to see them pass**
 
 Run: `env -u CODEX_HOME cargo test --lib tui::` and `env -u CODEX_HOME cargo test --test tui_render`
 Expected: all pass. If the mixed-fixture auto test's exact row prefixes differ by a column, print the rows (`{rows:?}`) and adjust the `starts_with` strings to the rendered output, keeping the assertions on account numbers and emails.
 
-- [ ] **Step 5: Run the gate and commit**
+- [x] **Step 5: Run the gate and commit**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && env -u CODEX_HOME cargo test --all`
 Expected: green.
@@ -1588,7 +1606,7 @@ git commit -m "feat(tui): the auto view shows the Claude Code account and candid
 **Interfaces:**
 - Consumes: Tasks 2–7.
 
-- [ ] **Step 1: Help text**
+- [x] **Step 1: Help text**
 
 `src/autoswitch.rs`:
 
@@ -1620,7 +1638,7 @@ Defaults live in settings.json in the backup root; flags override them.";
 
 `src/cli/legacy.rs`: line ~373 `  ccsw auto [claude]              auto-switch Claude Code accounts near their rate limits` (keep the column alignment of the surrounding lines); line ~430 `  ccsw auto --once                       # single auto-switch tick for Claude Code (cron-friendly)`.
 
-- [ ] **Step 2: README**
+- [x] **Step 2: README**
 
 Intro (lines 5-8): replace `let it\nswitch Codex accounts for you before you hit a rate limit, and run two Codex accounts side\nby side in different terminals. Auto-switch, session mode and export/import cover Codex\naccounts only for now; Claude support for them comes in later phases.` with:
 
@@ -1657,7 +1675,7 @@ Defaults live in `settings.json`; change them with `ccsw config set autoswitch.t
 `autoswitch.model` names that no account reports produce one `config-warning` event.
 ````
 
-- [ ] **Step 3: CHANGELOG**
+- [x] **Step 3: CHANGELOG**
 
 Above `## v0.3.0 — 2026-10-08`:
 
@@ -1684,7 +1702,7 @@ Above `## v0.3.0 — 2026-10-08`:
   `config-warning` event per run.
 ```
 
-- [ ] **Step 4: Run the gate and commit**
+- [x] **Step 4: Run the gate and commit**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && env -u CODEX_HOME cargo test --all`
 Expected: green (`--help` still exits 0 in `cli_parses_flags_and_runs_once`).

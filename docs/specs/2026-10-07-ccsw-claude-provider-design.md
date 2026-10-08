@@ -201,6 +201,9 @@ A Codex switch is unchanged (v0.1 §7.2) and never touches Claude files, and vic
   expired` sentinel until Claude Code rotates the token. Terminal verdicts
   (`invalid_grant`, `invalid_client`, any 4xx except 429/408 that names the grant) →
   `relogin_required`, strike bound to the SHA-256 of the refresh token (v0.1 §8.3).
+  A stored copy of the live refresh token is also protected, even under another identity.
+  If the live credential cannot be read, no Claude token is refreshed. Auto-switch does
+  not target slots that hold the live credential, and checks ownership again before switching.
   Setup-tokens have no refresh token and are never refreshed nor struck.
 - Poll policy, cache, TTLs and the on-demand pass are the v0.1 §8.4 rules; the pass runs
   per provider (active account plus one due candidate for each).
@@ -226,8 +229,9 @@ proactive switching is useful there and nowhere else. v0.1's Codex auto-switch i
   switched account without a restart. Add a Claude Code account with 'ccsw add claude'
   first.` (exit 1).
 - The engine body is v0.1 §9 unchanged, with two Claude additions: a `keychain unavailable`
-  active account is held like `token expired` (`no-switch active-idle`, up to 30 min, never
-  a failover trigger), and the `active-idle` detail names Claude Code.
+  active account stays held (`no-switch active-idle`) until its login is readable and
+  never triggers failover. The existing 30-minute cap still applies to `token expired`,
+  and the `active-idle` detail names Claude Code.
 - Events carry `provider: "claude"` and `schemaVersion: 2`; human lines are unchanged.
 - `autoswitch.model` names that no Claude account's windows report raise one
   `config-warning` per run (`autoswitch.model: <names> matches no account's usage windows —

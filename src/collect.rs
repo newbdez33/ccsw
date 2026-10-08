@@ -144,14 +144,20 @@ pub fn live_login(store: &Store, roster: &Roster) -> CurrentAccount {
 
 /// The slot whose credentials are `provider`'s live login.
 pub fn live_login_for(store: &Store, roster: &Roster, provider: Provider) -> CurrentAccount {
-    match provider {
-        Provider::Codex => live_login(store, roster),
-        Provider::Claude => claude_live_login(store, roster),
-    }
+    live_login_for_with(store, roster, provider, &SystemSecurity)
 }
 
-fn claude_live_login(store: &Store, roster: &Roster) -> CurrentAccount {
-    claude_live_login_with(store, roster, &SystemSecurity)
+/// [`live_login_for`] with an injected `security` (tests).
+pub(crate) fn live_login_for_with(
+    store: &Store,
+    roster: &Roster,
+    provider: Provider,
+    cli: &dyn SecurityCli,
+) -> CurrentAccount {
+    match provider {
+        Provider::Codex => live_login(store, roster),
+        Provider::Claude => claude_live_login_with(store, roster, cli),
+    }
 }
 
 fn claude_live_login_with(store: &Store, roster: &Roster, cli: &dyn SecurityCli) -> CurrentAccount {
@@ -454,17 +460,55 @@ fn exhausted_with_wide_plan(entry: &UsageEntry, models: &[String], now: f64) -> 
             .is_some_and(|i| i > CANDIDATE_MAX_INTERVAL_S)
 }
 
-/// Whether Claude Code's live login can be read. When it cannot, the live
-/// slot cannot be told apart, so a pass refreshes no Claude slot (spec §8).
-fn claude_live_readable(store: &Store, cli: &dyn SecurityCli) -> bool {
-    match ClaudeLive::new(&store.paths, cli).read() {
-        Ok(_) => true,
-        Err(err) => {
-            tracing::warn!(
-                "Claude Code's live login could not be read ({err}); no Claude account is refreshed this pass"
-            );
-            false
+/// Protect the live credential even when another slot stores the same token.
+/// An unreadable login prevents all refreshes until ownership can be checked.
+pub(crate) struct ClaudeRefreshGuard {
+    readable: bool,
+    active: Option<u32>,
+    fingerprint: Option<String>,
+}
+
+impl ClaudeRefreshGuard {
+    pub(crate) fn read(store: &Store, roster: &Roster, cli: &dyn SecurityCli) -> Self {
+        match ClaudeLive::new(&store.paths, cli).read() {
+            Ok(login) if !login.keychain_unavailable || login.credential.is_some() => Self {
+                readable: true,
+                active: claude_account_of(store, roster, &login).slot(),
+                fingerprint: login
+                    .credential
+                    .as_ref()
+                    .and_then(ClaudeCredential::fingerprint),
+            },
+            _ => {
+                tracing::warn!(
+                    "Claude Code's live login is unreadable; no Claude account is refreshed this pass"
+                );
+                Self {
+                    readable: false,
+                    active: None,
+                    fingerprint: None,
+                }
+            }
         }
+    }
+
+    fn allows_credential(&self, credential: &ClaudeCredential) -> bool {
+        self.readable
+            && self
+                .fingerprint
+                .as_ref()
+                .is_none_or(|live| credential.fingerprint().as_ref() != Some(live))
+    }
+
+    pub(crate) fn allows_slot(&self, store: &Store, slot: u32) -> bool {
+        if !self.readable || self.active == Some(slot) {
+            return false;
+        }
+        credentials::read(store, slot)
+            .ok()
+            .flatten()
+            .and_then(|value| SlotFile::from_value(&value).ok())
+            .is_none_or(|file| self.allows_credential(&file.credential))
     }
 }
 
@@ -473,7 +517,7 @@ pub fn run_pass(store: &Store, roster: &Roster, opts: CollectOptions<'_>) -> Res
     run_pass_with(store, roster, opts, &SystemSecurity)
 }
 
-fn run_pass_with(
+pub(crate) fn run_pass_with(
     store: &Store,
     roster: &Roster,
     opts: CollectOptions<'_>,
@@ -521,18 +565,24 @@ fn run_pass_with(
     let reserved = reserve(&usage_store, &views, &entries, &identities, &opts, started)?;
     let mut failures = Vec::new();
     if !reserved.is_empty() {
-        let claude_may_refresh = !reserved
+        let claude_guard = reserved
             .iter()
             .any(|slot| matches!(views[slot].presented(), Some(Presented::Claude(_))))
-            || claude_live_readable(store, cli);
+            .then(|| ClaudeRefreshGuard::read(store, roster, cli));
         let jobs: Vec<Job> = reserved
             .iter()
             .filter_map(|slot| {
-                Some((
-                    *slot,
-                    views[slot].presented()?.clone(),
-                    claude_may_refresh && !opts.is_active(*slot),
-                ))
+                let presented = views[slot].presented()?;
+                let may_refresh = !opts.is_active(*slot)
+                    && match presented {
+                        Presented::Claude(credential) => {
+                            claude_guard.as_ref().is_some_and(|guard| {
+                                guard.active != Some(*slot) && guard.allows_credential(credential)
+                            })
+                        }
+                        Presented::Codex(_) => true,
+                    };
+                Some((*slot, presented.clone(), may_refresh))
             })
             .collect();
         for (slot, presented, outcome) in fetch_all(jobs)? {
@@ -944,7 +994,7 @@ pub fn refresh_slot(store: &Store, roster: &Roster, slot: u32, force: bool) -> R
     refresh_slot_with(store, roster, slot, force, &SystemSecurity)
 }
 
-fn refresh_slot_with(
+pub(crate) fn refresh_slot_with(
     store: &Store,
     roster: &Roster,
     slot: u32,
@@ -1058,18 +1108,9 @@ fn refresh_claude_slot(
         CredentialKind::Unknown => return RefreshStatus::NoRefreshToken,
         CredentialKind::OAuth => {}
     }
-    let login = match ClaudeLive::new(&store.paths, cli).read() {
-        Ok(login) => login,
-        Err(err) => {
-            // Which slot is live is unknown, so this one may be: spec §8.
-            tracing::warn!(
-                "Claude Code's live login could not be read ({err}); not refreshing account {slot}"
-            );
-            return RefreshStatus::NotNeeded;
-        }
-    };
-    if claude_account_of(store, roster, &login).slot() == Some(slot) {
-        // Claude Code owns the active login; spec §8.
+    let guard = ClaudeRefreshGuard::read(store, roster, cli);
+    if guard.active == Some(slot) || !guard.allows_credential(&file.credential) {
+        // Claude Code owns every copy of the live refresh token.
         return RefreshStatus::NotNeeded;
     }
     if !force && !file.credential.is_expiring(now_unix() * 1000) {
@@ -2431,6 +2472,21 @@ mod tests {
         let other_before = std::fs::read(store.paths.credential_file(3)).unwrap();
         assert_eq!(
             refresh_slot_with(&store, &roster, 3, true, &LockedKeychain),
+            RefreshStatus::NotNeeded
+        );
+        assert_eq!(
+            mock.claude_token_calls(&format!("crt-live-{tag}-inactive")),
+            0
+        );
+        // A readable fallback identifies the live token and permits other tokens.
+        write_claude_live(
+            &store,
+            &format!("{tag}-a@example.com"),
+            "cat-good",
+            &format!("crt-live-{tag}-active"),
+        );
+        assert_eq!(
+            refresh_slot_with(&store, &roster, 3, true, &LockedKeychain),
             RefreshStatus::Ok
         );
         assert_eq!(
@@ -2444,6 +2500,78 @@ mod tests {
         assert_eq!(
             std::fs::read(store.paths.credential_file(2)).unwrap(),
             before
+        );
+    }
+    #[test]
+    fn claude_pass_does_not_refresh_duplicate_live_credentials() {
+        let mock = mock();
+        for expires in [1, FAR * 1000] {
+            let (_dir, store) = temp_store();
+            let rt = format!("crt-live-{}", unique("duplicate"));
+            let mut roster = Roster::empty();
+            roster.add_record(1, claude_record("live@example.com"));
+            roster.add_record(2, claude_record("copy@example.com"));
+            write_claude_live(&store, "live@example.com", "cat-stale", &rt);
+            claude_slot(
+                &store,
+                2,
+                "copy@example.com",
+                "cat-stale",
+                Some(&rt),
+                expires,
+            );
+            let before = credentials::read(&store, 2).unwrap();
+            run_pass(&store, &roster, opts(CollectMode::Escalation, &[1], &[2])).unwrap();
+            assert_eq!(
+                mock.claude_token_calls(&rt),
+                0,
+                "no proactive or reactive live-token refresh"
+            );
+            assert_eq!(credentials::read(&store, 2).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn claude_target_refresh_does_not_rotate_a_duplicate_live_credential() {
+        let mock = mock();
+        let (_dir, store) = temp_store();
+        let rt = format!("crt-live-{}", unique("duplicate-target"));
+        let mut roster = Roster::empty();
+        roster.add_record(1, claude_record("live@example.com"));
+        roster.add_record(2, claude_record("copy@example.com"));
+        write_claude_live(&store, "live@example.com", "cat-stale", &rt);
+        claude_slot(&store, 2, "copy@example.com", "cat-stale", Some(&rt), 1);
+        assert_eq!(
+            refresh_slot(&store, &roster, 2, true),
+            RefreshStatus::NotNeeded
+        );
+        assert_eq!(mock.claude_token_calls(&rt), 0);
+    }
+
+    #[test]
+    fn keychain_failure_without_file_blocks_all_refreshes() {
+        let mock = mock();
+        let (_dir, mut store) = temp_store();
+        let tag = unique("unreadable");
+        let (roster, _, _) = locked_keychain_setup(&mut store, &tag);
+        run_pass_with(
+            &store,
+            &roster,
+            opts(CollectMode::Escalation, &[2], &[3]),
+            &LockedKeychain,
+        )
+        .unwrap();
+        assert_eq!(
+            mock.claude_token_calls(&format!("crt-live-{tag}-inactive")),
+            0
+        );
+        assert_eq!(
+            refresh_slot_with(&store, &roster, 3, true, &LockedKeychain),
+            RefreshStatus::NotNeeded
+        );
+        assert_eq!(
+            mock.claude_token_calls(&format!("crt-live-{tag}-inactive")),
+            0
         );
     }
 }

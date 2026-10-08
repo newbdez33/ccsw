@@ -76,7 +76,7 @@ impl ConfirmModal {
     pub fn go_live() -> Self {
         Self::new(
             "Go live",
-            "Go live? ccsw will switch your active account automatically when the threshold is reached.\n\n(Same behavior as running `ccsw auto` in a terminal.)",
+            "Go live? ccsw will switch your active Claude Code account automatically when the threshold is reached.\n\n(Same behavior as running `ccsw auto` in a terminal.)",
             "Go live",
             PendingAction::GoLive,
         )

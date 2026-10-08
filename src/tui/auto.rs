@@ -57,6 +57,7 @@ pub struct AutoScreen {
     adjusting: bool,
     adjust_start: f64,
     log: Vec<LogLine>,
+    engine_available: bool,
 }
 
 impl AutoScreen {
@@ -69,9 +70,32 @@ impl AutoScreen {
             adjusting: false,
             adjust_start: 0.0,
             log: Vec::new(),
+            engine_available: true,
         };
         screen.push_system("— engine started: DRY-RUN (watching only) —", stamp);
         screen
+    }
+
+    /// The view for a roster without a Claude Code account: a notice, no engine.
+    pub fn without_claude(settings: AutoSwitchSettings, stamp: &str) -> Self {
+        let mut screen = Self {
+            configured_threshold: settings.threshold,
+            settings,
+            dry_run: true,
+            adjusting: false,
+            adjust_start: 0.0,
+            log: Vec::new(),
+            engine_available: false,
+        };
+        screen.push_system(
+            "— no Claude Code account: auto-switch covers Claude Code only (ccsw add claude) —",
+            stamp,
+        );
+        screen
+    }
+
+    pub fn engine_available(&self) -> bool {
+        self.engine_available
     }
 
     pub fn settings(&self) -> &AutoSwitchSettings {
@@ -163,6 +187,12 @@ impl AutoScreen {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, stamp: &str) -> Vec<Effect> {
+        if !self.engine_available {
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => vec![Effect::Pop],
+                _ => Vec::new(),
+            };
+        }
         match key.code {
             KeyCode::Char('l') => {
                 if self.dry_run {
@@ -195,6 +225,9 @@ impl AutoScreen {
     }
 
     pub fn badge(&self, p: &Palette) -> Span<'static> {
+        if !self.engine_available {
+            return Span::styled(" OFF ", p.muted_style());
+        }
         if self.dry_run {
             Span::styled(
                 " DRY-RUN ",
@@ -326,6 +359,9 @@ impl AutoScreen {
     }
 
     pub fn footer(&self) -> Vec<(&'static str, &'static str)> {
+        if !self.engine_available {
+            return vec![("esc", "Back"), ("^t", "Theme")];
+        }
         let mut chips = vec![("l", "Go live / dry-run"), ("t", "Threshold")];
         if self.adjusting {
             chips.push(("←", "-1%"));
@@ -544,6 +580,32 @@ mod tests {
         assert_eq!(
             text(&tail[0]),
             "20:42:00  all accounts exhausted; no reset time known"
+        );
+    }
+    #[test]
+    fn without_a_claude_account_there_is_no_engine_to_start() {
+        let mut auto = AutoScreen::without_claude(settings(), "20:39:01");
+        assert!(!auto.engine_available());
+        assert_eq!(
+            auto.log()[0].text,
+            "— no Claude Code account: auto-switch covers Claude Code only (ccsw add claude) —"
+        );
+        assert_eq!(auto.badge(&DARK).content, " OFF ");
+        assert!(
+            auto.handle_key(key(KeyCode::Char('l')), "20:39:02")
+                .is_empty(),
+            "Go live does nothing"
+        );
+        assert!(
+            auto.handle_key(key(KeyCode::Char('t')), "20:39:02")
+                .is_empty(),
+            "the threshold is not adjustable without an engine"
+        );
+        assert!(!auto.adjusting());
+        assert_eq!(auto.footer(), vec![("esc", "Back"), ("^t", "Theme")]);
+        assert_eq!(
+            auto.handle_key(key(KeyCode::Esc), "20:39:03"),
+            vec![Effect::Pop]
         );
     }
 }

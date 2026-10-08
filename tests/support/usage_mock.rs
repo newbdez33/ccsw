@@ -48,6 +48,8 @@ pub fn live_refresh_token(email: &str, account_id: &str) -> String {
 
 /// Claude: 5h 40 %, 7d 55 %, spend $7.29 / $50.00, `Fable` weekly window at 62 %.
 pub const CLAUDE_OK: &str = "cat-ok";
+/// Claude: 5h 95 %, 7d 20 %.
+pub const CLAUDE_HOT: &str = "cat-hot";
 /// Claude: 5h 10 %, 7d 100 % (resets tomorrow).
 pub const CLAUDE_LIMIT_7D: &str = "cat-limit-7d";
 /// Claude: HTTP 401.
@@ -137,6 +139,13 @@ impl UsageMock {
         self.requests()
             .iter()
             .filter(|r| r.path == "/wham/usage" && r.bearer.as_deref() == Some(bearer))
+            .count()
+    }
+
+    pub fn claude_usage_calls(&self, bearer: &str) -> usize {
+        self.requests()
+            .iter()
+            .filter(|r| r.path == "/api/oauth/usage" && r.bearer.as_deref() == Some(bearer))
             .count()
     }
 
@@ -283,6 +292,7 @@ async fn claude_usage(State(log): State<Arc<Log>>, headers: HeaderMap) -> Respon
             b["limits"] = json!([{"kind": "weekly_scoped", "percent": 62, "resets_at": "2099-01-03T10:00:00Z", "scope": {"model": {"display_name": CLAUDE_POOL_NAME}}}]);
             Json(b).into_response()
         }
+        CLAUDE_HOT => Json(claude_body(95.0, 20.0, "2099-01-03T10:00:00Z")).into_response(),
         CLAUDE_LIMIT_7D => Json(claude_body(10.0, 100.0, "2099-01-02T10:00:00Z")).into_response(),
         CLAUDE_REFRESHED => Json(claude_body(30.0, 35.0, "2099-01-03T10:00:00Z")).into_response(),
         _ => (

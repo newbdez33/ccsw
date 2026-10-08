@@ -416,7 +416,17 @@ impl App {
             return Vec::new();
         }
         self.threshold_pct = Some(settings.threshold);
-        let screen = AutoScreen::new(settings.clone(), &clock_stamp(now));
+        let stamp = clock_stamp(now);
+        let has_claude = self
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s.accounts.iter().any(|a| a.provider == Provider::Claude));
+        if !has_claude {
+            self.screens
+                .push(Screen::Auto(AutoScreen::without_claude(settings, &stamp)));
+            return vec![Command::Refresh { full: false }];
+        }
+        let screen = AutoScreen::new(settings.clone(), &stamp);
         self.screens.push(Screen::Auto(screen));
         vec![
             Command::StartEngine {
@@ -886,6 +896,8 @@ fn draw_auto(
     now: f64,
     p: &Palette,
 ) {
+    let claude = snapshot.map(|s| s.only(Provider::Claude));
+    let snapshot = claude.as_ref();
     let width = area.width as usize;
     let content_width = width.saturating_sub(6);
     let mut lines: Vec<Line<'static>> = vec![Line::default()];
@@ -1165,7 +1177,11 @@ mod tests {
     #[test]
     fn auto_view_lifecycle_restores_the_file_threshold() {
         let mut app = app();
-        app.apply_snapshot(two(), 1, 1000.0);
+        let mut supported = two();
+        for account in &mut supported.accounts {
+            account.provider = Provider::Claude;
+        }
+        app.apply_snapshot(supported, 1, 1000.0);
         let commands = app.handle_key(key(KeyCode::Char('g')), 1000.0);
         assert_eq!(commands, vec![Command::OpenAuto]);
         let settings = AutoSwitchSettings {

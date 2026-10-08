@@ -81,6 +81,25 @@ impl AccountsSnapshot {
         }
     }
 
+    /// The same snapshot restricted to one provider's accounts.
+    pub fn only(&self, provider: Provider) -> AccountsSnapshot {
+        AccountsSnapshot {
+            active_number: self
+                .accounts
+                .iter()
+                .filter(|a| a.provider == provider && a.is_active)
+                .map(|a| a.number)
+                .min(),
+            accounts: self
+                .accounts
+                .iter()
+                .filter(|a| a.provider == provider)
+                .cloned()
+                .collect(),
+            taken_at: self.taken_at,
+        }
+    }
+
     pub fn is_mixed(&self) -> bool {
         Provider::ALL
             .iter()
@@ -353,5 +372,37 @@ mod tests {
         assert_eq!(groups[1].0, Provider::Claude);
         assert_eq!(groups[1].1[0].number, 2);
         assert_eq!(mixed.active_number, Some(1), "the lowest active slot");
+    }
+    #[test]
+    fn only_keeps_one_providers_accounts() {
+        let mut snapshot = AccountsSnapshot::empty(0.0);
+        snapshot.active_number = Some(1);
+        snapshot.accounts = vec![
+            crate::tui::test_support::account(
+                1,
+                "a@x",
+                true,
+                crate::tui::test_support::entry(None, None),
+            ),
+            crate::tui::test_support::claude_account(
+                2,
+                "b@x",
+                true,
+                crate::tui::test_support::entry(None, None),
+            ),
+        ];
+        let claude = snapshot.only(Provider::Claude);
+        assert_eq!(claude.active_number, Some(2));
+        assert_eq!(claude.active().map(|a| a.number), Some(2));
+        assert_eq!(claude.taken_at, snapshot.taken_at);
+        assert_eq!(claude.accounts.len(), 1);
+        assert_eq!(claude.accounts[0].number, 2);
+        assert!(
+            snapshot
+                .only(Provider::Codex)
+                .accounts
+                .iter()
+                .all(|a| a.provider == Provider::Codex)
+        );
     }
 }

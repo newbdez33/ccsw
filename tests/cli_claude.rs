@@ -462,11 +462,11 @@ fn stale_claude_lock_is_taken_over_and_a_fresh_one_fails() {
 fn auto_once_never_refreshes_or_targets_the_live_claude_login() {
     let mock = UsageMock::start();
     let cli = Cli::new().with_mock(&mock);
-    // Codex is over the threshold with no other Codex account to move to.
-    cli.add_scripted("alice@example.com", "acct-alice", usage_mock::HOT);
+    // The healthy Codex account must never become a Claude candidate.
+    cli.add_scripted("alice@example.com", "acct-alice", usage_mock::COOL);
     // The live Claude login expires within the 5-minute refresh buffer.
     let refresh = usage_mock::claude_live_refresh_token("two@example.com");
-    let mut creds = claude_creds(&refresh, CLAUDE_OK);
+    let mut creds = claude_creds(&refresh, usage_mock::CLAUDE_HOT);
     creds["claudeAiOauth"]["expiresAt"] = json!(ccsw::model::now_unix() * 1000 + 60_000);
     cli.write_claude_live_with(&creds, &claude_config("two@example.com", "org-2", ""));
     let run = cli.run(&["add", "claude"]);
@@ -477,7 +477,7 @@ fn auto_once_never_refreshes_or_targets_the_live_claude_login() {
     assert_eq!(cli.roster()["activeByProvider"]["claude"], claude_slot);
 
     let run = cli.run(&["auto", "--once", "--json"]);
-    // Blocked: the only other account is a Claude one, which auto never targets.
+    // The hot Claude login has no other Claude account to switch to.
     assert_eq!(run.status, 3, "{}{}", run.stdout, run.stderr);
     assert!(
         run.stdout.contains("\"reason\":\"no-candidates\""),
@@ -486,7 +486,7 @@ fn auto_once_never_refreshes_or_targets_the_live_claude_login() {
     );
     assert!(
         !run.stdout.contains("\"event\":\"switch\""),
-        "no switch to a Claude slot: {}",
+        "no switch to another provider: {}",
         run.stdout
     );
     assert_eq!(mock.claude_token_calls(), 0, "{:?}", mock.trail());
@@ -531,4 +531,86 @@ fn the_codex_credential_store_gate_applies_only_once_codex_is_in_use() {
     let run = cli.run(&["list"]);
     assert_ne!(run.status, 0);
     assert!(run.stderr.contains(gate), "{}", run.stderr);
+}
+
+#[test]
+fn auto_is_refused_on_a_codex_only_store_and_for_codex() {
+    let mock = UsageMock::start();
+    let cli = Cli::new().with_mock(&mock);
+    let notice = "Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'ccsw add claude' first.";
+    cli.add_chatgpt("alice@example.com", "acct-alice", "rt-a");
+
+    let run = cli.run(&["auto", "--once"]);
+    assert_eq!(run.status, 1, "{}{}", run.stdout, run.stderr);
+    assert_eq!(run.stdout, "");
+    assert!(run.stderr.contains(notice), "{}", run.stderr);
+
+    // With a Claude account, `auto codex` is still refused and `auto claude` runs.
+    cli.write_claude_live_with(
+        &claude_creds(
+            &usage_mock::claude_live_refresh_token("one@example.com"),
+            CLAUDE_OK,
+        ),
+        &claude_config("one@example.com", "org-1", ""),
+    );
+    let run = cli.run(&["add", "claude"]);
+    assert_eq!(run.status, 0, "{}", run.stderr);
+    let run = cli.run(&["auto", "codex", "--once"]);
+    assert_eq!(run.status, 1, "{}{}", run.stdout, run.stderr);
+    assert!(run.stderr.contains(notice), "{}", run.stderr);
+    let run = cli.run(&["auto", "claude", "--once", "--json"]);
+    assert_eq!(run.status, 2, "{}{}", run.stdout, run.stderr);
+    assert!(
+        run.stdout.contains("\"reason\":\"below-threshold\""),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn auto_on_a_fresh_store_explains_which_account_to_add() {
+    let cli = Cli::new();
+    for args in [
+        vec!["auto", "--once"],
+        vec!["auto", "claude", "--once", "--json"],
+    ] {
+        let run = cli.run(&args);
+        assert_eq!(run.status, 1, "{}{}", run.stdout, run.stderr);
+        assert!(run.stdout.is_empty(), "{}", run.stdout);
+        assert_eq!(
+            run.stderr.trim(),
+            format!("Error: {}", ccsw::autoswitch::CLAUDE_ONLY_NOTICE)
+        );
+    }
+}
+
+#[test]
+fn auto_excludes_a_live_refresh_token_saved_under_another_identity() {
+    for expires in [ccsw::model::now_unix() * 1000 + 60_000, 4_102_444_800_000] {
+        let mock = UsageMock::start();
+        let cli = Cli::new().with_mock(&mock);
+        let refresh = usage_mock::claude_live_refresh_token("live@example.com");
+        let mut copied = claude_creds(&refresh, CLAUDE_OK);
+        copied["claudeAiOauth"]["expiresAt"] = json!(expires);
+        cli.write_claude_live_with(&copied, &claude_config("copy@example.com", "copy-org", ""));
+        assert_eq!(cli.run(&["add", "claude"]).status, 0);
+        cli.write_claude_live_with(
+            &claude_creds(&refresh, usage_mock::CLAUDE_HOT),
+            &claude_config("live@example.com", "live-org", ""),
+        );
+        assert_eq!(cli.run(&["add", "claude"]).status, 0);
+        let before = cli.claude_credentials();
+        let copied_before = cli.credential(1);
+        let run = cli.run(&["auto", "--once", "--json"]);
+        assert_eq!(run.status, 3, "{}{}", run.stdout, run.stderr);
+        assert!(
+            run.stdout.contains("\"reason\":\"no-candidates\""),
+            "{}",
+            run.stdout
+        );
+        assert_eq!(mock.claude_token_calls(), 0, "{:?}", mock.trail());
+        assert_eq!(cli.claude_credentials(), before);
+        assert_eq!(cli.credential(1), copied_before);
+        assert_eq!(cli.roster()["activeByProvider"]["claude"], 2);
+    }
 }

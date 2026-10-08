@@ -370,7 +370,7 @@ Commands:
   ccsw alias                      list all aliases
   ccsw swap <a> <b>               exchange two accounts' slot numbers
   ccsw move <a> <slot>            assign an account to a slot (swaps if taken)
-  ccsw auto                       auto-switch when nearing rate limits
+  ccsw auto [claude]              auto-switch Claude Code accounts near their rate limits
   ccsw config [set KEY VALUE]     show or change settings (settings.json)
   ccsw export <path>              export accounts
   ccsw import <path>              import accounts
@@ -427,7 +427,7 @@ Flags combine with subcommands:
   ccsw add-token sk-... --email me@example.com
   ccsw add-token sk-ant-oat01-... --email me@example.com
   ccsw run 2 -- resume                   # forward args after '--' to codex
-  ccsw auto --once                       # single auto-switch tick (cron-friendly)
+  ccsw auto --once                       # single auto-switch tick for Claude Code (cron-friendly)
   ccsw config set autoswitch.threshold 80
 
 The original flag spellings (ccsw --switch, ccsw --list, ...) keep working.

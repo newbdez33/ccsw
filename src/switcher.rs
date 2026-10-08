@@ -2343,11 +2343,11 @@ impl crate::autoswitch::AutoFacade for Switcher {
     }
 
     fn roster(&mut self) -> Result<Roster> {
-        Switcher::roster(self)
+        Switcher::roster_opt(self).map(|roster| roster.unwrap_or_else(Roster::empty))
     }
 
-    fn current_account(&mut self) -> Result<CurrentAccount> {
-        Switcher::current_account(self)
+    fn current_account(&mut self, provider: Provider) -> Result<CurrentAccount> {
+        Switcher::current_account_for(self, provider)
     }
 
     fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {

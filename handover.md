@@ -2,27 +2,35 @@
 
 ## 当前状态
 
-- 用户已删除旧仓库，新仓库为 `https://github.com/newbdez33/ccsw`，公开。
-- `origin` 已更新；改名已通过 PR #1 合并，提交为 `29abe1a`，包含 Claude provider 第一阶段和第二阶段的规格、计划。
-- 当前工作区为 `cabezon`，发布分支为 `release/v0.4.0`。
-- 改名范围：crate、二进制、命令文案、环境变量、默认数据目录、日志、session 清单、导出元数据、发布资产及文档。
-- 用户明确要求**不实现首次启动迁移**，只提供手动步骤；没有其他用户。旧环境变量也不保留兼容别名。
-- 改名前检查：本机通过 Cargo 安装了旧版 v0.2.0，旧数据目录包含账号、凭据、缓存和日志，没有 session 清单，`~/.ccsw` 尚不存在。
-- 此次代码改名不修改真实数据或旧安装；手动迁移和卸载命令已在对话中提供给用户，不纳入项目文档。验证账号后再卸载旧程序，禁止用 `purge` 迁移。
-- 项目文档统一使用 `ccsw`，包括历史条目、示例、环境变量和文件名，不保留旧项目名称。
-- 改名版本为 `v0.4.0`，发布记录已写入 `CHANGELOG.md`。Claude 自动切换随后单独发布。
-- 不推送旧标签：`release.yml` 对每个 `v*` 标签触发，会用旧名称重建旧版本。
-- 本地验证已通过：格式检查、Clippy（警告视为错误）、全量 439 项测试、锁定依赖构建，以及新二进制的帮助和版本输出。
+- 仓库为 `https://github.com/newbdez33/ccsw`，公开；默认分支为 `main`。
+- 改名已通过 PR #1 合并；PR #2 完成 `v0.4.0` 发布。四个平台的归档和校验文件已验证。
+- 用户已完成旧安装和数据的手动迁移，并确认可用。不实现首次启动迁移，不保留旧环境变量别名，不使用 `purge` 迁移。
+- Claude 自动切换第二阶段已实现，版本设为 `v0.5.0`。按 PR → CI → squash merge → 标签发布流程交付。
+- 当前工作区为 `cabezon`；本阶段分支为 `newbdez33/claude-auto-phase2`。
+- 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
-## 下一阶段：Claude Code 自动切换
+## 已完成：Claude Code 自动切换
 
-- 计划：`docs/plans/2026-10-08-ccsw-claude-auto-phase2.md`。
+- 计划：`docs/plans/2026-10-08-ccsw-claude-auto-phase2.md`，八项任务均完成。
 - 规格：`docs/specs/2026-10-07-ccsw-claude-provider-design.md` §9。
-- 第二阶段尚未实现，计划尚待用户审阅；此次先完成改名。
-- 已确定的设计：引擎保留 `provider` 字段，但产品只构造 `Provider::Claude`；`auto codex` 或无 Claude 账号时拒绝执行。
-- Keychain 不可用时保持当前账号；事件使用 `schemaVersion: 2` 和 `provider: "claude"`；状态文件仍为 v1。
-- `autoswitch.model` 拼写错误只警告一次；TUI 自动视图仅覆盖 Claude。
-- 第三阶段为 Claude session 模式，第四阶段为 export/import v2 和 `.cswap` 导入，均尚未实现。
+- 引擎保留 `provider` 字段，产品只构造 `Provider::Claude`。`auto` 和 `auto claude` 运行；`auto codex` 或无 Claude 账号时在首个 tick 前拒绝执行。
+- 采集仅涉及当前 provider，保护 tick 开始时和重新读取后的 live slot；Claude 活跃 token 不由自动切换刷新，Codex 凭据和 daemon 不受影响。
+- Keychain 不可读时持续保持当前账号，超过 30 分钟也不触发 failover；过期 token 原有的 30 分钟上限不变。该规则消除了原计划中上限与“绝不 failover”的矛盾。
+- 独立审查发现的 live token 副本漏洞已修复：采集和目标刷新按凭据指纹保护，自动切换也排除其他身份下保存的同一 live token；切换前重新检查。
+- Keychain 失败且没有可读文件回退时，所有 Claude 刷新均暂停；回退文件恢复后可以刷新真正不活跃的凭据。
+- 旧 provider 的隔离记录保持不动，不会误发归属 Claude 的恢复事件。
+- 事件使用 `schemaVersion: 2` 和 `provider: "claude"`；状态文件仍为 v1。
+- `autoswitch.model` 拼写提示仅在所有相关用量可用于决策时检查一次，不额外请求用量，不用不可读状态下的旧缓存作判断。
+- TUI 自动视图仅展示 Claude，筛选后重新计算活跃账号；没有 Claude 账号时显示 OFF，隐藏不可用操作，不启动引擎。
+- 测试使用临时数据、假 Keychain 和本地 mock；新增混合 provider 隔离、Keychain 超时保持、延迟模型提示、CLI 拒绝和 TUI 状态覆盖。
+- 本机门禁：格式检查、Clippy 和全量 455 项测试通过。发布构建与跨平台 CI 结果以对应 PR 和 Actions 记录为准。
+
+## 后续阶段
+
+- 第三阶段：Claude session 模式，尚未实现。
+- 第四阶段：export/import v2 和 `.cswap` 导入，尚未实现。
+- 首次快照加载前进入自动视图会显示 OFF；等待加载后重新进入即可。
+- 这两个阶段需要单独规划；本次不包含自动迁移或新的兼容层。
 
 ## 工作约定
 

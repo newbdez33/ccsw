@@ -5,7 +5,7 @@
 //! by a fake in tests, and it never fetches usage itself: every measurement
 //! comes from [`crate::collect::run_pass`], the same pass `list` takes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use serde_json::{Map, Value, json};
 
+use crate::claude::keychain::{SecurityCli, SystemSecurity};
 use crate::collect::{self, CollectMode, CollectOptions, Collected, RefreshStatus};
 use crate::errors::Result;
 use crate::model::{AccountRef, CurrentAccount, Roster, format_iso, now_iso, now_unix};
@@ -34,11 +35,15 @@ pub const NO_RESET_FALLBACK_S: f64 = 300.0;
 /// Longest idle-hold on a `token expired` active account before unhealthy counting resumes.
 pub const IDLE_HOLD_MAX_S: f64 = 1800.0;
 
+/// Why `auto` is Claude-only (spec §9): Codex sessions keep the account they
+/// started with until they restart, so switching under them achieves nothing.
+pub const CLAUDE_ONLY_NOTICE: &str = "Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'ccsw add claude' first.";
+
 /// What the engine needs from the switcher.
 pub trait AutoFacade {
     fn store(&self) -> &Store;
     fn roster(&mut self) -> Result<Roster>;
-    fn current_account(&mut self) -> Result<CurrentAccount>;
+    fn current_account(&mut self, provider: Provider) -> Result<CurrentAccount>;
     fn switch_to(&mut self, slot: u32) -> Result<crate::model::SwitchOutcome>;
 }
 
@@ -145,12 +150,13 @@ impl Event {
         }
     }
 
-    /// `{"schemaVersion": 1, "event": kind, "ts": now, …}`.
-    pub fn to_json(&self) -> Value {
+    /// `{"schemaVersion": 2, "event": kind, "ts": now, "provider": provider, …}`.
+    pub fn to_json(&self, provider: Provider) -> Value {
         let mut map = Map::new();
-        map.insert("schemaVersion".into(), json!(1));
+        map.insert("schemaVersion".into(), json!(2));
         map.insert("event".into(), json!(self.kind()));
         map.insert("ts".into(), json!(now_iso()));
+        map.insert("provider".into(), json!(provider.as_str()));
         match self {
             Self::Poll {
                 active,
@@ -356,10 +362,23 @@ impl TickOutcome {
     }
 }
 
+/// The sentinels under which the active account is held rather than counted
+/// unhealthy: an expired token Claude Code refreshes on its next use, or a
+/// Keychain that cannot be read right now.
+fn held_sentinel(entry: Option<&UsageEntry>) -> Option<UsageSentinel> {
+    match entry.and_then(|e| e.sentinel) {
+        Some(s @ (UsageSentinel::TokenExpired | UsageSentinel::KeychainUnavailable)) => Some(s),
+        _ => None,
+    }
+}
+
 pub struct Engine<'a> {
     facade: &'a mut dyn AutoFacade,
+    security: &'a dyn SecurityCli,
+    provider: Provider,
     settings: AutoSwitchSettings,
     models: Vec<String>,
+    model_warning_pending: bool,
     dry_run: bool,
     sink: Box<dyn FnMut(&Event) + 'a>,
     clock: Box<dyn Fn() -> f64 + 'a>,
@@ -382,6 +401,7 @@ struct Ranked {
 impl<'a> Engine<'a> {
     pub fn new(
         facade: &'a mut dyn AutoFacade,
+        provider: Provider,
         settings: AutoSwitchSettings,
         dry_run: bool,
         sink: impl FnMut(&Event) + 'a,
@@ -389,7 +409,10 @@ impl<'a> Engine<'a> {
         let models = settings.model_names();
         Self {
             facade,
+            security: &SystemSecurity,
+            provider,
             settings,
+            model_warning_pending: models.iter().any(|m| !m.eq_ignore_ascii_case("all")),
             models,
             dry_run,
             sink: Box::new(sink),
@@ -401,6 +424,18 @@ impl<'a> Engine<'a> {
             idle_hold_slow: false,
             active_next_poll_at: None,
         }
+    }
+
+    /// Replace the Keychain client (tests).
+    #[cfg(test)]
+    fn with_security(mut self, security: &'a dyn SecurityCli) -> Self {
+        self.security = security;
+        self
+    }
+
+    /// The provider this engine rotates.
+    pub fn provider(&self) -> Provider {
+        self.provider
     }
 
     /// Replace the wall clock (tests).
@@ -460,7 +495,7 @@ impl<'a> Engine<'a> {
             .filter_map(|key| key.parse().ok())
             .collect();
 
-        let (current, email, api_key) = match self.facade.current_account()? {
+        let (current, email, api_key) = match self.facade.current_account(self.provider)? {
             CurrentAccount::Managed {
                 slot,
                 email,
@@ -491,16 +526,20 @@ impl<'a> Engine<'a> {
             email: email.clone(),
         };
         let store = self.facade.store();
-        // Phase 1: the engine rotates Codex accounts only.
+        // Keep the other provider out of this engine's candidate list.
+        let provider = self.provider;
+        let claude_guard = (provider == Provider::Claude)
+            .then(|| collect::ClaudeRefreshGuard::read(store, &roster, self.security));
         let candidates: Vec<u32> = roster
             .switchable_slots(|slot| credentials::exists(store, slot))
             .into_iter()
-            .filter(|slot| {
-                roster
-                    .record(*slot)
-                    .is_some_and(|r| r.provider == Provider::Codex)
-            })
+            .filter(|slot| roster.record(*slot).is_some_and(|r| r.provider == provider))
             .filter(|slot| *slot != current && !quarantined.contains(slot))
+            .filter(|slot| {
+                claude_guard
+                    .as_ref()
+                    .is_none_or(|guard| guard.allows_slot(store, *slot))
+            })
             .collect();
 
         let collected = self.collect(&roster, current, &candidates, now)?;
@@ -540,6 +579,11 @@ impl<'a> Engine<'a> {
             windows,
         });
 
+        let in_pass: Vec<u32> = std::iter::once(current)
+            .chain(candidates.iter().copied())
+            .collect();
+        self.warn_unknown_models(&entries, &in_pass);
+
         if api_key && !self.settings.include_api_key_accounts {
             self.no_switch("active-api-key", "API-key accounts have no quota to watch");
             return Ok(TickOutcome::NoAction);
@@ -567,17 +611,22 @@ impl<'a> Engine<'a> {
                 }
             }
             None => {
-                let idle = entries.get(&current).and_then(|e| e.sentinel)
-                    == Some(UsageSentinel::TokenExpired);
-                if idle {
+                if let Some(held) = held_sentinel(entries.get(&current)) {
                     let since = *self.idle_hold_since.get_or_insert(now);
-                    if now - since <= IDLE_HOLD_MAX_S {
+                    if held == UsageSentinel::KeychainUnavailable || now - since <= IDLE_HOLD_MAX_S
+                    {
                         self.unhealthy_ticks = 0;
                         self.idle_hold_slow = true;
-                        self.no_switch(
-                            "active-idle",
-                            "token expired while Codex is idle; resumes on next use",
-                        );
+                        let detail = if held == UsageSentinel::KeychainUnavailable {
+                            "keychain unavailable; holding until Claude Code's login is readable"
+                                .to_string()
+                        } else {
+                            format!(
+                                "token expired while {} is idle; resumes on next use",
+                                self.provider.tool_name()
+                            )
+                        };
+                        self.no_switch("active-idle", detail);
                         return Ok(TickOutcome::NoAction);
                     }
                     tracing::warn!(
@@ -690,6 +739,9 @@ impl<'a> Engine<'a> {
 
         let mut transient = false;
         for target in ranked.ordered {
+            if !self.target_allowed(&roster, target) {
+                continue;
+            }
             let target_email = roster
                 .record(target)
                 .map(|r| r.email.clone())
@@ -697,7 +749,13 @@ impl<'a> Engine<'a> {
             if self.dry_run {
                 return self.perform(target, &target_email, trigger, &active_ref);
             }
-            match collect::refresh_slot(self.facade.store(), &roster, target, false) {
+            match collect::refresh_slot_with(
+                self.facade.store(),
+                &roster,
+                target,
+                false,
+                self.security,
+            ) {
                 RefreshStatus::Ok | RefreshStatus::NotNeeded => {
                     return self.perform(target, &target_email, trigger, &active_ref);
                 }
@@ -733,20 +791,16 @@ impl<'a> Engine<'a> {
         let threshold = self.settings.threshold;
         let store = self.facade.store();
         let models = &self.models;
-        // Every live login is an active slot, whatever its provider, so the
-        // pass never treats the live Claude login as a refreshable candidate.
+        // Protect a login changed outside this tick without fetching or
+        // refreshing the other provider's accounts.
         let mut actives = vec![active];
-        for provider in Provider::ALL {
-            if roster.slots_of(provider).is_empty() {
-                continue;
-            }
-            if let Some(slot) = collect::live_login_for(store, roster, provider).slot()
-                && !actives.contains(&slot)
-            {
-                actives.push(slot);
-            }
+        if let Some(slot) =
+            collect::live_login_for_with(store, roster, self.provider, self.security).slot()
+            && !actives.contains(&slot)
+        {
+            actives.push(slot);
         }
-        let mut collected = collect::run_pass(
+        let mut collected = collect::run_pass_with(
             store,
             roster,
             CollectOptions {
@@ -756,17 +810,18 @@ impl<'a> Engine<'a> {
                 threshold,
                 models,
             },
+            self.security,
         )?;
         let active_entry = collected.entries.get(&active);
         let active_headroom = entry_headroom(&collected.entries, active, models);
-        let idle = active_entry.and_then(|e| e.sentinel) == Some(UsageSentinel::TokenExpired);
+        let idle = held_sentinel(active_entry).is_some();
         let escalate = !candidates.is_empty()
             && match active_headroom {
                 None => !idle,
                 Some(h) => 100.0 - h >= threshold - ESCALATION_MARGIN_PCT,
             };
         if escalate {
-            let more = collect::run_pass(
+            let more = collect::run_pass_with(
                 store,
                 roster,
                 CollectOptions {
@@ -776,6 +831,7 @@ impl<'a> Engine<'a> {
                     threshold,
                     models,
                 },
+                self.security,
             )?;
             collected.entries = more.entries;
             collected
@@ -783,6 +839,56 @@ impl<'a> Engine<'a> {
                 .extend(more.token_persist_failures);
         }
         Ok(collected)
+    }
+
+    /// cswap's typo guard: once per run, on the first tick where every slot in
+    /// the pass that is not an API-key account has a readable usage dict, warn
+    /// about configured model names that no scoped window reports. `all` never
+    /// warns, and the check never fetches.
+    fn warn_unknown_models(&mut self, entries: &BTreeMap<u32, UsageEntry>, slots: &[u32]) {
+        if !self.model_warning_pending {
+            return;
+        }
+        let wanted: Vec<String> = self
+            .models
+            .iter()
+            .filter(|m| !m.eq_ignore_ascii_case("all"))
+            .cloned()
+            .collect();
+        if wanted.is_empty() {
+            self.model_warning_pending = false;
+            return;
+        }
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for slot in slots {
+            let entry = entries.get(slot);
+            if entry.and_then(|e| e.sentinel) == Some(UsageSentinel::ApiKey) {
+                continue;
+            }
+            let Some(usage) = entry.and_then(UsageEntry::decision_value) else {
+                return; // not every slot is readable yet: try again next tick
+            };
+            seen.extend(usage.scoped.iter().map(|w| w.name.to_ascii_lowercase()));
+        }
+        self.model_warning_pending = false;
+        let missing: Vec<String> = wanted
+            .into_iter()
+            .filter(|m| !seen.contains(&m.to_ascii_lowercase()))
+            .collect();
+        if !missing.is_empty() {
+            self.emit(Event::ConfigWarning {
+                message: format!(
+                    "autoswitch.model: {} matches no account's usage windows — only the 5h/7d limits are being watched for it (typo?)",
+                    missing.join(",")
+                ),
+            });
+        }
+    }
+
+    fn target_allowed(&self, roster: &Roster, slot: u32) -> bool {
+        self.provider != Provider::Claude
+            || collect::ClaudeRefreshGuard::read(self.facade.store(), roster, self.security)
+                .allows_slot(self.facade.store(), slot)
     }
 
     fn cooldown_remaining(&self, state: &AutoSwitchState, now: f64) -> Option<f64> {
@@ -800,6 +906,14 @@ impl<'a> Engine<'a> {
         trigger: Trigger,
         active_ref: &AccountRef,
     ) -> Result<TickOutcome> {
+        let roster = self.facade.roster()?;
+        if !self.target_allowed(&roster, target) {
+            self.no_switch(
+                "already-active",
+                "the target credential is in use or the live login is unreadable",
+            );
+            return Ok(TickOutcome::NoAction);
+        }
         if self.dry_run {
             self.emit(Event::Switch {
                 trigger,
@@ -883,6 +997,7 @@ impl<'a> Engine<'a> {
                 continue;
             };
             let reason = match roster.record(slot) {
+                Some(record) if record.provider != self.provider => continue,
                 None => "account-replaced",
                 Some(record) if record.email != entry.email => "account-replaced",
                 Some(_) => {
@@ -1087,14 +1202,20 @@ fn earliest_recovery(
 
 const AUTO_EPILOG: &str = "Exit codes with --once:
   0  switched to another account
-  1  error (network trouble, lock contention, ...)
+  1  error (network trouble, lock contention, no Claude Code account, ...)
   2  no action needed
   3  blocked: wanted to switch but no viable target / all exhausted
 
+Auto-switch covers Claude Code accounts: a running Claude Code session picks the
+new login up by itself (next message, or ~30 s with the macOS Keychain). Codex
+sessions keep the account they started with until they restart, so there is no
+Codex auto-switch; use `ccsw switch` and restart the session instead.
+
 Examples:
   ccsw auto                       # foreground loop, switch at 90% used
+  ccsw auto claude                # the same (claude is the only provider)
   ccsw auto --threshold 80        # switch earlier
-  ccsw auto --model GPT-5.3-Codex-Spark   # also switch when that model pool's weekly limit is hit
+  ccsw auto --model Fable         # also switch when that model's weekly limit is hit
   ccsw auto --json                # one JSON event per line (for scripts)
   ccsw auto --once; echo $?       # single tick, outcome in exit code
   ccsw auto --dry-run             # log decisions, never actually switch
@@ -1104,7 +1225,7 @@ Defaults live in settings.json in the backup root; flags override them.";
 #[derive(Debug, Parser)]
 #[command(
     name = "ccsw auto",
-    about = "Automatically switch accounts when the active one nears its 5h/7d rate limit. Runs a foreground polling loop; use --once for a single tick (cron-friendly).",
+    about = "Automatically switch Claude Code accounts when the active one nears its 5h/7d rate limit. Runs a foreground polling loop; use --once for a single tick (cron-friendly).",
     after_help = AUTO_EPILOG,
     disable_version_flag = true
 )]
@@ -1124,7 +1245,7 @@ struct AutoArgs {
     /// Minimum time between proactive switches (default 300)
     #[arg(long, value_name = "SECONDS")]
     cooldown: Option<f64>,
-    /// Also switch when a per-model weekly limit is hit, not just the account-wide 5h/7d windows. One pool name or a comma-separated list of the model pools an account reports (e.g. GPT-5.3-Codex-Spark), or 'all' for every per-model window
+    /// Also switch when a per-model weekly limit is hit, not just the account-wide 5h/7d windows. One pool name or a comma-separated list of the model pools an account reports (e.g. Fable), or 'all' for every per-model window
     #[arg(long, value_name = "NAMES")]
     model: Option<String>,
     /// Allow switching onto managed API-key accounts as a last resort (they bill per token; default: excluded)
@@ -1192,9 +1313,9 @@ fn running_in_container() -> bool {
 }
 
 /// Write one event: compact JSON, or `HH:MM:SS  <human>` colored by kind.
-fn write_event(out: &mut dyn Write, event: &Event, json: bool) {
+fn write_event(out: &mut dyn Write, event: &Event, provider: Provider, json: bool) {
     if json {
-        let _ = writeln!(out, "{}", event.to_json());
+        let _ = writeln!(out, "{}", event.to_json(provider));
     } else {
         let line = event.human();
         let styled = match event {
@@ -1262,6 +1383,17 @@ pub fn run_cli(argv: Vec<String>, facade: &mut dyn AutoFacade) -> i32 {
 
 /// [`run_cli`] with the event stream (and banner) written to `out`.
 pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn Write) -> i32 {
+    let mut argv = argv;
+    match argv.first().and_then(|word| Provider::parse_selector(word)) {
+        Some(Provider::Claude) => {
+            argv.remove(0);
+        }
+        Some(Provider::Codex) => {
+            eprintln!("Error: {CLAUDE_ONLY_NOTICE}");
+            return 1;
+        }
+        None => {}
+    }
     let args = match AutoArgs::try_parse_from(std::iter::once("ccsw auto".to_string()).chain(argv))
     {
         Ok(args) => args,
@@ -1272,6 +1404,17 @@ pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn 
     };
     if let Some(code) = root_guard() {
         return code;
+    }
+    match facade.roster() {
+        Ok(roster) if roster.slots_of(Provider::Claude).is_empty() => {
+            eprintln!("Error: {CLAUDE_ONLY_NOTICE}");
+            return 1;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("Error: {err}");
+            return 1;
+        }
     }
     if args.debug {
         let _ = tracing_subscriber::fmt()
@@ -1292,8 +1435,8 @@ pub fn run_cli_to(argv: Vec<String>, facade: &mut dyn AutoFacade, out: &mut dyn 
         );
         let _ = writeln!(out, "{}", printer::dimmed(&banner));
     }
-    let sink = |event: &Event| write_event(out, event, json);
-    let mut engine = Engine::new(facade, settings, args.dry_run, sink);
+    let sink = |event: &Event| write_event(out, event, Provider::Claude, json);
+    let mut engine = Engine::new(facade, Provider::Claude, settings, args.dry_run, sink);
     if args.once {
         return engine.tick().code();
     }
@@ -1333,6 +1476,7 @@ mod tests {
     struct Fake {
         store: Store,
         roster: Roster,
+        provider: Provider,
         current: CurrentAccount,
         switches: Vec<u32>,
         fail_switch: bool,
@@ -1345,7 +1489,11 @@ mod tests {
         fn roster(&mut self) -> Result<Roster> {
             Ok(self.roster.clone())
         }
-        fn current_account(&mut self) -> Result<CurrentAccount> {
+        fn current_account(&mut self, provider: Provider) -> Result<CurrentAccount> {
+            assert_eq!(
+                provider, self.provider,
+                "the engine asks for its own provider"
+            );
             Ok(self.current.clone())
         }
         fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
@@ -1371,7 +1519,7 @@ mod tests {
             }
             Ok(SwitchOutcome {
                 switched,
-                provider: Provider::Codex,
+                provider: self.provider,
                 from,
                 to: Some(AccountRef {
                     number: Some(slot),
@@ -1388,6 +1536,20 @@ mod tests {
                 warnings: vec!["w1".into()],
             })
         }
+    }
+
+    /// A Claude slot file for `a{slot}@example.com` whose token is far from expiry.
+    fn claude_slot(slot: u32) -> Value {
+        use crate::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
+        let credential = ClaudeCredential::from_value(json!({"claudeAiOauth": {
+            "accessToken": format!("cat-{slot}"), "refreshToken": format!("crt-{slot}"),
+            "expiresAt": FAR * 1000, "scopes": ["user:inference"]
+        }}));
+        SlotFile::new(
+            &credential,
+            OauthAccount::synthesized(&format!("a{slot}@example.com")),
+        )
+        .to_value()
     }
 
     fn auth(account_id: &str, access_exp: i64, refresh: Option<&str>) -> AuthJson {
@@ -1454,14 +1616,31 @@ mod tests {
 
     impl Fixture {
         fn new(slots: &[u32]) -> Self {
+            Self::new_for(Provider::Codex, slots)
+        }
+
+        /// Claude records with Claude slot files; the first slot is the live login.
+        fn claude(slots: &[u32]) -> Self {
+            Self::new_for(Provider::Claude, slots)
+        }
+
+        fn new_for(provider: Provider, slots: &[u32]) -> Self {
             let (dir, store) = temp_store();
             let mut roster = Roster::empty();
             for &slot in slots {
                 let id = format!("a{slot}");
                 let mut record = AccountRecord::new(format!("{id}@example.com"));
                 record.organization_uuid = id.clone();
+                record.provider = provider;
                 roster.add_record(slot, record);
-                credentials::write(&store, slot, &auth(&id, FAR, Some("rt")).0).unwrap();
+                match provider {
+                    Provider::Codex => {
+                        credentials::write(&store, slot, &auth(&id, FAR, Some("rt")).0).unwrap()
+                    }
+                    Provider::Claude => {
+                        credentials::write(&store, slot, &claude_slot(slot)).unwrap()
+                    }
+                }
             }
             let current = CurrentAccount::Managed {
                 slot: slots[0],
@@ -1473,6 +1652,7 @@ mod tests {
                 fake: Fake {
                     store,
                     roster,
+                    provider,
                     current,
                     switches: Vec::new(),
                     fail_switch: false,
@@ -1530,10 +1710,15 @@ mod tests {
     ) -> (TickOutcome, Vec<Event>) {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let sink_log = log.clone();
+        let provider = fixture.fake.provider;
         let outcome = {
-            let mut engine = Engine::new(&mut fixture.fake, settings, dry_run, move |event| {
-                sink_log.borrow_mut().push(event.clone())
-            });
+            let mut engine = Engine::new(
+                &mut fixture.fake,
+                provider,
+                settings,
+                dry_run,
+                move |event| sink_log.borrow_mut().push(event.clone()),
+            );
             engine.tick()
         };
         let events = log.borrow().clone();
@@ -1593,8 +1778,9 @@ mod tests {
             fetch_errors,
             windows,
         };
-        let json = poll.to_json();
-        assert_eq!(json["schemaVersion"], 1);
+        let json = poll.to_json(Provider::Claude);
+        assert_eq!(json["schemaVersion"], 2);
+        assert_eq!(json["provider"], "claude");
         assert_eq!(json["event"], "poll");
         let ts = json["ts"].as_str().unwrap();
         assert!(ts.ends_with('Z') && ts.len() == 20, "{ts}");
@@ -1618,7 +1804,7 @@ mod tests {
             fetch_errors: BTreeMap::new(),
             windows: BTreeMap::new(),
         };
-        let json = bare.to_json();
+        let json = bare.to_json(Provider::Claude);
         assert!(json["active"].is_null());
         assert_eq!(json["headroomPct"], json!({}));
         assert!(json.get("fetchErrors").is_none());
@@ -1651,7 +1837,7 @@ mod tests {
             warnings: vec!["w".into()],
             dry_run: false,
         };
-        let json = switch.to_json();
+        let json = switch.to_json(Provider::Claude);
         assert_eq!(json["event"], "switch");
         assert_eq!(json["trigger"], "at-limit");
         assert_eq!(json["from"]["number"], 1);
@@ -1669,8 +1855,8 @@ mod tests {
             warnings: vec![],
             dry_run: true,
         };
-        assert_eq!(dry.to_json()["dryRun"], true);
-        assert!(dry.to_json()["from"].is_null());
+        assert_eq!(dry.to_json(Provider::Claude)["dryRun"], true);
+        assert!(dry.to_json(Provider::Claude)["from"].is_null());
         assert_eq!(
             dry.human(),
             "[dry-run] would switch (none) -> ? (proactive)"
@@ -1680,14 +1866,17 @@ mod tests {
             reason: "below-threshold".into(),
             detail: "62% < 90%".into(),
         };
-        assert_eq!(no_switch.to_json()["reason"], "below-threshold");
-        assert_eq!(no_switch.to_json()["detail"], "62% < 90%");
+        assert_eq!(
+            no_switch.to_json(Provider::Claude)["reason"],
+            "below-threshold"
+        );
+        assert_eq!(no_switch.to_json(Provider::Claude)["detail"], "62% < 90%");
         assert_eq!(no_switch.human(), "no switch: below-threshold (62% < 90%)");
         let plain = Event::NoSwitch {
             reason: "no-viable-target".into(),
             detail: String::new(),
         };
-        assert_eq!(plain.to_json()["detail"], "");
+        assert_eq!(plain.to_json(Provider::Claude)["detail"], "");
         assert_eq!(plain.human(), "no switch: no-viable-target");
 
         let quarantined = Event::AccountQuarantined {
@@ -1695,7 +1884,7 @@ mod tests {
             email: "c@x".into(),
             reason: "invalid_grant".into(),
         };
-        let json = quarantined.to_json();
+        let json = quarantined.to_json(Provider::Claude);
         assert_eq!(json["event"], "account-quarantined");
         assert_eq!(json["number"], "3", "number is a string");
         assert_eq!(
@@ -1707,7 +1896,10 @@ mod tests {
             email: "c@x".into(),
             reason: "credentials-replaced".into(),
         };
-        assert_eq!(back.to_json()["event"], "account-unquarantined");
+        assert_eq!(
+            back.to_json(Provider::Claude)["event"],
+            "account-unquarantined"
+        );
         assert_eq!(
             back.human(),
             "Account-3 (c@x) back in rotation (credentials-replaced)"
@@ -1717,7 +1909,7 @@ mod tests {
             earliest_reset_at: Some("2026-09-29T12:00:00Z".into()),
         };
         assert_eq!(
-            exhausted.to_json()["earliestResetAt"],
+            exhausted.to_json(Provider::Claude)["earliestResetAt"],
             "2026-09-29T12:00:00Z"
         );
         assert_eq!(
@@ -1727,7 +1919,7 @@ mod tests {
         let unknown = Event::AllExhausted {
             earliest_reset_at: None,
         };
-        assert!(unknown.to_json()["earliestResetAt"].is_null());
+        assert!(unknown.to_json(Provider::Claude)["earliestResetAt"].is_null());
         assert_eq!(
             unknown.human(),
             "all accounts exhausted; no reset time known"
@@ -1737,14 +1929,20 @@ mod tests {
             seconds: 599.96,
             until: "2026-09-29T12:10:00Z".into(),
         };
-        assert_eq!(sleep.to_json()["seconds"], 600.0);
+        assert_eq!(sleep.to_json(Provider::Claude)["seconds"], 600.0);
+        let other = sleep.to_json(Provider::Codex);
+        assert_eq!(other["provider"], "codex");
+        assert_eq!(other["schemaVersion"], 2);
+        for key in ["event", "ts", "schemaVersion", "provider"] {
+            assert!(other.get(key).is_some());
+        }
         assert_eq!(sleep.human(), "sleeping 10m (until 2026-09-29T12:10:00Z)");
 
         let error = Event::Error {
             message: "boom".into(),
             transient: true,
         };
-        assert_eq!(error.to_json()["transient"], true);
+        assert_eq!(error.to_json(Provider::Claude)["transient"], true);
         assert_eq!(error.human(), "error: boom (will retry)");
         let fatal = Event::Error {
             message: "boom".into(),
@@ -1754,7 +1952,7 @@ mod tests {
         let warning = Event::ConfigWarning {
             message: "typo?".into(),
         };
-        assert_eq!(warning.to_json()["event"], "config-warning");
+        assert_eq!(warning.to_json(Provider::Claude)["event"], "config-warning");
         assert_eq!(warning.human(), "warning: typo?");
     }
 
@@ -2024,21 +2222,15 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_record_is_never_a_candidate() {
-        use crate::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
+    fn records_of_the_other_provider_are_never_candidates() {
+        // A Codex engine ignores a Claude record …
         let mut fixture = Fixture::new(&[1, 2, 3]);
         let record = fixture.fake.roster.record_mut(3).unwrap();
         record.provider = Provider::Claude;
-        let credential = ClaudeCredential::from_value(json!({"claudeAiOauth": {
-            "accessToken": "cat", "refreshToken": "crt", "expiresAt": FAR * 1000,
-            "scopes": ["user:inference"]
-        }}));
-        let slot_file = SlotFile::new(&credential, OauthAccount::synthesized("a3@example.com"));
-        credentials::write(&fixture.fake.store, 3, &slot_file.to_value()).unwrap();
+        credentials::write(&fixture.fake.store, 3, &claude_slot(3)).unwrap();
         fixture.seed(1, usage(95.0, 10.0, None));
         fixture.seed(2, usage(40.0, 10.0, None));
         fixture.seed(3, usage(5.0, 5.0, None));
-
         let (outcome, events) = tick(&mut fixture, defaults(), true);
         assert_eq!(outcome, TickOutcome::Switched);
         let Event::Poll { headroom, .. } = &events[0] else {
@@ -2049,6 +2241,56 @@ mod tests {
             &events[1],
             Event::Switch { to: Some(to), .. } if to.number == Some(2)
         ));
+
+        // … and a Claude engine ignores a Codex record, even the best one.
+        let mut fixture = Fixture::claude(&[1, 2, 3]);
+        let record = fixture.fake.roster.record_mut(3).unwrap();
+        record.provider = Provider::Codex;
+        credentials::write(&fixture.fake.store, 3, &auth("a3", FAR, Some("rt")).0).unwrap();
+        fixture.seed(1, usage(95.0, 10.0, None));
+        fixture.seed(2, usage(40.0, 10.0, None));
+        fixture.seed(3, usage(5.0, 5.0, None));
+        let (outcome, events) = tick(&mut fixture, defaults(), true);
+        assert_eq!(outcome, TickOutcome::Switched);
+        let Event::Poll { headroom, .. } = &events[0] else {
+            panic!("poll event");
+        };
+        assert!(!headroom.contains_key(&3), "the Codex slot is not ranked");
+        assert!(matches!(
+            &events[1],
+            Event::Switch { to: Some(to), .. } if to.number == Some(2)
+        ));
+        assert!(fixture.fake.switches.is_empty(), "dry-run");
+    }
+
+    #[test]
+    fn idle_detail_names_the_engine_provider() {
+        let mut fixture = Fixture::claude(&[1, 2]);
+        fixture.seed_failure(1, "http-401");
+        fixture.seed(2, usage(20.0, 10.0, None));
+        // An expired live token: the collector derives `token expired` for the
+        // active slot when its access token is past expiry and nothing fetched it.
+        let expired = {
+            use crate::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
+            let credential = ClaudeCredential::from_value(json!({"claudeAiOauth": {
+                "accessToken": "cat-1", "refreshToken": "crt-1", "expiresAt": 1000,
+                "scopes": ["user:inference"]
+            }}));
+            SlotFile::new(&credential, OauthAccount::synthesized("a1@example.com")).to_value()
+        };
+        credentials::write(&fixture.fake.store, 1, &expired).unwrap();
+        let mut settings = defaults();
+        settings.unhealthy_ticks = 1;
+        let (outcome, events) = tick(&mut fixture, settings, false);
+        assert_eq!(outcome, TickOutcome::NoAction);
+        assert_eq!(
+            no_switch_reason(&events),
+            Some((
+                "active-idle".into(),
+                "token expired while Claude Code is idle; resumes on next use".into()
+            ))
+        );
+        assert!(fixture.fake.switches.is_empty());
     }
 
     #[test]
@@ -2093,9 +2335,13 @@ mod tests {
         settings.unhealthy_ticks = 2;
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let sink_log = log.clone();
-        let mut engine = Engine::new(&mut fixture.fake, settings, false, move |event| {
-            sink_log.borrow_mut().push(event.clone())
-        });
+        let mut engine = Engine::new(
+            &mut fixture.fake,
+            Provider::Codex,
+            settings,
+            false,
+            move |event| sink_log.borrow_mut().push(event.clone()),
+        );
         assert_eq!(engine.tick(), TickOutcome::NoAction);
         let events = log.borrow().clone();
         assert_eq!(
@@ -2148,15 +2394,79 @@ mod tests {
         let base = fixture.now;
         let clock = Rc::new(RefCell::new(base));
         let clock_ref = clock.clone();
-        let mut engine = Engine::new(&mut fixture.fake, settings, false, move |event| {
-            sink_log.borrow_mut().push(event.clone())
-        })
+        let mut engine = Engine::new(
+            &mut fixture.fake,
+            Provider::Codex,
+            settings,
+            false,
+            move |event| sink_log.borrow_mut().push(event.clone()),
+        )
         .with_clock(move || *clock_ref.borrow());
         assert_eq!(engine.tick(), TickOutcome::NoAction);
         *clock.borrow_mut() = base + IDLE_HOLD_MAX_S + 1.0;
         assert_eq!(engine.tick(), TickOutcome::Switched);
         drop(engine);
         assert_eq!(fixture.fake.switches, vec![2]);
+    }
+
+    #[test]
+    fn keychain_unavailable_active_holds_like_token_expired() {
+        use crate::claude::keychain::test_support::FakeSecurity;
+        let mut fixture = Fixture::claude(&[1, 2]);
+        // The Keychain is the live backend and cannot be read; nothing on disk
+        // covers the login, so the active slot reports `keychain unavailable`.
+        fixture.fake.store.paths.keychain_enabled = true;
+        {
+            let paths = &fixture.fake.store.paths;
+            std::fs::create_dir_all(&paths.claude_home).unwrap();
+            crate::fsutil::write_json_private(
+                &paths.claude_global_config_file(),
+                &json!({"oauthAccount": {
+                    "emailAddress": "a1@example.com", "accountUuid": "u1",
+                    "organizationUuid": "a1", "organizationName": null
+                }}),
+            )
+            .unwrap();
+        }
+        fixture.seed(2, usage(20.0, 10.0, None));
+        let mut settings = defaults();
+        settings.unhealthy_ticks = 1;
+        let security = FakeSecurity { failing: true };
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let sink_log = log.clone();
+        let outcome = {
+            let clock = Rc::new(RefCell::new(0.0));
+            let clock_ref = clock.clone();
+            let mut engine = Engine::new(
+                &mut fixture.fake,
+                Provider::Claude,
+                settings,
+                false,
+                move |event| sink_log.borrow_mut().push(event.clone()),
+            )
+            .with_security(&security)
+            .with_clock(move || *clock_ref.borrow());
+            assert_eq!(engine.tick(), TickOutcome::NoAction);
+            *clock.borrow_mut() = IDLE_HOLD_MAX_S + 1.0;
+            engine.tick()
+        };
+        let events = log.borrow().clone();
+        assert_eq!(outcome, TickOutcome::NoAction);
+        assert!(
+            matches!(&events[0], Event::Poll { headroom, .. } if headroom.get(&1) == Some(&None)),
+            "the active account's usage is unknown: {events:?}"
+        );
+        assert_eq!(
+            no_switch_reason(&events),
+            Some((
+                "active-idle".into(),
+                "keychain unavailable; holding until Claude Code's login is readable".into()
+            ))
+        );
+        assert!(
+            fixture.fake.switches.is_empty(),
+            "a cool candidate is not switched in while the login is unreadable"
+        );
     }
 
     #[test]
@@ -2178,6 +2488,7 @@ mod tests {
         let sink_log = log.clone();
         let mut engine = Engine::new(
             &mut fixture.fake,
+            Provider::Codex,
             AutoSwitchSettings::default(),
             false,
             move |event| sink_log.borrow_mut().push(event.clone()),
@@ -2225,9 +2536,13 @@ mod tests {
             interval_seconds: 60.0,
             ..AutoSwitchSettings::default()
         };
-        let mut engine = Engine::new(&mut fixture.fake, settings, false, move |event| {
-            sink_log.borrow_mut().push(event.clone())
-        });
+        let mut engine = Engine::new(
+            &mut fixture.fake,
+            Provider::Codex,
+            settings,
+            false,
+            move |event| sink_log.borrow_mut().push(event.clone()),
+        );
         let outcome = engine.tick();
         assert_eq!(outcome, TickOutcome::Blocked);
         let events = log.borrow().clone();
@@ -2251,6 +2566,7 @@ mod tests {
         let sink_log = log.clone();
         let mut engine = Engine::new(
             &mut fixture.fake,
+            Provider::Codex,
             AutoSwitchSettings::default(),
             false,
             move |event| sink_log.borrow_mut().push(event.clone()),
@@ -2404,8 +2720,8 @@ mod tests {
             fn roster(&mut self) -> Result<Roster> {
                 self.0.roster()
             }
-            fn current_account(&mut self) -> Result<CurrentAccount> {
-                self.0.current_account()
+            fn current_account(&mut self, provider: Provider) -> Result<CurrentAccount> {
+                self.0.current_account(provider)
             }
             fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
                 let mut outcome = self.0.switch_to(slot)?;
@@ -2417,6 +2733,7 @@ mod tests {
         let mut stubborn = Stubborn(fixture.fake);
         let mut engine = Engine::new(
             &mut stubborn,
+            Provider::Codex,
             AutoSwitchSettings::default(),
             false,
             move |event| sink_log.borrow_mut().push(event.clone()),
@@ -2437,7 +2754,7 @@ mod tests {
             interval_seconds: 100.0,
             ..AutoSwitchSettings::default()
         };
-        let mut engine = Engine::new(&mut fixture.fake, settings, false, |_| {});
+        let mut engine = Engine::new(&mut fixture.fake, Provider::Codex, settings, false, |_| {});
         assert_eq!(engine.tick(), TickOutcome::NoAction);
         let delay = engine.next_delay(TickOutcome::NoAction);
         assert!((90.0..=110.0).contains(&delay), "{delay}");
@@ -2476,6 +2793,7 @@ mod tests {
         let counter = polls.clone();
         let mut engine = Engine::new(
             &mut fixture.fake,
+            Provider::Codex,
             AutoSwitchSettings::default(),
             false,
             move |event| {
@@ -2493,7 +2811,7 @@ mod tests {
 
     #[test]
     fn cli_parses_flags_and_runs_once() {
-        let mut fixture = Fixture::new(&[1, 2]);
+        let mut fixture = Fixture::claude(&[1, 2]);
         fixture.seed(1, usage(62.0, 10.0, None));
         fixture.seed(2, usage(10.0, 10.0, None));
         let argv = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -2555,5 +2873,194 @@ mod tests {
                 .include_api_key_accounts,
             None
         );
+    }
+    #[test]
+    fn auto_refuses_codex_and_rosters_without_a_claude_account() {
+        let argv = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A Codex-only roster: refused before any tick (no poll event, exit 1).
+        let mut codex_only = Fixture::new(&[1, 2]);
+        codex_only.seed(1, usage(95.0, 10.0, None));
+        codex_only.seed(2, usage(10.0, 10.0, None));
+        let mut out = Vec::new();
+        assert_eq!(
+            run_cli_to(argv(&["--once", "--json"]), &mut codex_only.fake, &mut out),
+            1
+        );
+        assert!(
+            out.is_empty(),
+            "no event is written: {}",
+            String::from_utf8_lossy(&out)
+        );
+        assert!(codex_only.fake.switches.is_empty());
+
+        // `auto codex` is refused even with Claude accounts around.
+        let mut claude = Fixture::claude(&[1, 2]);
+        claude.seed(1, usage(95.0, 10.0, None));
+        claude.seed(2, usage(10.0, 10.0, None));
+        let mut out = Vec::new();
+        assert_eq!(
+            run_cli_to(
+                argv(&["codex", "--once", "--json"]),
+                &mut claude.fake,
+                &mut out
+            ),
+            1
+        );
+        assert!(out.is_empty());
+
+        // `auto claude` is the bare form.
+        let mut out = Vec::new();
+        assert_eq!(
+            run_cli_to(
+                argv(&["claude", "--once", "--json", "--dry-run"]),
+                &mut claude.fake,
+                &mut out
+            ),
+            TickOutcome::Switched.code()
+        );
+        assert!(String::from_utf8_lossy(&out).contains("\"event\":\"switch\""));
+        assert!(claude.fake.switches.is_empty(), "dry-run");
+    }
+    fn usage_with_pool(five_hour: f64, pool: &str) -> NormalizedUsage {
+        let mut u = usage(five_hour, 10.0, None);
+        u.scoped = vec![crate::model::ScopedWindow {
+            name: pool.to_string(),
+            pct: 10.0,
+            resets_at: None,
+        }];
+        u
+    }
+
+    fn config_warnings(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::ConfigWarning { message } => Some(message.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn model_typo_warns_once_and_known_names_never_do() {
+        let mut fixture = Fixture::claude(&[1, 2]);
+        fixture.seed(1, usage_with_pool(50.0, "Fable"));
+        fixture.seed(2, usage_with_pool(10.0, "Fable"));
+
+        // A typo warns exactly once per run, and the engine keeps watching 5h/7d.
+        let mut settings = defaults();
+        settings.model = Some("Fabel".into());
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let sink_log = log.clone();
+        {
+            let mut engine = Engine::new(
+                &mut fixture.fake,
+                Provider::Claude,
+                settings,
+                true,
+                move |event| sink_log.borrow_mut().push(event.clone()),
+            );
+            assert_eq!(engine.tick(), TickOutcome::NoAction, "50% < 90%");
+            assert_eq!(engine.tick(), TickOutcome::NoAction);
+        }
+        let events = log.borrow().clone();
+        assert_eq!(
+            config_warnings(&events),
+            vec![
+                "autoswitch.model: Fabel matches no account's usage windows — only the 5h/7d limits are being watched for it (typo?)"
+                    .to_string()
+            ],
+            "{events:?}"
+        );
+        assert_eq!(
+            kinds(&events)[..2],
+            ["poll", "config-warning"],
+            "the warning follows the first poll"
+        );
+
+        // A known name, `all`, and a mixed list warn only for the unknown part.
+        for (model, expected) in [
+            ("Fable", Vec::<String>::new()),
+            ("all", Vec::new()),
+            ("FABLE,all", Vec::new()),
+            ("Fable,Opus", vec!["autoswitch.model: Opus matches no account's usage windows — only the 5h/7d limits are being watched for it (typo?)".to_string()]),
+        ] {
+            let mut settings = defaults();
+            settings.model = Some(model.into());
+            let (_, events) = tick(&mut fixture, settings, true);
+            assert_eq!(config_warnings(&events), expected, "model = {model}");
+        }
+
+        // An unreadable slot defers the check instead of guessing.
+        let mut fixture = Fixture::claude(&[1, 2]);
+        fixture.seed(1, usage_with_pool(50.0, "Fable"));
+        fixture.seed_failure(2, "http-500");
+        let mut settings = defaults();
+        settings.model = Some("Fabel".into());
+        let (_, events) = tick(&mut fixture, settings, true);
+        assert!(config_warnings(&events).is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn model_typo_waits_for_readable_usage_then_warns() {
+        let mut fixture = Fixture::claude(&[1, 2]);
+        fixture.seed(1, usage_with_pool(50.0, "Fable"));
+        fixture.seed(2, usage_with_pool(10.0, "Fable"));
+        // A cached measurement cannot make missing credentials readable.
+        credentials::write(&fixture.fake.store, 2, &json!({})).unwrap();
+        let mut settings = defaults();
+        settings.model = Some("Fabel".into());
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let sink_log = log.clone();
+        let mut engine = Engine::new(
+            &mut fixture.fake,
+            Provider::Claude,
+            settings,
+            true,
+            move |event| sink_log.borrow_mut().push(event.clone()),
+        );
+        assert_eq!(engine.tick(), TickOutcome::NoAction);
+        assert!(config_warnings(&log.borrow()).is_empty());
+        credentials::write(engine.facade.store(), 2, &claude_slot(2)).unwrap();
+        assert_eq!(engine.tick(), TickOutcome::NoAction);
+        assert_eq!(config_warnings(&log.borrow()).len(), 1);
+        assert_eq!(engine.tick(), TickOutcome::NoAction);
+        assert_eq!(config_warnings(&log.borrow()).len(), 1);
+    }
+    #[test]
+    fn quarantine_recovery_leaves_other_providers_untouched() {
+        let mut fixture = Fixture::claude(&[1]);
+        fixture.seed(1, usage(20.0, 10.0, None));
+        fixture
+            .fake
+            .roster
+            .add_record(2, AccountRecord::new("other@example.com"));
+        credentials::write(
+            &fixture.fake.store,
+            2,
+            &auth("other", FAR, Some("new-rt")).0,
+        )
+        .unwrap();
+        state::modify(&fixture.fake.store, |state| {
+            state.quarantine.insert(
+                "2".into(),
+                QuarantineEntry {
+                    email: "other@example.com".into(),
+                    reason: "invalid_grant".into(),
+                    at: "2026-10-08T00:00:00Z".into(),
+                    refresh_token_fingerprint: Some("old-fingerprint".into()),
+                },
+            );
+        })
+        .unwrap();
+        let before = state::read(&fixture.fake.store.paths);
+        let (_, events) = tick(&mut fixture, defaults(), false);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::AccountUnquarantined { .. })),
+            "{events:?}"
+        );
+        assert_eq!(state::read(&fixture.fake.store.paths), before);
     }
 }

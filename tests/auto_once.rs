@@ -5,12 +5,10 @@
 
 use std::fs;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 
 use ccsw::autoswitch::{AutoFacade, run_cli_to};
-use ccsw::codex::auth::AuthJson;
+use ccsw::claude::credentials::{ClaudeCredential, OauthAccount, SlotFile};
 use ccsw::errors::{CcswError, Result};
 use ccsw::model::{
     AccountRecord, AccountRef, CurrentAccount, NormalizedUsage, Roster, SwitchOutcome, WindowUsage,
@@ -23,25 +21,17 @@ use ccsw::store::{Store, credentials, state};
 
 const FAR: i64 = 4_102_444_800;
 
-fn jwt(claims: &Value) -> String {
-    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).unwrap());
-    format!("header.{payload}.sig")
-}
-
-fn chatgpt(slot: u32) -> AuthJson {
-    let id = format!("acct-{slot}");
-    AuthJson::from_value(json!({
-        "OPENAI_API_KEY": null,
-        "auth_mode": "chatgpt",
-        "tokens": {
-            "id_token": jwt(&json!({"email": format!("u{slot}@x.com"), "exp": FAR,
-                                    "https://api.openai.com/auth": {"chatgpt_account_id": id}})),
-            "access_token": jwt(&json!({"exp": FAR})),
-            "refresh_token": format!("rt-{slot}"),
-            "account_id": id
-        },
-        "last_refresh": "2026-09-29T10:00:00Z"
-    }))
+/// A Claude slot file for `u{slot}@x.com` with a far-future token.
+fn claude_slot(slot: u32) -> Value {
+    let credential = ClaudeCredential::from_value(json!({"claudeAiOauth": {
+        "accessToken": format!("cat-{slot}"), "refreshToken": format!("crt-{slot}"),
+        "expiresAt": FAR * 1000, "scopes": ["user:inference"]
+    }}));
+    SlotFile::new(
+        &credential,
+        OauthAccount::synthesized(&format!("u{slot}@x.com")),
+    )
+    .to_value()
 }
 
 struct Fake {
@@ -59,7 +49,7 @@ impl AutoFacade for Fake {
     fn roster(&mut self) -> Result<Roster> {
         Ok(self.roster.clone())
     }
-    fn current_account(&mut self) -> Result<CurrentAccount> {
+    fn current_account(&mut self, _provider: Provider) -> Result<CurrentAccount> {
         Ok(self.current.clone())
     }
     fn switch_to(&mut self, slot: u32) -> Result<SwitchOutcome> {
@@ -79,7 +69,7 @@ impl AutoFacade for Fake {
         };
         Ok(SwitchOutcome {
             switched: true,
-            provider: Provider::Codex,
+            provider: Provider::Claude,
             from,
             to: Some(AccountRef {
                 number: Some(slot),
@@ -113,9 +103,10 @@ impl World {
         let mut roster = Roster::empty();
         for &slot in slots {
             let mut record = AccountRecord::new(format!("u{slot}@x.com"));
-            record.organization_uuid = format!("acct-{slot}");
+            record.provider = Provider::Claude;
+            record.organization_uuid = format!("org-{slot}");
             roster.add_record(slot, record);
-            credentials::write(&store, slot, &chatgpt(slot).0).unwrap();
+            credentials::write(&store, slot, &claude_slot(slot)).unwrap();
         }
         let current = CurrentAccount::Managed {
             slot: slots[0],
@@ -188,8 +179,9 @@ fn dry_run_reports_the_switch_and_writes_nothing() {
     assert_eq!(code, 0);
     assert_eq!(events.len(), 2, "{events:?}");
     let poll = &events[0];
-    assert_eq!(poll["schemaVersion"], 1);
     assert_eq!(poll["event"], "poll");
+    assert_eq!(poll["schemaVersion"], 2);
+    assert_eq!(poll["provider"], "claude");
     assert_eq!(poll["active"], json!({"number": 1, "email": "u1@x.com"}));
     assert_eq!(poll["headroomPct"], json!({"1": 5.0, "2": 60.0, "3": 80.0}));
     assert_eq!(poll["threshold"], 90.0);
@@ -199,6 +191,7 @@ fn dry_run_reports_the_switch_and_writes_nothing() {
     assert!(ts.ends_with('Z') && ts.len() == 20, "{ts}");
     let switch = &events[1];
     assert_eq!(switch["event"], "switch");
+    assert_eq!(switch["provider"], "claude");
     assert_eq!(switch["trigger"], "proactive");
     assert_eq!(switch["dryRun"], true);
     assert_eq!(switch["from"]["number"], 1);
