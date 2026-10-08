@@ -374,3 +374,27 @@ Each phase ships green on the quality gate and is usable on its own.
    proves tighter under that string than under cswap's, the string is the only knob to turn.
 7. Claude accounts show `organizationName` or `personal` as their tag; no plan label.
 8. The v1 omissions of §2 stand.
+
+
+## Phase 3 implementation notes (2026-10-08)
+
+Session behavior is ported from cswap commit `3a4e5c14873eb5b32f182d55c68da98ac8c0db45`.
+The source and full MIT notice are recorded in README and NOTICE.
+
+- Reuse an existing profile when it holds the stored credential generation.
+- Preserve POSIX exec. Reconcile tokens on later commands; Windows also reconciles after exit.
+- Inspect only managed profile PID records to protect credentials; no system-wide process display.
+- Hash the exact exported directory after NFC normalization. Respect the secure-storage
+  override for live reads and remove it for isolated launches.
+- Share default-home customizations. Merge existing history before linking, as in cswap.
+- Mappings schema 2 stores an array of provider-tagged entries per directory. Schema 1
+  entries without a provider remain Codex mappings.
+- `run --require-session` refuses the default-login fast path. `env --unset` clears both
+  home variables, or just the selected provider's variable.
+- Reserve the profile under the store lock before launch. A fingerprint consume lock
+  coordinates preparation, token refresh and account mutations, including duplicate slots.
+- A new backup generation invalidates old profile credentials after its sessions close.
+  Preflight all affected profiles before account moves or purge; purge removes managed
+  hashed Keychain items and preserves default and external items.
+- `env` prepares a profile without a persistent reservation. Direct CLI launches rely on
+  native PID records; use `run` for protection throughout startup.

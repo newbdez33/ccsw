@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use ccsw::codex::auth::AuthJson;
 use ccsw::model::{AccountKind, AccountRecord, Roster};
 use ccsw::paths::Paths;
+use ccsw::provider::Provider;
 use ccsw::session::{
     self, CODEX_MISSING, EnvPlan, EnvRequest, HostEnv, MANIFEST_NAME, MappedAccount, RunTarget,
     ShareOptions, Shell,
@@ -121,6 +122,7 @@ impl World {
             codex_home_preset: None,
             set_vars: Vec::new(),
             codex: Some(self.codex.clone()),
+            ..HostEnv::default()
         }
     }
 
@@ -357,6 +359,7 @@ fn launch_runs_codex_in_the_profile_with_no_daemon_and_scrubs_keys() {
         RunTarget::Slot(2),
         tail,
         ShareOptions::default(),
+        false,
     )
     .unwrap();
     let profile = world.profile(2);
@@ -402,6 +405,7 @@ fn launch_runs_codex_in_the_profile_with_no_daemon_and_scrubs_keys() {
         RunTarget::Slot(2),
         vec!["--remote".into()],
         ShareOptions::default(),
+        false,
     )
     .unwrap();
     let (_, argv, _) = world.execute(&mut launch);
@@ -424,6 +428,7 @@ fn same_account_fast_path_and_default_launch() {
         RunTarget::Slot(2),
         vec!["--resume".into()],
         ShareOptions::default(),
+        false,
     )
     .unwrap();
     assert_eq!(launch.session, None);
@@ -451,6 +456,7 @@ fn same_account_fast_path_and_default_launch() {
         RunTarget::Slot(2),
         vec![],
         ShareOptions::default(),
+        false,
     )
     .unwrap();
     assert!(launch.session.is_some());
@@ -471,6 +477,7 @@ fn same_account_fast_path_and_default_launch() {
         RunTarget::Slot(2),
         vec![],
         ShareOptions::default(),
+        false,
     )
     .unwrap();
     assert!(launch.session.is_some());
@@ -490,10 +497,12 @@ fn same_account_fast_path_and_default_launch() {
         &world.roster,
         &world.host(),
         RunTarget::Default {
+            provider: Provider::Codex,
             notice: Some("why".into()),
         },
         vec!["exec".into()],
         ShareOptions::default(),
+        false,
     )
     .unwrap();
     assert_eq!(launch.notices, ["why"]);
@@ -516,6 +525,7 @@ fn missing_codex_and_missing_credentials_are_session_errors() {
         RunTarget::Slot(2),
         vec![],
         ShareOptions::default(),
+        false,
     )
     .unwrap_err();
     assert_eq!(err.type_name(), "SessionError");
@@ -529,6 +539,7 @@ fn missing_codex_and_missing_credentials_are_session_errors() {
         RunTarget::Slot(2),
         vec![],
         ShareOptions::default(),
+        false,
     )
     .unwrap_err();
     assert_eq!(err.type_name(), "SessionError");
@@ -544,6 +555,7 @@ fn missing_codex_and_missing_credentials_are_session_errors() {
             RunTarget::Slot(9),
             vec![],
             ShareOptions::default(),
+            false
         )
         .is_err()
     );
@@ -563,6 +575,7 @@ fn api_key_accounts_run_in_session_mode() {
         RunTarget::Slot(3),
         vec![],
         ShareOptions::default(),
+        false,
     )
     .unwrap();
     let (code, _, home) = world.execute(&mut launch);
@@ -707,7 +720,10 @@ fn env_prints_eval_lines_and_notes() {
     assert_eq!(
         plan,
         EnvPlan::Lines {
-            lines: vec!["Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue".into()],
+            lines: vec![
+                "Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue".into(),
+                "Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue".into()
+            ],
             notices: vec![]
         }
     );
@@ -842,7 +858,12 @@ fn map_unmap_and_run_target_resolution() {
 
     // Resolution walks up to the nearest mapped ancestor.
     assert_eq!(
-        session::mapped_account(&world.store, &world.roster, &work.join("deeper")),
+        session::mapped_account(
+            &world.store,
+            &world.roster,
+            &work.join("deeper"),
+            Provider::Codex
+        ),
         MappedAccount::Slot(1)
     );
     assert_eq!(
@@ -860,7 +881,7 @@ fn map_unmap_and_run_target_resolution() {
             .to_string(),
         "No account found with identifier: nobody"
     );
-    let RunTarget::Default { notice } =
+    let RunTarget::Default { notice, .. } =
         session::resolve_run_target(&world.store, &world.roster, None, &cwd).unwrap()
     else {
         panic!("unmapped cwd launches the default account");
@@ -873,12 +894,12 @@ fn map_unmap_and_run_target_resolution() {
     // The mapped account leaves the roster.
     world.roster.remove_slot(1);
     assert_eq!(
-        session::mapped_account(&world.store, &world.roster, &work),
+        session::mapped_account(&world.store, &world.roster, &work, Provider::Codex),
         MappedAccount::Removed {
             email: "a@x.com".into()
         }
     );
-    let RunTarget::Default { notice } =
+    let RunTarget::Default { notice, .. } =
         session::resolve_run_target(&world.store, &world.roster, None, &work).unwrap()
     else {
         panic!("removed account launches the default account");
@@ -895,17 +916,17 @@ fn map_unmap_and_run_target_resolution() {
         lines[2]
     );
 
-    let line = session::unmap(&world.store, Some(&work.join(".")), &cwd).unwrap();
+    let line = session::unmap(&world.store, Some(&work.join(".")), &cwd, None).unwrap();
     assert!(
         line.contains(&format!("Unmapped {}", normalized.display())),
         "{line}"
     );
-    let line = session::unmap(&world.store, Some(&work), &cwd).unwrap();
+    let line = session::unmap(&world.store, Some(&work), &cwd, None).unwrap();
     assert!(
         line.contains(&format!("No mapping for {}", normalized.display())),
         "{line}"
     );
-    let line = session::unmap(&world.store, None, &ghost).unwrap();
+    let line = session::unmap(&world.store, None, &ghost, None).unwrap();
     assert!(
         line.starts_with(&format!(
             "Unmapped {}",

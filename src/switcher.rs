@@ -548,6 +548,37 @@ impl Switcher {
         }
     }
 
+    /// Caller holds the store lock. Capture Keychain-only rotations before a
+    /// path change makes the old hashed service inaccessible.
+    fn prepare_session_changes(
+        &self,
+        roster: &Roster,
+        slots: impl IntoIterator<Item = u32>,
+    ) -> Result<Vec<crate::fsutil::FileLock>> {
+        let slots: std::collections::BTreeSet<_> = slots
+            .into_iter()
+            .filter(|slot| {
+                roster
+                    .record(*slot)
+                    .is_some_and(|r| r.provider == Provider::Claude)
+            })
+            .collect();
+        let consume = crate::claude::session::mutation_locks(&self.store, slots.iter().copied())?;
+        for slot in &slots {
+            let record = roster.record(*slot).ok_or_else(|| missing(*slot))?;
+            crate::claude::session::require_quiescent(
+                &self.store.paths.session_dir(*slot, &record.email),
+            )?;
+        }
+        for slot in slots {
+            let record = roster.record(slot).ok_or_else(|| missing(slot))?;
+            let profile = self.store.paths.session_dir(slot, &record.email);
+            crate::claude::session::reconcile_locked(&self.store, slot, record, &SystemSecurity)?;
+            crate::claude::session::materialize_slot(&self.store, slot, &profile, &SystemSecurity)?;
+        }
+        Ok(consume)
+    }
+
     fn remove_session_dir(&self, slot: u32, email: &str) {
         let dir = self.store.paths.session_dir(slot, email);
         match fs::remove_dir_all(&dir) {
@@ -981,6 +1012,8 @@ impl Switcher {
                 "Alias '{alias}' is already used by account {owner}"
             )));
         }
+        let _session_guards = self
+            .prepare_session_changes(roster, existing.into_iter().chain(std::iter::once(target)))?;
         if let Some(occupant) = roster.record(target).cloned() {
             self.say(Line::warning(format!("Slot {target} already occupied")));
             self.say(
@@ -995,7 +1028,7 @@ impl Switcher {
             self.remove_session_dir(target, &occupant.email);
             roster.remove_slot(target);
             let mut mappings = MappingStore::load(&self.store.paths);
-            let pruned = mappings.prune(&occupant.identity());
+            let pruned = mappings.prune(occupant.provider, &occupant.identity());
             if pruned > 0 {
                 mappings.save()?;
                 self.say(Line::dimmed(format!(
@@ -1047,6 +1080,14 @@ impl Switcher {
                 "Alias '{alias}' is already used by account {owner}"
             )));
         }
+        let _consume = if fresh.provider == Provider::Claude {
+            let lock = crate::claude::session::mutation_lock(&self.store, slot)?;
+            let record = roster.record(slot).ok_or_else(|| missing(slot))?;
+            crate::claude::session::mark_backup_replacement(&self.store, slot, record, creds)?;
+            lock
+        } else {
+            None
+        };
         credentials::write(&self.store, slot, creds)?;
         let record = roster.record_mut(slot).ok_or_else(|| missing(slot))?;
         if !fresh.organization_name.is_empty() {
@@ -1135,6 +1176,8 @@ impl Switcher {
         }
         let _lock = self.store.lock()?;
         let mut roster = self.roster()?;
+        let record = roster.record(slot).cloned().ok_or_else(|| missing(slot))?;
+        let _session_guards = self.prepare_session_changes(&roster, [slot])?;
         credentials::delete(&self.store, slot)?;
         self.remove_session_dir(slot, &record.email);
         roster.remove_slot(slot);
@@ -1145,7 +1188,7 @@ impl Switcher {
             format!(" {}", account_label(slot, &record.email)),
         ));
         let mut mappings = MappingStore::load(&self.store.paths);
-        let pruned = mappings.prune(&record.identity());
+        let pruned = mappings.prune(record.provider, &record.identity());
         if pruned > 0 {
             mappings.save()?;
             self.say(Line::dimmed(format!(
@@ -1277,6 +1320,7 @@ impl Switcher {
             .map(|r| r.email.clone())
             .ok_or_else(|| missing(src))?;
         let target_email = roster.record(target_slot).map(|r| r.email.clone());
+        let _session_guards = self.prepare_session_changes(&roster, [src, target_slot])?;
         match roster.move_slot(src, target_slot)? {
             MoveOutcome::NoOp => self.say(
                 Line::new()
@@ -1319,6 +1363,7 @@ impl Switcher {
         };
         let email_a = email_of(&roster, a)?;
         let email_b = email_of(&roster, b)?;
+        let _session_guards = self.prepare_session_changes(&roster, [a, b])?;
         roster.swap_slots(a, b)?;
         self.swap_files(a, &email_a, b, &email_b)?;
         self.write_roster(&roster)?;
@@ -1381,6 +1426,10 @@ impl Switcher {
 
     /// Returns `false` when the user cancelled.
     pub fn purge(&mut self) -> Result<bool> {
+        self.purge_with(&SystemSecurity)
+    }
+
+    fn purge_with(&mut self, cli: &dyn crate::claude::keychain::SecurityCli) -> Result<bool> {
         let root = self.store.paths.backup_root.clone();
         self.say(Line::warning(
             "This will remove ALL ccsw data from your system:",
@@ -1408,10 +1457,65 @@ impl Switcher {
             self.say(Line::dimmed("Cancelled"));
             return Ok(false);
         }
+        if !root.exists() {
+            self.say(Line::dimmed("No ccsw data found to remove."));
+            self.say(Line::new().push(Style::Accent, "Purge complete."));
+            return Ok(true);
+        }
+        let store_lock = self.store.lock()?;
+        let roster = self.roster_opt()?.unwrap_or_else(Roster::empty);
+        let consume_locks =
+            crate::claude::session::mutation_locks(&self.store, roster.slots_of(Provider::Claude))?;
+        let profiles = match fs::read_dir(self.store.paths.sessions_dir()) {
+            Ok(entries) => entries
+                .map(|entry| entry.map(|e| e.path()))
+                .collect::<std::io::Result<Vec<_>>>()
+                .map_err(|err| CcswError::session(err.to_string()))?,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(err) => return Err(CcswError::session(err.to_string())),
+        };
+        for profile in &profiles {
+            if profile.is_dir() {
+                crate::claude::session::require_quiescent(profile)?;
+            }
+        }
+        for profile in &profiles {
+            if profile.is_dir() {
+                crate::claude::session::delete_keychain(&self.store, profile, cli)?;
+            }
+        }
         if root.exists() {
-            fs::remove_dir_all(&root).map_err(|err| {
-                CcswError::config(format!("could not remove {}: {err}", root.display()))
-            })?;
+            #[cfg(windows)]
+            {
+                // Open descendants prevent a directory rename on Windows.
+                // Rust opens the lock files with delete sharing; keep the
+                // guards until removal completes, then close those handles.
+                fs::remove_dir_all(&root).map_err(|err| {
+                    CcswError::config(format!("could not remove {}: {err}", root.display()))
+                })?;
+                drop(consume_locks);
+                drop(store_lock);
+            }
+            #[cfg(not(windows))]
+            {
+                let parent = root
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                let tombstone = tempfile::Builder::new()
+                    .prefix(".ccsw-purge-")
+                    .tempdir_in(parent)
+                    .map_err(|err| CcswError::config(err.to_string()))?;
+                let detached = tombstone.path().join("store");
+                fs::rename(&root, &detached).map_err(|err| {
+                    CcswError::config(format!("could not detach {}: {err}", root.display()))
+                })?;
+                drop(consume_locks);
+                drop(store_lock);
+                fs::remove_dir_all(&detached).map_err(|err| {
+                    CcswError::config(format!("could not remove {}: {err}", detached.display()))
+                })?;
+            }
             self.say(Line::new().push(Style::Accent, "Removed:"));
             self.say(Line::plain(format!("  - {}", root.display())));
         } else {
@@ -1607,6 +1711,10 @@ impl Switcher {
         let live_api = ClaudeLive::new(&self.store.paths, &SystemSecurity);
 
         let store_lock = self.store.lock()?;
+        let _consume = crate::claude::session::mutation_lock(&self.store, target)?;
+        let profile = self.store.paths.session_dir(target, &record.email);
+        crate::claude::session::require_quiescent(&profile)?;
+        crate::claude::session::reconcile_locked(&self.store, target, &record, &SystemSecurity)?;
         let stored = credentials::read(&self.store, target)?.ok_or_else(|| {
             CcswError::switch(format!(
                 "Account-{target} has no stored credentials. Re-add with: ccsw add claude --slot {target}"
@@ -2764,6 +2872,7 @@ mod tests {
         f.switcher.add_account(Provider::Codex, None, None).unwrap();
         let mut mappings = MappingStore::load(&f.switcher.store.paths);
         mappings.set(
+            Provider::Codex,
             Path::new("/tmp/proj"),
             &Identity::new("a@example.com", "acct-1"),
         );
@@ -3049,6 +3158,43 @@ mod tests {
     }
 
     #[test]
+    fn purge_removes_only_managed_profile_keychain_items() {
+        use crate::claude::keychain::{CliOutput, LIVE_SERVICE, MANAGED_SERVICE, SecurityCli};
+        struct MemoryKeychain(RefCell<std::collections::BTreeSet<String>>);
+        impl SecurityCli for MemoryKeychain {
+            fn run(&self, args: &[String], _: Option<&str>) -> io::Result<CliOutput> {
+                assert_eq!(args[0], "delete-generic-password");
+                let service = &args[args.iter().position(|arg| arg == "-s").unwrap() + 1];
+                let removed = self.0.borrow_mut().remove(service);
+                Ok(CliOutput {
+                    status: if removed { 0 } else { 44 },
+                    stdout: String::new(),
+                })
+            }
+        }
+        let mut f = fixture();
+        f.switcher.add_token("sk-1", None, None).unwrap();
+        let profile = f.switcher.store.paths.session_dir(1, "test@example.com");
+        fs::create_dir_all(&profile).unwrap();
+        let managed = crate::claude::session::keychain_service(&profile.to_string_lossy());
+        let preserved: std::collections::BTreeSet<String> = [
+            LIVE_SERVICE.to_string(),
+            MANAGED_SERVICE.to_string(),
+            crate::claude::session::keychain_service("/unmanaged/profile"),
+        ]
+        .into_iter()
+        .collect();
+        let mut items = preserved.clone();
+        items.insert(managed);
+        let keychain = MemoryKeychain(RefCell::new(items));
+        f.switcher.store.paths.keychain_enabled = true;
+        f.answer("yes");
+        assert!(f.switcher.purge_with(&keychain).unwrap());
+        assert_eq!(*keychain.0.borrow(), preserved);
+        assert!(!f.switcher.store.paths.backup_root.exists());
+    }
+
+    #[test]
     fn at_limit_labels() {
         let mut entry = empty_entry(None);
         assert_eq!(at_limit_label(Some(&entry), &[]), None);
@@ -3082,6 +3228,35 @@ mod tests {
         );
         assert_eq!(limits_label(&[]), "5h/7d limit");
         assert_eq!(limits_label(&["x".into()]), "usage limits");
+    }
+
+    #[test]
+    fn active_profile_blocks_switch_remove_and_move() {
+        let mut fx = fixture();
+        fx.write_claude_live("session@example.com", "org", "", "rt-session");
+        fx.switcher
+            .add_account(Provider::Claude, None, None)
+            .unwrap();
+        fx.write_claude_live("default@example.com", "org-default", "", "rt-default");
+        let profile = fx
+            .switcher
+            .store
+            .paths
+            .session_dir(1, "session@example.com");
+        crate::fsutil::write_json_private(
+            &profile.join("sessions/owner.json"),
+            &json!({"pid": std::process::id()}),
+        )
+        .unwrap();
+        assert!(fx.switcher.switch_to("1", false, true).is_err());
+        assert!(fx.switcher.move_account("1", "2").is_err());
+        fx.answer("y");
+        assert!(fx.switcher.remove("1", false).is_err());
+        assert!(fx.roster().record(1).is_some());
+        assert_eq!(
+            fx.claude_credentials()["claudeAiOauth"]["refreshToken"],
+            "rt-default"
+        );
     }
 
     #[test]

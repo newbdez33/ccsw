@@ -296,7 +296,14 @@ impl SlotView {
         let provider = record.map(|r| r.provider).unwrap_or_default();
         let identity = record.map(|r| r.identity());
         let api_key_record = record.is_some_and(|r| r.is_api_key());
-        let raw = credentials::read(store, slot).ok().flatten();
+        let session_result = record
+            .filter(|r| r.provider == Provider::Claude)
+            .map(|record| crate::claude::session::reconcile(store, slot, record, cli));
+        let raw = if session_result.is_some_and(|result| result.is_err()) {
+            None
+        } else {
+            credentials::read(store, slot).ok().flatten()
+        };
         let (stored, live, keychain_unavailable) = match provider {
             Provider::Codex => (
                 raw.map(|v| Presented::Codex(AuthJson::from_value(v))),
@@ -466,13 +473,17 @@ pub(crate) struct ClaudeRefreshGuard {
     readable: bool,
     active: Option<u32>,
     fingerprint: Option<String>,
+    session_slots: Vec<u32>,
+    session_fingerprints: Vec<String>,
 }
 
 impl ClaudeRefreshGuard {
     pub(crate) fn read(store: &Store, roster: &Roster, cli: &dyn SecurityCli) -> Self {
-        match ClaudeLive::new(&store.paths, cli).read() {
+        let mut guard = match ClaudeLive::new(&store.paths, cli).read() {
             Ok(login) if !login.keychain_unavailable || login.credential.is_some() => Self {
                 readable: true,
+                session_slots: Vec::new(),
+                session_fingerprints: Vec::new(),
                 active: claude_account_of(store, roster, &login).slot(),
                 fingerprint: login
                     .credential
@@ -485,15 +496,51 @@ impl ClaudeRefreshGuard {
                 );
                 Self {
                     readable: false,
+                    session_slots: Vec::new(),
+                    session_fingerprints: Vec::new(),
                     active: None,
                     fingerprint: None,
                 }
             }
+        };
+        for slot in roster.slots_of(Provider::Claude) {
+            let record = roster.record(slot).expect("roster slot");
+            let profile = store.paths.session_dir(slot, &record.email);
+            match crate::claude::session::current(store, slot, record, cli) {
+                Ok(current) => {
+                    if !crate::claude::session::is_quiescent(&profile) {
+                        let missing = current.is_none();
+                        guard.session_slots.push(slot);
+                        for credential in current.map(|f| f.credential).into_iter().chain(
+                            credentials::read(store, slot)
+                                .ok()
+                                .flatten()
+                                .and_then(|v| SlotFile::from_value(&v).ok())
+                                .map(|f| f.credential),
+                        ) {
+                            if let Some(fp) = credential.fingerprint() {
+                                guard.session_fingerprints.push(fp);
+                            }
+                        }
+                        if missing {
+                            guard.readable = false;
+                        }
+                    }
+                }
+                Err(_) => {
+                    guard.readable = false;
+                    guard.session_slots.push(slot);
+                }
+            }
         }
+        guard
     }
 
     fn allows_credential(&self, credential: &ClaudeCredential) -> bool {
         self.readable
+            && credential
+                .fingerprint()
+                .is_none_or(|fp| !self.session_fingerprints.contains(&fp))
             && self
                 .fingerprint
                 .as_ref()
@@ -501,7 +548,7 @@ impl ClaudeRefreshGuard {
     }
 
     pub(crate) fn allows_slot(&self, store: &Store, slot: u32) -> bool {
-        if !self.readable || self.active == Some(slot) {
+        if !self.readable || self.active == Some(slot) || self.session_slots.contains(&slot) {
             return false;
         }
         credentials::read(store, slot)
@@ -565,6 +612,39 @@ pub(crate) fn run_pass_with(
     let reserved = reserve(&usage_store, &views, &entries, &identities, &opts, started)?;
     let mut failures = Vec::new();
     if !reserved.is_empty() {
+        // Keep consume reservations through POST and persistence. A launch
+        // takes the same fingerprint lock before seeding and reserving a profile.
+        let initial_guard = reserved
+            .iter()
+            .any(|slot| matches!(views[slot].presented(), Some(Presented::Claude(_))))
+            .then(|| ClaudeRefreshGuard::read(store, roster, cli));
+        let mut consume_locks = Vec::new();
+        let mut refresh_reserved = std::collections::BTreeSet::new();
+        for slot in &reserved {
+            let Some(Presented::Claude(credential)) = views[slot].presented() else {
+                continue;
+            };
+            if opts.is_active(*slot)
+                || credential.refresh_token().is_none()
+                || !initial_guard
+                    .as_ref()
+                    .is_some_and(|guard| guard.allows_slot(store, *slot))
+            {
+                continue;
+            }
+            if let Ok(lock) =
+                crate::claude::session::consume_lock(store, credential, std::time::Duration::ZERO)
+            {
+                let current =
+                    credentials::read(store, *slot)?.and_then(|v| SlotFile::from_value(&v).ok());
+                if current
+                    .is_some_and(|file| file.credential.fingerprint() == credential.fingerprint())
+                {
+                    refresh_reserved.insert(*slot);
+                    consume_locks.push(lock);
+                }
+            }
+        }
         let claude_guard = reserved
             .iter()
             .any(|slot| matches!(views[slot].presented(), Some(Presented::Claude(_))))
@@ -577,7 +657,10 @@ pub(crate) fn run_pass_with(
                     && match presented {
                         Presented::Claude(credential) => {
                             claude_guard.as_ref().is_some_and(|guard| {
-                                guard.active != Some(*slot) && guard.allows_credential(credential)
+                                refresh_reserved.contains(slot)
+                                    && guard.active != Some(*slot)
+                                    && !guard.session_slots.contains(slot)
+                                    && guard.allows_credential(credential)
                             })
                         }
                         Presented::Codex(_) => true,
@@ -983,6 +1066,12 @@ fn persist_claude_rotation(
         return Ok(());
     }
     tokens.apply_to(&mut file.credential);
+    if let Some(identity) = file.oauth_account.identity() {
+        let mut record = crate::model::AccountRecord::new(identity.email);
+        record.provider = Provider::Claude;
+        record.organization_uuid = identity.account_id;
+        crate::claude::session::mark_backup_replacement(store, slot, &record, &file.to_value())?;
+    }
     credentials::write(store, slot, &file.to_value())
 }
 
@@ -1093,6 +1182,9 @@ fn refresh_claude_slot(
     if record.is_api_key() {
         return RefreshStatus::NotNeeded;
     }
+    if let Err(err) = crate::claude::session::reconcile(store, slot, record, cli) {
+        return RefreshStatus::Transient(err.to_string());
+    }
     let file = match credentials::read(store, slot) {
         Ok(Some(value)) => match SlotFile::from_value(&value) {
             Ok(file) => file,
@@ -1108,8 +1200,32 @@ fn refresh_claude_slot(
         CredentialKind::Unknown => return RefreshStatus::NoRefreshToken,
         CredentialKind::OAuth => {}
     }
+    let _consume = match crate::claude::session::consume_lock(
+        store,
+        &file.credential,
+        std::time::Duration::ZERO,
+    ) {
+        Ok(lock) => lock,
+        Err(_) => {
+            return RefreshStatus::Transient(
+                "Another operation owns this credential; retry.".into(),
+            );
+        }
+    };
+    let current = credentials::read(store, slot)
+        .ok()
+        .flatten()
+        .and_then(|v| SlotFile::from_value(&v).ok());
+    if current
+        .is_none_or(|current| current.credential.fingerprint() != file.credential.fingerprint())
+    {
+        return RefreshStatus::Transient("Credentials changed before refresh; retry.".into());
+    }
     let guard = ClaudeRefreshGuard::read(store, roster, cli);
-    if guard.active == Some(slot) || !guard.allows_credential(&file.credential) {
+    if guard.active == Some(slot)
+        || guard.session_slots.contains(&slot)
+        || !guard.allows_credential(&file.credential)
+    {
         // Claude Code owns every copy of the live refresh token.
         return RefreshStatus::NotNeeded;
     }
@@ -2502,6 +2618,37 @@ mod tests {
             before
         );
     }
+    #[test]
+    fn a_running_profile_owns_its_slot_and_duplicate_credentials() {
+        let mock = mock();
+        let (_dir, store) = temp_store();
+        let rt = format!("crt-profile-{}", unique("profile"));
+        let mut roster = Roster::empty();
+        for (slot, email) in [(1, "session@example.com"), (2, "copy@example.com")] {
+            roster.add_record(slot, claude_record(email));
+            claude_slot(&store, slot, email, "cat-stale", Some(&rt), 1);
+        }
+        let profile = store.paths.session_dir(1, "session@example.com");
+        std::fs::create_dir_all(profile.join("sessions")).unwrap();
+        crate::fsutil::write_json_private(
+            &profile.join("sessions/owner.json"),
+            &json!({"pid": std::process::id()}),
+        )
+        .unwrap();
+        let saved = credentials::read(&store, 1).unwrap().unwrap();
+        crate::fsutil::write_json_private(&profile.join(".credentials.json"), &saved).unwrap();
+        crate::fsutil::write_json_private(
+            &profile.join(".claude.json"),
+            &json!({"oauthAccount": saved["oauthAccount"]}),
+        )
+        .unwrap();
+        let guard = ClaudeRefreshGuard::read(&store, &roster, &SystemSecurity);
+        assert!(!guard.allows_slot(&store, 1));
+        assert!(!guard.allows_slot(&store, 2));
+        run_pass(&store, &roster, opts(CollectMode::Escalation, &[], &[1, 2])).unwrap();
+        assert_eq!(mock.claude_token_calls(&rt), 0);
+    }
+
     #[test]
     fn claude_pass_does_not_refresh_duplicate_live_credentials() {
         let mock = mock();

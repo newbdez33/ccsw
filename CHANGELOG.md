@@ -3,6 +3,37 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.6.0 — 2026-10-08
+
+### Added
+
+- Claude Code session profiles for `run` and `env`, adapted from cswap. Profiles
+  use `CLAUDE_CONFIG_DIR`, isolated Keychain items, shared customizations and
+  optional shared history. Keep local files and merge existing history before linking.
+- Provider selectors for session commands and independent directory mappings for
+  each provider. Existing mapping files remain readable.
+- `run --require-session` refuses the plain default-login fast path.
+- Capture newer profile credentials before use, protect running profiles and
+  duplicate token copies, and refuse writes when ownership cannot be checked.
+
+### Changed
+
+- `env --unset` clears both provider homes; add a provider selector to clear one.
+- `unmap DIR` removes both provider mappings; `unmap DIR PROVIDER` removes one.
+- Include the upstream session source reference and full MIT license in NOTICE.
+
+### Fixed
+
+- Resolve the live OAuth Keychain service from the exact configured directory,
+  including Unicode normalization and secure-storage overrides. Custom profiles
+  do not read or change the default managed API-key item.
+- Check the file credential-store setting only for commands that use Codex.
+- Limit sharing manifest cleanup to known shared item names.
+- Reserve session profiles before launch and coordinate token consumption with
+  in-flight refreshes, including duplicate credentials in other slots.
+- Invalidate stale profiles after a new login, preflight both slots before an
+  account move, and remove managed profile Keychain items during a safe purge.
+
 ## v0.5.0 — 2026-10-08
 
 ### Changed

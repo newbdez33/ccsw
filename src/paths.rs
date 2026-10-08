@@ -4,6 +4,15 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::errors::{CcswError, Result};
 
+pub(crate) fn user_home() -> Option<PathBuf> {
+    // Windows CLIs honor USERPROFILE, including redirected and test homes.
+    #[cfg(windows)]
+    if let Some(home) = std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(home));
+    }
+    dirs::home_dir()
+}
+
 /// `CCSW_KEYCHAIN=off|0|false` disables the Keychain; it is never used off macOS.
 pub fn keychain_enabled_from(value: Option<&str>) -> bool {
     let off = value.is_some_and(|v| {
@@ -30,6 +39,12 @@ pub struct Paths {
     pub codex_home: PathBuf,
     /// `$CLAUDE_CONFIG_DIR`, default `~/.claude`.
     pub claude_home: PathBuf,
+    /// Source of shared customizations, independent of a pinned session.
+    pub claude_default_home: PathBuf,
+    /// Exact exported value; Keychain hashing must retain trailing slashes and Unicode.
+    pub claude_config_dir_raw: Option<String>,
+    /// Defined-but-empty selects the default secure store.
+    pub claude_secure_storage_dir: Option<String>,
     /// Where `.claude.json` lives: `$CLAUDE_CONFIG_DIR` when set, else the user home.
     pub claude_config_base: PathBuf,
     /// macOS with `CCSW_KEYCHAIN` not `off`; the file backend otherwise.
@@ -38,14 +53,15 @@ pub struct Paths {
 
 impl Paths {
     pub fn from_env() -> Result<Self> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| CcswError::config("could not determine home directory"))?;
+        let home =
+            user_home().ok_or_else(|| CcswError::config("could not determine home directory"))?;
         let mut paths = Self::from_values(
             std::env::var_os("CCSW_HOME").map(PathBuf::from),
             std::env::var_os("CODEX_HOME").map(PathBuf::from),
             std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
             &home,
         )?;
+        paths.claude_secure_storage_dir = std::env::var("CLAUDE_SECURESTORAGE_CONFIG_DIR").ok();
         paths.keychain_enabled =
             keychain_enabled_from(std::env::var("CCSW_KEYCHAIN").ok().as_deref());
         Ok(paths)
@@ -83,6 +99,9 @@ impl Paths {
                 path.display()
             )));
         }
+        let claude_config_dir_raw = claude_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned());
         let (claude_home, claude_config_base) = match claude_dir {
             Some(path) => {
                 // `/x/cc/` must derive `/x/cc.lock`, the path Claude Code locks.
@@ -95,6 +114,9 @@ impl Paths {
             backup_root,
             codex_home,
             claude_home,
+            claude_default_home: user_home.join(".claude"),
+            claude_config_dir_raw,
+            claude_secure_storage_dir: None,
             claude_config_base,
             keychain_enabled: false,
         })

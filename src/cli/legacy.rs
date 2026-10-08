@@ -361,7 +361,7 @@ Commands:
   ccsw enable <num|email>         return a disabled account to rotation
   ccsw run <num|email> [-- ...]   run as an account, this terminal only
   ccsw run                        run the current dir's mapped account
-  ccsw env <num|email>            print the CODEX_HOME export for an account
+  ccsw env <num|email>            print the provider home export for an account
   ccsw map <num|email> [path]     map a directory to an account
   ccsw map                        list directory mappings
   ccsw unmap [path]               remove a directory mapping
