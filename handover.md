@@ -9,7 +9,8 @@
 - Claude session 第三阶段已通过 PR #4 合并并发布 `v0.6.0`。
 - export/import 第四阶段已通过 PR #5 合并并发布 `v0.7.0`；README 刷新为 PR #6。
 - Claude reset card（`cedar_ember` 限额重置）显示已实现，版本设为 `v0.7.1`；用量请求改以 `claude-cli/<本机版本> (external, cli) ccsw/<版本>` 身份发送。
-- 当前工作区为 `hraesvelg`；本阶段分支为 `newbdez33/claude-reset-cards`。
+- 仪表盘菜单改为 cswap 的优先级：账号面板完整显示，菜单拿剩余行数并随光标滚动，但最少保留面包屑和光标行（cswap 可缩到零行）。分支 `newbdez33/dashboard-menu-scroll`，走 PR 流程。
+- 当前工作区为 `hraesvelg`；当前分支为 `newbdez33/dashboard-menu-scroll`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换

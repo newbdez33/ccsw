@@ -280,6 +280,48 @@ fn dashboard_active_card_minis_menu_and_footer() {
 }
 
 #[test]
+fn dashboard_keeps_every_account_and_scrolls_the_menu_when_the_terminal_is_short() {
+    let mut app = app_with(TuiStart::Dashboard);
+    let rows = screen_rows(&render(&mut app, 100, 20, NOW));
+    find_row(&rows, "expired@x.y");
+    assert_eq!(rows[14], "   menu");
+    assert_eq!(rows[15], "");
+    assert_eq!(rows[16], " ▌ Switch account…");
+    assert_eq!(rows[17], "   Watch accounts");
+    assert_eq!(rows[18], "   Auto-switch view");
+    assert_eq!(
+        rows[19],
+        " s  Switch accounts   w  Watch   q  Quit   ^t  Theme"
+    );
+    assert!(!rows.iter().any(|r| r == "   Quit"), "{}", rows.join("\n"));
+
+    app.handle_key(key(KeyCode::End), NOW);
+    let rows = screen_rows(&render(&mut app, 100, 20, NOW));
+    find_row(&rows, "expired@x.y");
+    assert_eq!(rows[16], "   Remove account…");
+    assert_eq!(rows[17], "   Theme…");
+    assert_eq!(rows[18], " ▌ Quit");
+}
+
+#[test]
+fn dashboard_menu_never_shrinks_below_the_breadcrumb_and_cursor_row() {
+    let mut app = app_with(TuiStart::Dashboard);
+    let rows = screen_rows(&render(&mut app, 100, 16, NOW));
+    assert_eq!(rows[13], "   menu");
+    assert_eq!(rows[14], " ▌ Switch account…");
+    assert_eq!(
+        rows[15],
+        " s  Switch accounts   w  Watch   q  Quit   ^t  Theme"
+    );
+    find_row(&rows, "api-key-4@token.local");
+    assert!(
+        !rows.iter().any(|r| r.contains("expired@x.y")),
+        "the panel gives up its last row instead:\n{}",
+        rows.join("\n")
+    );
+}
+
+#[test]
 fn dashboard_menu_navigation_and_breadcrumb() {
     let mut app = app_with(TuiStart::Dashboard);
     for _ in 0..3 {

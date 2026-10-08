@@ -3,6 +3,16 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Changed
+
+- The dashboard keeps every account visible when the terminal is short. As in
+  `cswap`, the menu takes the rows left under the accounts panel and scrolls
+  to keep the highlighted entry in view; unlike `cswap` it never shrinks below
+  its title and the highlighted row, so Enter never acts on an entry that is
+  off screen.
+
 ## v0.7.1 — 2026-10-08
 
 ### Added
