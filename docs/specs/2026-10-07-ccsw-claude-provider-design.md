@@ -201,6 +201,9 @@ A Codex switch is unchanged (v0.1 §7.2) and never touches Claude files, and vic
   expired` sentinel until Claude Code rotates the token. Terminal verdicts
   (`invalid_grant`, `invalid_client`, any 4xx except 429/408 that names the grant) →
   `relogin_required`, strike bound to the SHA-256 of the refresh token (v0.1 §8.3).
+  A stored copy of the live refresh token is also protected, even under another identity.
+  If the live credential cannot be read, no Claude token is refreshed. Auto-switch does
+  not target slots that hold the live credential, and checks ownership again before switching.
   Setup-tokens have no refresh token and are never refreshed nor struck.
 - Poll policy, cache, TTLs and the on-demand pass are the v0.1 §8.4 rules; the pass runs
   per provider (active account plus one due candidate for each).

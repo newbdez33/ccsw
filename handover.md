@@ -16,16 +16,20 @@
 - 引擎保留 `provider` 字段，产品只构造 `Provider::Claude`。`auto` 和 `auto claude` 运行；`auto codex` 或无 Claude 账号时在首个 tick 前拒绝执行。
 - 采集仅涉及当前 provider，保护 tick 开始时和重新读取后的 live slot；Claude 活跃 token 不由自动切换刷新，Codex 凭据和 daemon 不受影响。
 - Keychain 不可读时持续保持当前账号，超过 30 分钟也不触发 failover；过期 token 原有的 30 分钟上限不变。该规则消除了原计划中上限与“绝不 failover”的矛盾。
+- 独立审查发现的 live token 副本漏洞已修复：采集和目标刷新按凭据指纹保护，自动切换也排除其他身份下保存的同一 live token；切换前重新检查。
+- Keychain 失败且没有可读文件回退时，所有 Claude 刷新均暂停；回退文件恢复后可以刷新真正不活跃的凭据。
+- 旧 provider 的隔离记录保持不动，不会误发归属 Claude 的恢复事件。
 - 事件使用 `schemaVersion: 2` 和 `provider: "claude"`；状态文件仍为 v1。
 - `autoswitch.model` 拼写提示仅在所有相关用量可用于决策时检查一次，不额外请求用量，不用不可读状态下的旧缓存作判断。
 - TUI 自动视图仅展示 Claude，筛选后重新计算活跃账号；没有 Claude 账号时显示 OFF，隐藏不可用操作，不启动引擎。
 - 测试使用临时数据、假 Keychain 和本地 mock；新增混合 provider 隔离、Keychain 超时保持、延迟模型提示、CLI 拒绝和 TUI 状态覆盖。
-- 本机门禁：格式检查、Clippy 和全量 450 项测试通过。发布构建与跨平台 CI 结果以对应 PR 和 Actions 记录为准。
+- 本机门禁：格式检查、Clippy 和全量 455 项测试通过。发布构建与跨平台 CI 结果以对应 PR 和 Actions 记录为准。
 
 ## 后续阶段
 
 - 第三阶段：Claude session 模式，尚未实现。
 - 第四阶段：export/import v2 和 `.cswap` 导入，尚未实现。
+- 首次快照加载前进入自动视图会显示 OFF；等待加载后重新进入即可。
 - 这两个阶段需要单独规划；本次不包含自动迁移或新的兼容层。
 
 ## 工作约定

@@ -528,11 +528,18 @@ impl<'a> Engine<'a> {
         let store = self.facade.store();
         // Keep the other provider out of this engine's candidate list.
         let provider = self.provider;
+        let claude_guard = (provider == Provider::Claude)
+            .then(|| collect::ClaudeRefreshGuard::read(store, &roster, self.security));
         let candidates: Vec<u32> = roster
             .switchable_slots(|slot| credentials::exists(store, slot))
             .into_iter()
             .filter(|slot| roster.record(*slot).is_some_and(|r| r.provider == provider))
             .filter(|slot| *slot != current && !quarantined.contains(slot))
+            .filter(|slot| {
+                claude_guard
+                    .as_ref()
+                    .is_none_or(|guard| guard.allows_slot(store, *slot))
+            })
             .collect();
 
         let collected = self.collect(&roster, current, &candidates, now)?;
@@ -732,6 +739,9 @@ impl<'a> Engine<'a> {
 
         let mut transient = false;
         for target in ranked.ordered {
+            if !self.target_allowed(&roster, target) {
+                continue;
+            }
             let target_email = roster
                 .record(target)
                 .map(|r| r.email.clone())
@@ -875,6 +885,12 @@ impl<'a> Engine<'a> {
         }
     }
 
+    fn target_allowed(&self, roster: &Roster, slot: u32) -> bool {
+        self.provider != Provider::Claude
+            || collect::ClaudeRefreshGuard::read(self.facade.store(), roster, self.security)
+                .allows_slot(self.facade.store(), slot)
+    }
+
     fn cooldown_remaining(&self, state: &AutoSwitchState, now: f64) -> Option<f64> {
         let last = state.last_switch_at?;
         let remaining = self.settings.cooldown_seconds - (now - last);
@@ -890,6 +906,14 @@ impl<'a> Engine<'a> {
         trigger: Trigger,
         active_ref: &AccountRef,
     ) -> Result<TickOutcome> {
+        let roster = self.facade.roster()?;
+        if !self.target_allowed(&roster, target) {
+            self.no_switch(
+                "already-active",
+                "the target credential is in use or the live login is unreadable",
+            );
+            return Ok(TickOutcome::NoAction);
+        }
         if self.dry_run {
             self.emit(Event::Switch {
                 trigger,
@@ -973,6 +997,7 @@ impl<'a> Engine<'a> {
                 continue;
             };
             let reason = match roster.record(slot) {
+                Some(record) if record.provider != self.provider => continue,
                 None => "account-replaced",
                 Some(record) if record.email != entry.email => "account-replaced",
                 Some(_) => {
@@ -3001,5 +3026,41 @@ mod tests {
         assert_eq!(config_warnings(&log.borrow()).len(), 1);
         assert_eq!(engine.tick(), TickOutcome::NoAction);
         assert_eq!(config_warnings(&log.borrow()).len(), 1);
+    }
+    #[test]
+    fn quarantine_recovery_leaves_other_providers_untouched() {
+        let mut fixture = Fixture::claude(&[1]);
+        fixture.seed(1, usage(20.0, 10.0, None));
+        fixture
+            .fake
+            .roster
+            .add_record(2, AccountRecord::new("other@example.com"));
+        credentials::write(
+            &fixture.fake.store,
+            2,
+            &auth("other", FAR, Some("new-rt")).0,
+        )
+        .unwrap();
+        state::modify(&fixture.fake.store, |state| {
+            state.quarantine.insert(
+                "2".into(),
+                QuarantineEntry {
+                    email: "other@example.com".into(),
+                    reason: "invalid_grant".into(),
+                    at: "2026-10-08T00:00:00Z".into(),
+                    refresh_token_fingerprint: Some("old-fingerprint".into()),
+                },
+            );
+        })
+        .unwrap();
+        let before = state::read(&fixture.fake.store.paths);
+        let (_, events) = tick(&mut fixture, defaults(), false);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::AccountUnquarantined { .. })),
+            "{events:?}"
+        );
+        assert_eq!(state::read(&fixture.fake.store.paths), before);
     }
 }

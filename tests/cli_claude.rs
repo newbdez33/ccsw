@@ -583,3 +583,34 @@ fn auto_on_a_fresh_store_explains_which_account_to_add() {
         );
     }
 }
+
+#[test]
+fn auto_excludes_a_live_refresh_token_saved_under_another_identity() {
+    for expires in [ccsw::model::now_unix() * 1000 + 60_000, 4_102_444_800_000] {
+        let mock = UsageMock::start();
+        let cli = Cli::new().with_mock(&mock);
+        let refresh = usage_mock::claude_live_refresh_token("live@example.com");
+        let mut copied = claude_creds(&refresh, CLAUDE_OK);
+        copied["claudeAiOauth"]["expiresAt"] = json!(expires);
+        cli.write_claude_live_with(&copied, &claude_config("copy@example.com", "copy-org", ""));
+        assert_eq!(cli.run(&["add", "claude"]).status, 0);
+        cli.write_claude_live_with(
+            &claude_creds(&refresh, usage_mock::CLAUDE_HOT),
+            &claude_config("live@example.com", "live-org", ""),
+        );
+        assert_eq!(cli.run(&["add", "claude"]).status, 0);
+        let before = cli.claude_credentials();
+        let copied_before = cli.credential(1);
+        let run = cli.run(&["auto", "--once", "--json"]);
+        assert_eq!(run.status, 3, "{}{}", run.stdout, run.stderr);
+        assert!(
+            run.stdout.contains("\"reason\":\"no-candidates\""),
+            "{}",
+            run.stdout
+        );
+        assert_eq!(mock.claude_token_calls(), 0, "{:?}", mock.trail());
+        assert_eq!(cli.claude_credentials(), before);
+        assert_eq!(cli.credential(1), copied_before);
+        assert_eq!(cli.roster()["activeByProvider"]["claude"], 2);
+    }
+}

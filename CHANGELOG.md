@@ -24,6 +24,12 @@ All notable changes to `ccsw` are recorded here. The format follows
 - `autoswitch.model` names that no account's usage windows report produce one
   `config-warning` event per run.
 
+### Fixed
+
+- Protect the live refresh token even when another slot saves it under a different
+  identity. Skip every refresh while the live credential is unreadable.
+- Keep other providers' quarantine records unchanged during automatic recovery.
+
 ## v0.4.0 — 2026-10-08
 
 ### Changed

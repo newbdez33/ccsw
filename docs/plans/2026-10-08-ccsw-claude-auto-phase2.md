@@ -13,6 +13,9 @@ implementation decisions supersede the original examples below:
   untrusted historical measurements cannot produce a warning.
 - Provider-filtered snapshots recompute their active slot. An OFF auto screen hides
   the unavailable engine controls.
+- Live-token ownership is checked by credential fingerprint as well as slot identity
+  during collection, target refresh, and auto selection. Unreadable live credentials
+  stop all refreshes. Recovery does not change another provider's quarantine records.
 - The Keychain injection setter is test-only. Tests use the provider-specific request
   counters and fixtures, and compare JSON keys and values without assuming key order.
 
