@@ -3,7 +3,7 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## v0.5.0 — 2026-10-08
 
 ### Changed
 
@@ -19,8 +19,8 @@ All notable changes to `ccsw` are recorded here. The format follows
 
 ### Added
 
-- A `keychain unavailable` active account is held like an expired token (`no-switch
-  active-idle`) instead of counting toward failover.
+- A `keychain unavailable` active account stays held (`no-switch active-idle`) until
+  its login is readable. It never counts toward failover, including after 30 minutes.
 - `autoswitch.model` names that no account's usage windows report produce one
   `config-warning` event per run.
 

@@ -226,8 +226,9 @@ proactive switching is useful there and nowhere else. v0.1's Codex auto-switch i
   switched account without a restart. Add a Claude Code account with 'ccsw add claude'
   first.` (exit 1).
 - The engine body is v0.1 §9 unchanged, with two Claude additions: a `keychain unavailable`
-  active account is held like `token expired` (`no-switch active-idle`, up to 30 min, never
-  a failover trigger), and the `active-idle` detail names Claude Code.
+  active account stays held (`no-switch active-idle`) until its login is readable and
+  never triggers failover. The existing 30-minute cap still applies to `token expired`,
+  and the `active-idle` detail names Claude Code.
 - Events carry `provider: "claude"` and `schemaVersion: 2`; human lines are unchanged.
 - `autoswitch.model` names that no Claude account's windows report raise one
   `config-warning` per run (`autoswitch.model: <names> matches no account's usage windows —
