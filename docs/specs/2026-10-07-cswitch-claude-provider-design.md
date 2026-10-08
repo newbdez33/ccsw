@@ -101,8 +101,8 @@ Unchanged files keep their v0.1 shape. Deltas:
   `{"credentials": <live object>, "oauthAccount": <live>}`, three kept, written before every
   Claude switch (the Codex side keeps its `auth.json.bak.*` in `$CODEX_HOME`).
 - `mappings.json` entries gain `provider`; a directory may map one account per provider.
-- `autoswitch_state.json` becomes `{"schemaVersion": 2, "providers": {"codex": {…v1 body…}, "claude": {…}}}`;
-  a v1 file is read as the `codex` section.
+- `autoswitch_state.json` keeps its v1 shape: one engine (Claude, §9) owns it. Quarantine
+  entries that earlier Codex runs left behind are inert (Codex slots are never candidates).
 - `cache/usage.json` is unchanged (rows are keyed by slot and carry the row's identity).
 - `sessions/<n>-<slug>/` is a `CODEX_HOME` or a `CLAUDE_CONFIG_DIR` depending on the slot.
 
@@ -115,7 +115,7 @@ so a Claude-only user is never blocked by it.
 ### 6.1 Provider selector
 
 `codex` and `claude` are accepted as the positional argument of `switch`, `add`, `list`,
-`status`, `auto` and `run` to mean "this provider". They never collide with slots (digits),
+`status` and `run` to mean "this provider"; `auto` accepts only `claude`, its sole provider (§9). They never collide with slots (digits),
 emails (contain `@`) or aliases (the two words are rejected by alias validation with
 `ValidationError("alias 'claude' is reserved for the provider selector")`).
 
@@ -135,8 +135,8 @@ accounts the command behaves exactly as v0.1, so single-provider stores see no c
 | `status [codex\|claude]` | One `Active account:` block per provider that has a live login (`Codex:` / `Claude:` prefixes when both exist). |
 | `remove` / `disable` / `enable` / `alias` / `move` / `swap` | Unchanged: they already act on slots. |
 | `run [ID\|codex\|claude] [-- …]` / `env ID` / `map ID DIR` / `unmap DIR [codex\|claude]` | Provider from the record. `run` executes `codex` or `claude` with `CODEX_HOME` or `CLAUDE_CONFIG_DIR` pinned; `env` prints the matching export. A bare `run` in a mapped directory with mappings for both providers needs the selector (§6.1 error). `unmap DIR` with two mappings removes both unless a selector is given. |
-| `auto [codex\|claude] …` | Without a selector runs one engine per provider that has accounts (§9). |
-| `config` | Unchanged keys. `autoswitch.model` is one list; each engine matches it against its own provider's window names (`Fable` and `GPT-5.3-Codex-Spark` never collide); the unknown-name warning is per provider. |
+| `auto [claude] …` | Runs the Claude Code engine (§9). `auto codex`, or `auto` on a roster with no Claude Code accounts, fails with `Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a switched account without a restart. Add a Claude Code account with 'cswitch add claude' first.` (exit 1). |
+| `config` | Unchanged keys. `autoswitch.model` is matched against the Claude accounts' window names (`Fable`, …); a name no account reports raises a one-shot `config-warning` event (§9). |
 | `export` / `import` | §11. |
 | `purge` | Also removes `backups/`. Never touches `$CODEX_HOME` or the Claude config home. |
 | `help`, `--version` | Header `Multi-Account Switcher for OpenAI Codex and Claude Code`; every synopsis that takes an identifier mentions the selector. |
@@ -151,7 +151,7 @@ follows §6.1; `--switch-to N` is global).
   `{"codex": <n|null>, "claude": <n|null>}`.
 - `status`: `active` becomes `{"codex": <row|null>, "claude": <row|null>}`.
 - `switch`: `from` / `to` refs gain `provider`.
-- `auto --json` events gain `provider`.
+- `auto --json` events carry `provider: "claude"` and move to `schemaVersion: 2`.
 - `usage` gains `spend {used, limit, pct, currency, resetsAt?}` on Claude rows;
   `usageStatus` adds `keychain_unavailable`.
 - The error envelope is unchanged apart from the version.
@@ -206,19 +206,35 @@ A Codex switch is unchanged (v0.1 §7.2) and never touches Claude files, and vic
   per provider (active account plus one due candidate for each).
 - `usage.limited` is never set for Claude; headroom comes from the windows alone.
 
-## 9. Auto-switch: one engine per provider
+## 9. Auto-switch: Claude Code only
 
-- `cswitch auto` starts one engine per provider that has accounts, each on its own thread
-  with its own state section, cooldown, quarantine and candidate set; `auto codex` /
-  `auto claude` starts one. Settings are shared (§6.2 `config`).
-- Events carry `provider`; human lines are prefixed `[codex] ` / `[claude] ` only when two
-  engines run. The loop banner lists the providers it watches. Ctrl-C stops both
-  (`Auto-switch stopped`, exit 130).
-- `--once` ticks every selected engine in sequence and exits with the most severe
-  outcome: `1` if any errored, else `0` if any switched, else `3` if any was blocked,
-  else `2`.
-- The engine body is v0.1 §9 unchanged; the Claude engine additionally treats a
-  `keychain unavailable` active account like `token expired` (hold, do not fail over).
+Codex cannot be switched under a running session: Codex CLI 0.157+ attaches sessions to an
+app-server daemon that loads `auth.json` once and re-reads it only for the account it
+already holds, and `codex exec` / `--no-daemon` read it at start-up. A switch therefore
+only reaches sessions started (or reconnected after a daemon restart) afterwards, which is
+what the manual `switch` follow-up already says. Claude Code picks a switched login up
+inside the running session (next message on the file backend, ~30 s on the Keychain), so
+proactive switching is useful there and nowhere else. v0.1's Codex auto-switch is withdrawn.
+
+- `cswitch auto [claude] …` runs one engine over the Claude Code accounts: the active
+  account is the live Claude login (`collect::live_login_for(Claude)`), the candidates are
+  the switchable Claude slots, refresh and switch go through the phase-1 Claude paths.
+  Settings, flags, exit codes, events, `no-switch` reasons, banner and signal handling are
+  v0.1 §9.
+- `auto codex`, or `auto` on a roster without a Claude Code account, fails before any tick
+  with `Auto-switch covers Claude Code accounts only: Codex sessions do not pick up a
+  switched account without a restart. Add a Claude Code account with 'cswitch add claude'
+  first.` (exit 1).
+- The engine body is v0.1 §9 unchanged, with two Claude additions: a `keychain unavailable`
+  active account is held like `token expired` (`no-switch active-idle`, up to 30 min, never
+  a failover trigger), and the `active-idle` detail names Claude Code.
+- Events carry `provider: "claude"` and `schemaVersion: 2`; human lines are unchanged.
+- `autoswitch.model` names that no Claude account's windows report raise one
+  `config-warning` per run (`autoswitch.model: <names> matches no account's usage windows —
+  only the 5h/7d limits are being watched for it (typo?)`), evaluated on the first tick
+  where every candidate's usage is readable.
+- `autoswitch_state.json` keeps its v1 shape (§5). The engine keeps a `provider` field so
+  the choice is one constant, but nothing constructs a Codex engine.
 
 ## 10. Session mode (Claude, phase 3)
 
@@ -269,9 +285,9 @@ The screens keep the v0.1 §12 layout, bars, keys, modals and refresh lanes. Del
   Remove and Disable submenus list accounts under the same section headers (header rows are
   not selectable). Empty state: `Use the menu below: Add account — from your current Codex or
   Claude Code login, or from a token.`
-- **Auto view.** One active card per provider stacked, one event log; log lines are
-  prefixed `[codex]` / `[claude]` when two engines run. `Go live` starts every engine the
-  roster needs.
+- **Auto view.** The Claude Code active card, the Claude candidates and one event log;
+  `Go live` starts the Claude engine. With no Claude Code account the view shows the §9
+  notice as its first log line and starts no engine.
 - **Height.** The dashboard panel is truncated to the available rows as today; the second
   section's card is the first thing to disappear, which is acceptable for v1.
 - Toasts, sentinel labels and follow-up texts come from the provider that acted.
@@ -303,7 +319,7 @@ src/claude/session.rs  profile seeding, hashed Keychain service name (phase 3)
 
 `model.rs`: `AccountRecord.provider`, `Roster.active_by_provider`, `NormalizedUsage.spend`.
 `switcher.rs` dispatches on `record.provider` through the trait; `collect.rs` runs the pass
-per provider; `autoswitch.rs` takes a provider; `session.rs` and `transfer.rs` branch on it;
+per provider; `autoswitch.rs` runs for one provider (Claude); `session.rs` and `transfer.rs` branch on it;
 `cli/` parses the selector and the two-block output; `tui/` groups by provider. `Paths`
 gains the Claude paths and honours `CLAUDE_CONFIG_DIR`.
 
@@ -320,7 +336,7 @@ gains the Claude paths and honours `CLAUDE_CONFIG_DIR`.
   also relocates `.claude.json`), and `CSWITCH_KEYCHAIN=off` to force the file backend so the
   suite is identical on macOS, Linux and Windows CI. Covered: `add` with both / one / no
   live logins, `switch` across providers with the lock directories present and stale,
-  fold-back freshness, `list --json` v2 shapes, `auto --once` with two engines, v1 store and
+  fold-back freshness, `list --json` v2 shapes, `auto --once` on a mixed roster (the Claude engine switches Claude accounts; `auth.json` is untouched), v1 store and
   v1 export compatibility, `.cswap` import.
 - `tui_render` adds a mixed roster: section headers, cross-section cursor, the auto view
   with two cards. `examples/tui_screenshot.rs` renders a mixed roster for the README.
@@ -332,7 +348,9 @@ gains the Claude paths and honours `CLAUDE_CONFIG_DIR`.
 1. Roster `provider` + `activeByProvider`; `src/claude/` paths, Keychain, credentials, locks,
    OAuth, usage; `add`, `add-token`, `switch`, `list`, `status`, `remove`, `disable`,
    `alias`, `move`, `swap`; JSON v2; the TUI sections (dashboard, switch, watch, menus).
-2. Auto-switch: per-provider state file, two engines, the TUI auto view.
+2. Auto-switch for Claude Code only: the engine re-pointed at Claude, the `keychain unavailable`
+   hold, events v2 with `provider`, the model-name warning, the TUI auto view. Codex
+   auto-switch is withdrawn (§9).
 3. Session mode for Claude: `run`, `env`, `map`, `unmap`, profile seeding and fold-back.
 4. Export / import v2 and `.cswap` import.
 
