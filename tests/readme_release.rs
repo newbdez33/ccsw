@@ -4,8 +4,10 @@
 
 #[test]
 fn readme_upgrade_commands_name_the_current_release() {
-    let readme =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    // A Windows checkout may carry CRLF line endings.
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .unwrap()
+        .replace("\r\n", "\n");
     let version = format!("v{}", env!("CARGO_PKG_VERSION"));
     let upgrade = readme
         .split("\n## Upgrade\n")
