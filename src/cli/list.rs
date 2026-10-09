@@ -5,6 +5,7 @@ use std::io::{self, BufRead, Write};
 
 use crate::codex::auth::AuthJson;
 use crate::codex::jwt::token_expires_at;
+use crate::collect::CollectMode;
 use crate::errors::Result;
 use crate::jsonout;
 use crate::model::{ActiveSlots, CurrentAccount, now_unix};
@@ -304,9 +305,17 @@ pub fn list_cmd(
     switcher: &mut Switcher,
     json: bool,
     token_status: bool,
+    fetch_all: bool,
     provider: Option<Provider>,
 ) -> Result<i32> {
-    let Some(mut snapshot) = switcher.list_snapshot(true)? else {
+    // `--fetch-all` is the collector's pass: every stale or due row, not the
+    // active account plus a single candidate.
+    let mode = if fetch_all {
+        CollectMode::Escalation
+    } else {
+        CollectMode::OnDemand
+    };
+    let Some(mut snapshot) = switcher.list_snapshot(mode)? else {
         return first_run(switcher, json);
     };
     let human_snapshot = snapshot.clone();

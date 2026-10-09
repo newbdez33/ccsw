@@ -57,18 +57,18 @@ Release binary — fetch the current release and replace the `ccsw` already on y
 (`SHA256SUMS` next to the archives lists their checksums):
 
 ```bash
-VERSION=v0.7.4; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu
+VERSION=v0.7.5; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu
 curl -fsSL "https://github.com/newbdez33/ccsw/releases/download/$VERSION/ccsw-$VERSION-$TARGET.tar.gz" | tar xz
 install "ccsw-$VERSION-$TARGET/ccsw" "$(command -v ccsw)"
 ```
 
-On Windows, download `ccsw-v0.7.4-x86_64-pc-windows-msvc.zip` from the
+On Windows, download `ccsw-v0.7.5-x86_64-pc-windows-msvc.zip` from the
 [releases page](https://github.com/newbdez33/ccsw/releases) and replace `ccsw.exe`.
 
 From source:
 
 ```bash
-cargo install --git https://github.com/newbdez33/ccsw --tag v0.7.4 --locked --force
+cargo install --git https://github.com/newbdez33/ccsw --tag v0.7.5 --locked --force
 ```
 
 `ccsw upgrade` only prints these instructions; ccsw does not update itself.
@@ -146,10 +146,12 @@ ccsw list                # a Codex block and a Claude block: 5h / 7d / per-model
 ccsw list claude         # only the Claude accounts
 ccsw status              # the active account of each provider
 ccsw list --token-status # add stored-token expiry diagnostics
+ccsw list --fetch-all    # measure every stale account in this one pass
 ```
 
 Usage is fetched on demand (the active account plus one other account per command) and
-cached for three minutes, so run `ccsw list` again to fill in the remaining rows.
+cached for three minutes, so run `ccsw list` again to fill in the remaining rows, or pass
+`--fetch-all` to measure every stale row at once. Each account's poll budget still applies.
 Claude rows add a `$$` line for extra-usage spend and per-model windows such as
 `Fable: 62%`. The dashboard shows an account's saved limit resets (Codex's reset credits,
 Claude Code's `/limit-reset` grants) as a red heart with a green count (`♥ n`). Anthropic lists those grants only
@@ -168,6 +170,7 @@ Account rows and switch references carry `provider`. `active` is
 
 ```bash
 ccsw list --json                     # accounts[] with usage.fiveHour / sevenDay / scoped[], plus credits (Codex) or spend (Claude)
+ccsw list claude --json --fetch-all  # collectors: every stale row measured in this pass (not one candidate per call); `claude` filters the output
 ccsw status --json                   # {"active": {"codex": row|null, "claude": row|null}}
 ccsw switch --strategy best --json   # {"switched": true, "from": ..., "to": ..., "reason": "switched"}
 ccsw auto --once --json              # one compact JSON event per line

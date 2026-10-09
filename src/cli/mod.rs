@@ -94,7 +94,13 @@ pub fn run_with(argv: Vec<String>) -> i32 {
         Command::RemoveAccount(id) => accounts::remove(switcher, &id),
         Command::DisableAccount(id) => accounts::set_disabled(switcher, &id, true),
         Command::EnableAccount(id) => accounts::set_disabled(switcher, &id, false),
-        Command::List => list::list_cmd(switcher, json, opts.token_status, opts.provider),
+        Command::List => list::list_cmd(
+            switcher,
+            json,
+            opts.token_status,
+            opts.fetch_all,
+            opts.provider,
+        ),
         Command::Status => list::status_cmd(switcher, json, opts.provider),
         Command::Switch => switch::rotate_cmd(
             switcher,

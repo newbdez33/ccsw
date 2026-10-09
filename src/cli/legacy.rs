@@ -131,6 +131,7 @@ pub struct Options {
     pub command: Option<Command>,
     pub debug: bool,
     pub token_status: bool,
+    pub fetch_all: bool,
     pub json: bool,
     pub strategy: Option<String>,
     pub model: Option<String>,
@@ -178,6 +179,7 @@ pub fn parse(argv: &[String]) -> Result<Options, String> {
             "--version" => opts.version = true,
             "--debug" => opts.debug = true,
             "--token-status" => opts.token_status = true,
+            "--fetch-all" => opts.fetch_all = true,
             "--json" => opts.json = true,
             "--force" => opts.force = true,
             "--full" => opts.full = true,
@@ -288,7 +290,7 @@ fn select(opts: &mut Options, command: Command) -> Result<(), String> {
     Ok(())
 }
 
-/// The twelve cross-flag checks, in cswap's order.
+/// The cross-flag checks, in cswap's order; `--fetch-all` is ccsw's own.
 pub fn validate(opts: &Options) -> Result<(), String> {
     use Command::*;
     let command = opts.command.as_ref();
@@ -304,6 +306,9 @@ pub fn validate(opts: &Options) -> Result<(), String> {
     }
     if opts.json && opts.token_status {
         return Err("--token-status cannot be combined with --json".into());
+    }
+    if opts.fetch_all && !is(|c| matches!(c, List)) {
+        return Err("--fetch-all can only be used with 'list'".into());
     }
     if opts.strategy.is_some() && !is(|c| matches!(c, Switch)) {
         return Err("--strategy can only be used with bare 'switch'".into());
@@ -386,6 +391,9 @@ options:
   --version             show program's version number and exit
   --debug               Enable debug logging
   --token-status        Show stored-token expiry diagnostics (use with 'list')
+  --fetch-all           With 'list': measure every stale account in this pass
+                        instead of the active one plus a single due candidate.
+                        For collectors; each account's rate budget still applies.
   --json                Emit machine-readable JSON to stdout (use with 'list',
                         'status', or 'switch'). See README 'JSON output for
                         scripting'.
@@ -423,6 +431,7 @@ Flags combine with subcommands:
   ccsw switch user@example.com
   ccsw list --token-status
   ccsw list --json
+  ccsw list claude --json --fetch-all    # collectors: measure every stale account at once
   ccsw add --slot 3                      # add to a specific slot
   ccsw add-token sk-... --email me@example.com
   ccsw add-token sk-ant-oat01-... --email me@example.com
@@ -518,6 +527,7 @@ mod tests {
         assert_eq!(opts.model.as_deref(), Some("all"));
         assert!(parse(&argv(&["--version"])).unwrap().version);
         assert!(parse(&argv(&["-h"])).unwrap().help);
+        assert!(parse(&argv(&["--list", "--fetch-all"])).unwrap().fetch_all);
         let opts = parse(&argv(&["--switch", "--provider", "claude"])).unwrap();
         assert_eq!(opts.provider, Some(Provider::Claude));
         assert_eq!(
@@ -575,6 +585,10 @@ mod tests {
             "--token-status cannot be combined with --json"
         );
         assert_eq!(
+            check(&["--status", "--fetch-all"]),
+            "--fetch-all can only be used with 'list'"
+        );
+        assert_eq!(
             check(&["--switch-to", "2", "--strategy", "best"]),
             "--strategy can only be used with bare 'switch'"
         );
@@ -615,6 +629,7 @@ mod tests {
             &["--switch", "--provider", "claude", "--strategy", "best"],
             &["--status", "--provider", "codex", "--json"],
             &["--list", "--token-status"],
+            &["--list", "--provider", "claude", "--json", "--fetch-all"],
             &["--switch", "--strategy", "best", "--model", "all", "--json"],
             &["--add-account", "--slot", "3", "--alias", "dev"],
             &["--add-token", "tok", "--email", "a@b.co", "--slot", "3"],
@@ -634,6 +649,7 @@ mod tests {
         assert!(help.contains("keep working"));
         assert!(help.contains("ccsw switch [codex|claude]"));
         assert!(help.contains("sk-ant-"));
+        assert!(help.contains("--fetch-all"));
         assert!(!help.contains("cswap "));
         assert_eq!(version_line(), format!("ccsw {VERSION}"));
     }

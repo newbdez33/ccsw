@@ -284,6 +284,9 @@ fenced `claimId` lease and uses `lastAttemptAt` with a 90 s claim window.
 Every `list`, `status`, `switch --strategy`, and TUI tick takes the same on-demand pass:
 rows older than 180 s that are due (or have no plan) are fetched, at most one inactive
 candidate per pass plus the active account, with a stagger of 250 ms between requests.
+`list --fetch-all` runs the pass in escalation mode instead (every stale or due row, the
+same gate the engine uses near its threshold), for collectors that poll the roster on a
+timer; the per-row backoff, Retry-After and dead-token gates are unchanged.
 
 ## 9. Auto-switch (`auto`)
 
