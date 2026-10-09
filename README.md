@@ -47,6 +47,32 @@ Claude Code's login is read from the macOS Keychain (service "Claude Code-creden
 from `~/.claude/.credentials.json`, and the account identity from `~/.claude.json`;
 `CLAUDE_CONFIG_DIR` is honoured. Set `CCSW_KEYCHAIN=off` to use the file backend only.
 
+## Upgrade
+
+`ccsw --version` prints the installed version; the [CHANGELOG](CHANGELOG.md) lists what
+each release changed. Upgrading never touches `~/.ccsw`: accounts, settings and the usage
+cache carry over. Quit a running dashboard or `ccsw watch` first.
+
+Release binary — fetch the current release and replace the `ccsw` already on your `PATH`
+(`SHA256SUMS` next to the archives lists their checksums):
+
+```bash
+VERSION=v0.7.4; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu
+curl -fsSL "https://github.com/newbdez33/ccsw/releases/download/$VERSION/ccsw-$VERSION-$TARGET.tar.gz" | tar xz
+install "ccsw-$VERSION-$TARGET/ccsw" "$(command -v ccsw)"
+```
+
+On Windows, download `ccsw-v0.7.4-x86_64-pc-windows-msvc.zip` from the
+[releases page](https://github.com/newbdez33/ccsw/releases) and replace `ccsw.exe`.
+
+From source:
+
+```bash
+cargo install --git https://github.com/newbdez33/ccsw --tag v0.7.4 --locked --force
+```
+
+`ccsw upgrade` only prints these instructions; ccsw does not update itself.
+
 ## Usage
 
 ### Add your first account

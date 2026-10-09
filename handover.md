@@ -12,7 +12,8 @@
 - 仪表盘菜单改为 cswap 的优先级：账号面板完整显示，菜单拿剩余行数并随光标滚动，但最少保留面包屑和光标行（cswap 可缩到零行）。PR #8，版本 `v0.7.2`；发版清单核对时本机 Claude Code 仍为 2.1.294，`FALLBACK_CLI_VERSION` 未变。
 - reset card 图标改为红心加绿色数字（`♥ 2`）；卡片和 mini 行按终端宽度折行（cswap 的 Rich 折行规则：按空格断行、超长词硬切、续行从卡片首列开始）。PR #9，版本 `v0.7.3`；发版清单核对：`FALLBACK_CLI_VERSION` 更新为 2.1.295。
 - 仪表盘账号面板放不下时改为可滚动并显示一列滚动条（滚轮、PgUp/PgDn），switch/watch 列表同样有滚动条且滚轮可自由滚动（光标移动时才拉回视野）；TUI 开启鼠标捕获（与 cswap 一致）。PR #10，版本 `v0.7.4`；发版清单核对：本机 Claude Code 仍为 2.1.295，`FALLBACK_CLI_VERSION` 未变。
-- 当前工作区为 `hraesvelg`；当前分支为 `newbdez33/panel-scroll`。
+- README 新增「Upgrade」一节（版本化的下载 / `cargo install --tag` 命令，发版时随版本号更新）。分支 `newbdez33/readme-upgrade`，文档 PR，不发版。
+- 当前工作区为 `hraesvelg`；当前分支为 `newbdez33/readme-upgrade`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换
@@ -75,7 +76,7 @@ env -u CODEX_HOME cargo test --all
 ```
 
 - 宿主环境设置了 `CODEX_HOME`，测试前必须移除该变量。
-- 发版清单：把 `src/claude/usage.rs` 的 `FALLBACK_CLI_VERSION` 更新为当前 Claude Code 版本（本机 `readlink ~/.local/bin/claude` 或 `npm view @anthropic-ai/claude-code version`），再改 `Cargo.toml` 版本与 CHANGELOG。
+- 发版清单：把 `src/claude/usage.rs` 的 `FALLBACK_CLI_VERSION` 更新为当前 Claude Code 版本（本机 `readlink ~/.local/bin/claude` 或 `npm view @anthropic-ai/claude-code version`），再改 `Cargo.toml` 版本与 CHANGELOG，并把 README「Upgrade」一节里的版本号（`VERSION=vX.Y.Z`、Windows 归档名、`--tag vX.Y.Z`）改成本次发布版本；`tests/readme_release.rs` 会校验它与 `Cargo.toml` 一致。
 - MSRV 为 Rust 1.88，edition 为 2024。
 - 测试使用临时目录、假 CLI 和本地 mock，禁止访问真实 Keychain 或真实账号数据。
 - 不进入或改名主仓库及 Orca 工作区目录；不新建 worktree，不重写历史，不使用裸 `git stash` / `pop`。
