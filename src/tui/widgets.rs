@@ -5,7 +5,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    StatefulWidget, Widget, Wrap,
+};
 
 use crate::provider::Provider;
 use crate::store::usage_store::{UsageEntry, UsageSentinel};
@@ -441,6 +444,42 @@ pub fn render_toasts(buf: &mut Buffer, area: Rect, toasts: &[Toast], p: &Palette
             .render(rect, buf);
         bottom = rect.y.saturating_sub(1);
     }
+}
+
+/// What a scrollbar needs to know about a scrolled region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollInfo {
+    pub total: usize,
+    pub viewport: usize,
+    pub position: usize,
+}
+
+impl ScrollInfo {
+    pub fn overflows(&self) -> bool {
+        self.total > self.viewport
+    }
+}
+
+/// A one-column vertical scrollbar in `area`, drawn only when the region
+/// overflows (the thin bar cswap's lists and screen show).
+pub fn render_scrollbar(buf: &mut Buffer, area: Rect, info: ScrollInfo, p: &Palette) {
+    if area.is_empty() || !info.overflows() {
+        return;
+    }
+    // ratatui treats `position` as an index into `content_length`, so the
+    // content is the scroll range: the thumb then reaches the bottom exactly
+    // when the last row is in view.
+    let mut state = ScrollbarState::new(info.total - info.viewport + 1)
+        .position(info.position)
+        .viewport_content_length(info.viewport);
+    Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"))
+        .thumb_symbol("█")
+        .track_style(p.track_style())
+        .thumb_style(Style::new().fg(p.muted))
+        .render(area, buf, &mut state);
 }
 
 /// Word-wrap a styled line at `width` the way cswap's cards wrap: break at

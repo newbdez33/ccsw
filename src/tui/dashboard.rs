@@ -8,6 +8,7 @@ use super::app::{Action, Effect};
 use super::modals::{AddTokenModal, ConfirmModal, Modal};
 use super::snapshot::AccountsSnapshot;
 use super::theme::{Palette, ThemeName};
+use super::widgets::ScrollInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuId {
@@ -55,6 +56,11 @@ pub struct DashboardScreen {
     cursor: usize,
     /// First entry shown when the menu block is shorter than the menu.
     scroll: usize,
+    /// Accounts panel viewport: the first row shown, and what the last
+    /// render measured for clamping and paging.
+    panel_scroll: usize,
+    panel_viewport: usize,
+    panel_total: usize,
 }
 
 /// Fewest rows the menu block keeps when the accounts panel squeezes it: the
@@ -95,6 +101,9 @@ impl DashboardScreen {
             levels: vec![root_menu()],
             cursor: 0,
             scroll: 0,
+            panel_scroll: 0,
+            panel_viewport: 0,
+            panel_total: 0,
         }
     }
 
@@ -321,6 +330,14 @@ impl DashboardScreen {
                 self.pop();
                 Vec::new()
             }
+            KeyCode::PageDown => {
+                self.scroll_panel(self.panel_page());
+                Vec::new()
+            }
+            KeyCode::PageUp => {
+                self.scroll_panel(-self.panel_page());
+                Vec::new()
+            }
             KeyCode::Char('s') => vec![Effect::OpenSwitch],
             KeyCode::Char('w') => vec![Effect::OpenWatch],
             KeyCode::Char('g') => vec![Effect::OpenAuto],
@@ -328,6 +345,39 @@ impl DashboardScreen {
             KeyCode::Char('q') => vec![Effect::Quit],
             _ => Vec::new(),
         }
+    }
+
+    /// The accounts panel rows that fit in `height`, from the panel scroll
+    /// (clamped to the content measured here).
+    pub fn panel_window(&mut self, lines: Vec<Line<'static>>, height: usize) -> Vec<Line<'static>> {
+        self.panel_total = lines.len();
+        self.panel_viewport = height;
+        self.panel_scroll = self
+            .panel_scroll
+            .min(self.panel_total.saturating_sub(height));
+        lines
+            .into_iter()
+            .skip(self.panel_scroll)
+            .take(height)
+            .collect()
+    }
+
+    /// Mouse wheel and paging, clamped to what the last render measured.
+    pub fn scroll_panel(&mut self, delta: i64) {
+        let max = self.panel_total.saturating_sub(self.panel_viewport) as i64;
+        self.panel_scroll = (self.panel_scroll as i64 + delta).clamp(0, max) as usize;
+    }
+
+    pub fn panel_scroll_info(&self) -> ScrollInfo {
+        ScrollInfo {
+            total: self.panel_total,
+            viewport: self.panel_viewport,
+            position: self.panel_scroll,
+        }
+    }
+
+    fn panel_page(&self) -> i64 {
+        self.panel_viewport.saturating_sub(1).max(1) as i64
     }
 
     /// The menu block in at most `rows` lines, never fewer than
@@ -690,5 +740,34 @@ mod tests {
             ],
             "the section header scrolls in above its first entry"
         );
+    }
+
+    #[test]
+    fn panel_window_clamps_the_scroll_and_pages_by_the_viewport() {
+        let mut dash = DashboardScreen::new();
+        let lines: Vec<Line<'static>> = (0..10).map(|i| Line::from(format!("row {i}"))).collect();
+        let first = |dash: &mut DashboardScreen, height: usize| -> String {
+            texts(&dash.panel_window(lines.clone(), height))[0].clone()
+        };
+        assert_eq!(
+            texts(&dash.panel_window(lines.clone(), 4)),
+            ["row 0", "row 1", "row 2", "row 3"]
+        );
+        assert!(dash.panel_scroll_info().overflows());
+        dash.scroll_panel(100);
+        assert_eq!(first(&mut dash, 4), "row 6", "clamped to total - viewport");
+        assert_eq!(dash.panel_scroll_info().position, 6);
+        dash.scroll_panel(-100);
+        assert_eq!(first(&mut dash, 4), "row 0");
+        dash.handle_key(key(KeyCode::PageDown), None, ThemeName::Dark);
+        assert_eq!(
+            first(&mut dash, 4),
+            "row 3",
+            "a page is the viewport minus one"
+        );
+        dash.handle_key(key(KeyCode::PageUp), None, ThemeName::Dark);
+        assert_eq!(first(&mut dash, 4), "row 0");
+        assert_eq!(dash.panel_window(lines, 20).len(), 10);
+        assert!(!dash.panel_scroll_info().overflows());
     }
 }

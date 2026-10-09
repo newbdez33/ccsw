@@ -95,6 +95,14 @@ impl WatchScreen {
                 }
                 Vec::new()
             }
+            KeyCode::PageDown => {
+                self.list.scroll_page(1);
+                Vec::new()
+            }
+            KeyCode::PageUp => {
+                self.list.scroll_page(-1);
+                Vec::new()
+            }
             KeyCode::Char('f') => vec![Effect::RefreshFull],
             KeyCode::Esc | KeyCode::Char('q') => {
                 if self.armed {

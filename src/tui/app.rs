@@ -29,7 +29,9 @@ use super::snapshot::AccountsSnapshot;
 use super::switch::SwitchScreen;
 use super::theme::{Palette, ThemeName};
 use super::watch::WatchScreen;
-use super::widgets::{Severity, Toast, accounts_panel, footer_line, render_toasts};
+use super::widgets::{
+    Severity, Toast, accounts_panel, footer_line, render_scrollbar, render_toasts,
+};
 
 pub const POLL_INTERVAL_S: f64 = 3.0;
 pub const SNAPSHOT_AGE_NOTE_S: f64 = 60.0;
@@ -644,6 +646,20 @@ impl App {
         self.fold(effects, now)
     }
 
+    /// The mouse wheel: the dashboard scrolls its accounts panel, the switch
+    /// and watch screens their card lists. Modals swallow it.
+    pub fn handle_scroll(&mut self, delta: i64) {
+        if self.modal.is_some() {
+            return;
+        }
+        match self.screens.last_mut().expect("dashboard") {
+            Screen::Dashboard(d) => d.scroll_panel(delta),
+            Screen::Switch(s) => s.list.scroll_by(delta),
+            Screen::Watch(w) => w.list.scroll_by(delta),
+            Screen::Auto(_) => {}
+        }
+    }
+
     fn fold(&mut self, effects: Vec<Effect>, now: f64) -> Vec<Command> {
         let mut commands = Vec::new();
         for effect in effects {
@@ -830,7 +846,7 @@ fn draw_dashboard(
 ) {
     let width = area.width as usize;
     let content_width = width.saturating_sub(6);
-    let mut panel = accounts_panel(
+    let panel = accounts_panel(
         snapshot,
         content_width.saturating_sub(2),
         threshold,
@@ -842,10 +858,12 @@ fn draw_dashboard(
     const CHROME: usize = 4;
     let height = area.height as usize;
     // The panel keeps its full height: the menu takes what is left and
-    // scrolls, giving up rows down to its minimum before the panel is cut.
+    // scrolls, giving up rows down to its minimum. A panel that still does
+    // not fit scrolls (wheel, PgUp/PgDn) behind a scrollbar.
     let spare = height.saturating_sub(CHROME + panel.len());
     let menu = dash.menu_lines(spare, p);
-    panel.truncate(height.saturating_sub(CHROME + menu.len()));
+    let room = height.saturating_sub(CHROME + menu.len());
+    let panel = dash.panel_window(panel, room);
     let mut lines: Vec<Line<'static>> = vec![Line::default()];
     lines.extend(panel.into_iter().map(|l| indent(l, 3)));
     lines.push(Line::default());
@@ -864,6 +882,9 @@ fn draw_dashboard(
         lines.push(line);
     }
     Paragraph::new(lines).render(area, buf);
+    let bar =
+        Rect::new(area.right().saturating_sub(1), area.y + 1, 1, room as u16).intersection(area);
+    render_scrollbar(buf, bar, dash.panel_scroll_info(), p);
 }
 
 fn draw_list(
@@ -889,6 +910,9 @@ fn draw_list(
         lines.push(if styled { fill(line, width) } else { line });
     }
     Paragraph::new(lines).render(area, buf);
+    let bar =
+        Rect::new(area.right().saturating_sub(1), area.y + 3, 1, height as u16).intersection(area);
+    render_scrollbar(buf, bar, list.scroll_info(), p);
 }
 
 fn draw_auto(

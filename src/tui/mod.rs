@@ -22,7 +22,9 @@ pub(crate) mod test_support;
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+};
 
 use crate::cli::tui::TuiStart;
 use crate::paths::Paths;
@@ -32,11 +34,13 @@ use app::App;
 use theme::ThemeName;
 use worker::{Runtime, now_s};
 
-/// Leaves raw mode and the alternate screen however the loop ends.
+/// Leaves raw mode, mouse capture and the alternate screen however the loop
+/// ends.
 struct RestoreGuard;
 
 impl Drop for RestoreGuard {
     fn drop(&mut self) {
+        let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
         ratatui::restore();
     }
 }
@@ -72,6 +76,11 @@ pub fn run(start: TuiStart) -> i32 {
         }
     };
     let _guard = RestoreGuard;
+    // cswap captures the mouse too: the wheel scrolls the accounts panel and
+    // the card lists. Selecting text then takes the terminal's modifier key.
+    if let Err(err) = crossterm::execute!(io::stdout(), EnableMouseCapture) {
+        tracing::warn!("mouse capture unavailable: {err}");
+    }
     if let Err(err) = event_loop(&mut terminal, &mut app, &mut runtime) {
         drop(_guard);
         eprintln!("Error: {err}");
@@ -102,6 +111,11 @@ fn event_loop(
                         let commands = app.handle_key(key, now_s());
                         runtime.execute(commands, app, now_s());
                     }
+                    Event::Mouse(mouse) => match mouse.kind {
+                        MouseEventKind::ScrollUp => app.handle_scroll(-1),
+                        MouseEventKind::ScrollDown => app.handle_scroll(1),
+                        _ => {}
+                    },
                     _ => {}
                 }
                 if !event::poll(Duration::ZERO)? {

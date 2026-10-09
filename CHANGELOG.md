@@ -3,6 +3,16 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.7.4 — 2026-10-09
+
+### Added
+
+- The dashboard's accounts panel scrolls when it does not fit above the menu,
+  instead of being cut off, and shows a scrollbar while it overflows. The
+  switch and watch lists show the same scrollbar. The mouse wheel and
+  `PgUp`/`PgDn` scroll all three; the TUI now captures the mouse, as `cswap`
+  does, so selecting terminal text takes the terminal's modifier key.
+
 ## v0.7.3 — 2026-10-09
 
 ### Changed
