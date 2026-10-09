@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use super::app::{Action, Effect};
 use super::snapshot::AccountsSnapshot;
 use super::theme::Palette;
-use super::widgets::{account_card, section_header};
+use super::widgets::{ScrollInfo, account_card, section_header};
 
 pub const FLASH_S: f64 = 1.5;
 
@@ -19,6 +19,9 @@ pub const FLASH_S: f64 = 1.5;
 pub struct CardList {
     numbers: Vec<u32>,
     cursor: Option<usize>,
+    /// The cursor the last render pulled into view: only a cursor move
+    /// scrolls the list back to it.
+    last_cursor: Option<usize>,
     scroll: usize,
     flash_until: HashMap<u32, f64>,
     fetched: HashMap<u32, Option<f64>>,
@@ -38,6 +41,7 @@ impl CardList {
         Self {
             numbers: Vec::new(),
             cursor: None,
+            last_cursor: None,
             scroll: 0,
             flash_until: HashMap::new(),
             fetched: HashMap::new(),
@@ -125,7 +129,22 @@ impl CardList {
             Some((cursor as i64 + delta).clamp(0, self.numbers.len() as i64 - 1) as usize);
     }
 
-    /// Monitor-mode scrolling, clamped to what the last render measured.
+    pub fn scroll_info(&self) -> ScrollInfo {
+        ScrollInfo {
+            total: self.total_lines,
+            viewport: self.viewport,
+            position: self.scroll,
+        }
+    }
+
+    /// PgUp/PgDn: a viewport minus one row, in `direction`.
+    pub fn scroll_page(&mut self, direction: i64) {
+        let page = self.viewport.saturating_sub(1).max(1) as i64;
+        self.scroll_by(direction * page);
+    }
+
+    /// Wheel, paging and monitor-mode keys, clamped to what the last render
+    /// measured. The cursor may scroll out of view until it moves.
     pub fn scroll_by(&mut self, delta: i64) {
         let max = self.total_lines.saturating_sub(self.viewport) as i64;
         self.scroll = (self.scroll as i64 + delta).clamp(0, max.max(0)) as usize;
@@ -190,12 +209,15 @@ impl CardList {
         }
         self.total_lines = lines.len();
         self.viewport = height;
-        if let Some((start, end)) = cursor_range {
-            if start < self.scroll {
-                self.scroll = start;
-            } else if end > self.scroll + height {
-                self.scroll = end.saturating_sub(height);
+        if self.cursor != self.last_cursor {
+            if let Some((start, end)) = cursor_range {
+                if start < self.scroll {
+                    self.scroll = start;
+                } else if end > self.scroll + height {
+                    self.scroll = end.saturating_sub(height);
+                }
             }
+            self.last_cursor = self.cursor;
         }
         let max = self.total_lines.saturating_sub(height);
         self.scroll = self.scroll.min(max);
@@ -248,6 +270,14 @@ impl SwitchScreen {
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.list.move_cursor(1);
+                Vec::new()
+            }
+            KeyCode::PageDown => {
+                self.list.scroll_page(1);
+                Vec::new()
+            }
+            KeyCode::PageUp => {
+                self.list.scroll_page(-1);
                 Vec::new()
             }
             KeyCode::Enter => match self.list.selected() {
@@ -392,6 +422,43 @@ mod tests {
         assert_eq!(list.scroll(), 0);
         list.scroll_by(100);
         assert_eq!(list.scroll(), 5, "clamped to total - viewport");
+    }
+
+    #[test]
+    fn free_scrolling_sticks_until_the_cursor_moves() {
+        let p = &crate::tui::theme::DARK;
+        let mut list = CardList::new();
+        let snap = three();
+        list.sync(&snap, 1000.0, true);
+        list.cursor = Some(2);
+        list.render_lines(Some(&snap), 80, 4, 1000.0, p);
+        assert_eq!(list.scroll(), 4);
+        list.scroll_by(-4);
+        let lines = list.render_lines(Some(&snap), 80, 4, 1000.0, p);
+        assert_eq!(
+            list.scroll(),
+            0,
+            "the wheel may scroll the cursor out of view"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| !l.spans.iter().any(|s| s.content.contains('▌')))
+        );
+        let info = list.scroll_info();
+        assert!(info.overflows());
+        assert_eq!((info.total, info.viewport, info.position), (9, 4, 0));
+        list.move_cursor(-1);
+        list.render_lines(Some(&snap), 80, 4, 1000.0, p);
+        assert_eq!(
+            list.scroll(),
+            1,
+            "moving the cursor scrolls it back into view"
+        );
+        list.scroll_page(1);
+        assert_eq!(list.scroll(), 4, "a page is the viewport minus one");
+        list.scroll_page(-1);
+        assert_eq!(list.scroll(), 1);
     }
 
     #[test]

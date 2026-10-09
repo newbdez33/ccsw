@@ -187,6 +187,10 @@ fn fg(buf: &Buffer, x: u16, y: usize) -> Color {
     buf[(x, y as u16)].fg
 }
 
+fn cell(buf: &Buffer, x: u16, y: usize) -> String {
+    buf[(x, y as u16)].symbol().to_string()
+}
+
 #[test]
 fn dashboard_active_card_minis_menu_and_footer() {
     let mut app = app_with(TuiStart::Dashboard);
@@ -354,6 +358,86 @@ fn dashboard_wraps_long_rows_on_a_narrow_terminal() {
         rows[expired_y + 1],
         "   refresh deferred this pass; retries automatically"
     );
+}
+
+#[test]
+fn dashboard_panel_scrolls_with_a_scrollbar_when_it_overflows() {
+    let mut app = app_with(TuiStart::Dashboard);
+    // 15 body rows: 4 chrome + 2 menu floor leave 9 for the 10-row panel.
+    let buf = render(&mut app, 110, 16, NOW);
+    let rows = screen_rows(&buf);
+    find_row(&rows, "alice@corp.io");
+    assert!(
+        !rows.iter().any(|r| r.contains("expired@x.y")),
+        "{}",
+        rows.join("\n")
+    );
+    assert_eq!(rows[13], "   menu");
+    assert_eq!(rows[14], " ▌ Switch account…");
+    assert_eq!(cell(&buf, 109, 1), "█", "thumb at the top of the panel");
+    assert_eq!(cell(&buf, 109, 9), "│", "track below the thumb");
+    assert_eq!(cell(&buf, 109, 0), " ");
+    assert_eq!(cell(&buf, 109, 10), " ");
+
+    app.handle_key(key(KeyCode::PageDown), NOW);
+    let buf = render(&mut app, 110, 16, NOW);
+    let rows = screen_rows(&buf);
+    find_row(&rows, "expired@x.y");
+    assert!(
+        !rows.iter().any(|r| r.contains("alice@corp.io")),
+        "{}",
+        rows.join("\n")
+    );
+    assert_eq!(cell(&buf, 109, 1), "│");
+    assert_eq!(cell(&buf, 109, 9), "█", "thumb at the bottom");
+
+    app.handle_scroll(-1);
+    let rows = screen_rows(&render(&mut app, 110, 16, NOW));
+    find_row(&rows, "alice@corp.io");
+
+    let buf = render(&mut app, 110, 30, NOW);
+    assert!(
+        (0..30).all(|y| !matches!(cell(&buf, 109, y).as_str(), "█" | "│")),
+        "no scrollbar when the panel fits"
+    );
+}
+
+#[test]
+fn lists_show_a_scrollbar_and_scroll_freely_until_the_cursor_moves() {
+    let mut app = app_with(TuiStart::Watch);
+    let buf = render(&mut app, 110, 14, NOW);
+    let rows = screen_rows(&buf);
+    find_row(&rows, "alice@corp.io");
+    assert!(
+        !rows.iter().any(|r| r.contains("expired@x.y")),
+        "{}",
+        rows.join("\n")
+    );
+    assert_eq!(cell(&buf, 109, 3), "█", "thumb at the top of the card rows");
+    assert_eq!(cell(&buf, 109, 2), " ");
+    app.handle_scroll(1);
+    app.handle_scroll(1);
+    let rows = screen_rows(&render(&mut app, 110, 14, NOW));
+    assert!(
+        !rows.iter().any(|r| r.contains("alice@corp.io")),
+        "{}",
+        rows.join("\n")
+    );
+
+    let mut app = app_with(TuiStart::Dashboard);
+    app.handle_key(key(KeyCode::Char('s')), NOW);
+    let rows = screen_rows(&render(&mut app, 110, 14, NOW));
+    find_row(&rows, "▌  2  john.doe@gmail.com");
+    app.handle_scroll(5);
+    let rows = screen_rows(&render(&mut app, 110, 14, NOW));
+    assert!(
+        !rows.iter().any(|r| r.contains("john.doe@gmail.com")),
+        "the wheel scrolls the cursor out of view:\n{}",
+        rows.join("\n")
+    );
+    app.handle_key(key(KeyCode::Up), NOW);
+    let rows = screen_rows(&render(&mut app, 110, 14, NOW));
+    find_row(&rows, "▌  1  alice@corp.io");
 }
 
 #[test]

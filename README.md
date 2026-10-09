@@ -228,8 +228,9 @@ ccsw watch    # straight to the live monitor
 The dashboard shows the active account as a card with 5h, 7d and per-model bars, the
 other accounts as one-line summaries, and the menu; when the terminal is short the
 accounts stay whole and the menu scrolls, keeping its title and the highlighted entry
-in view. Rows wider than the terminal wrap onto the next line, as in `cswap`. The
-dashboard, switch and watch screens list a `codex` section and then a `claude` section when both are present; `ccsw watch` shows every account
+in view. Rows wider than the terminal wrap onto the next line, as in `cswap`. Accounts
+that still do not fit scroll behind a scrollbar (mouse wheel or `PgUp`/`PgDn`), and so do
+the switch and watch lists. The dashboard, switch and watch screens list a `codex` section and then a `claude` section when both are present; `ccsw watch` shows every account
 as a live card. Both are pictured at the top of this page.
 
 ### Other commands
