@@ -12,7 +12,8 @@
 - 仪表盘菜单改为 cswap 的优先级：账号面板完整显示，菜单拿剩余行数并随光标滚动，但最少保留面包屑和光标行（cswap 可缩到零行）。PR #8，版本 `v0.7.2`；发版清单核对时本机 Claude Code 仍为 2.1.294，`FALLBACK_CLI_VERSION` 未变。
 - reset card 图标改为红心加绿色数字（`♥ 2`）；卡片和 mini 行按终端宽度折行（cswap 的 Rich 折行规则：按空格断行、超长词硬切、续行从卡片首列开始）。PR #9，版本 `v0.7.3`；发版清单核对：`FALLBACK_CLI_VERSION` 更新为 2.1.295。
 - 仪表盘账号面板放不下时改为可滚动并显示一列滚动条（滚轮、PgUp/PgDn），switch/watch 列表同样有滚动条且滚轮可自由滚动（光标移动时才拉回视野）；TUI 开启鼠标捕获（与 cswap 一致）。PR #10，版本 `v0.7.4`；发版清单核对：本机 Claude Code 仍为 2.1.295，`FALLBACK_CLI_VERSION` 未变。
-- 当前工作区为 `hraesvelg`；当前分支为 `newbdez33/panel-scroll`。
+- `ccsw list --fetch-all`：一次 pass 测量所有过期或到期的账号（而不是活跃账号加一个候选），供定时轮询整个名单的采集器使用（如 token-beats 的 account-usage collector 每 10 分钟跑 `ccsw list claude --json --fetch-all`）。新鲜行仍走缓存，backoff、Retry-After 和 dead-token 门禁照旧；仅限 `list`。版本 `v0.7.5`。
+- 当前工作区为 `.worktrees/list-fetch-all`；当前分支为 `newbdez33/list-fetch-all`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换

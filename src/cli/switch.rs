@@ -1,5 +1,6 @@
 //! `switch`, `switch <id>`, `switch --strategy`.
 
+use crate::collect::CollectMode;
 use crate::errors::Result;
 use crate::jsonout;
 use crate::provider::Provider;
@@ -67,7 +68,7 @@ fn finish(
         return Ok(0);
     }
     if report.show_list {
-        match switcher.list_snapshot(true) {
+        match switcher.list_snapshot(CollectMode::OnDemand) {
             Ok(Some(snapshot)) => print_lines(&list_lines(switcher, &snapshot, false)),
             _ => print_lines(&[Line::plain(
                 "  (usage display unavailable — run ccsw list to retry)",

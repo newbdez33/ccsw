@@ -6,8 +6,8 @@ mod support;
 
 use serde_json::{Value, json};
 use support::usage_mock::{
-    self, LIMIT_5H, LIMIT_7D, OK, POOL, POOL_NAME, REFRESHED, ROTATED_REFRESH, STALE, THROTTLED,
-    UsageMock,
+    self, COOL, LIMIT_5H, LIMIT_7D, OK, POOL, POOL_NAME, REFRESHED, ROTATED_REFRESH, STALE,
+    THROTTLED, UsageMock,
 };
 use support::{Cli, chatgpt_auth_with_tokens};
 
@@ -149,6 +149,38 @@ fn list_renders_real_usage_rows_and_serves_the_cache() {
     assert_usage_row(lines[2], "  ├ 5h:  35%");
     assert_eq!(lines[4], "  └ credits: $12.50");
     assert_eq!(mock.requests().len(), 4, "status served from the cache");
+}
+
+#[test]
+fn list_fetch_all_measures_every_stale_account_in_one_pass() {
+    let mock = UsageMock::start();
+    let cli = Cli::new().with_mock(&mock);
+    cli.add_scripted("alice@example.com", "acct-alice", OK);
+    cli.add_scripted("bob@example.com", "acct-bob", LIMIT_5H);
+    cli.add_scripted("carol@example.com", "acct-carol", POOL);
+    cli.add_scripted("dave@example.com", "acct-dave", COOL);
+    activate(&cli, "alice@example.com", "acct-alice", OK);
+
+    // A plain pass measures the active account plus one candidate; a collector
+    // asks for every stale row at once.
+    let run = cli.run(&["list", "--json", "--fetch-all"]);
+    assert_eq!(run.status, 0, "{}", run.stderr);
+    assert_eq!(run.stderr, "");
+    let payload = run.json();
+    for number in 1..=4 {
+        let account = row(&payload, number);
+        assert_eq!(account["usageStatus"], "ok", "row {number}: {account}");
+        assert!(account["usageFetchedAt"].is_string(), "row {number}");
+    }
+    for bearer in [OK, LIMIT_5H, POOL, COOL] {
+        assert_eq!(mock.usage_calls(bearer), 1, "{bearer}");
+    }
+
+    // Within the serve TTL nothing is stale, so a second collector pass is
+    // answered from the cache without touching the endpoint.
+    let again = cli.run(&["list", "--json", "--fetch-all"]);
+    assert_eq!(again.status, 0, "{}", again.stderr);
+    assert_eq!(mock.requests().len(), 4, "{:?}", mock.trail());
 }
 
 #[test]

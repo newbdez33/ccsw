@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::autoswitch::{Engine, Event};
+use crate::collect::CollectMode;
 use crate::errors::Result;
 use crate::model::SwitchOutcome;
 use crate::paths::Paths;
@@ -155,9 +156,13 @@ impl Runtime {
             Lane::Store => self.store_inflight = true,
         }
         let tx = self.tx.clone();
+        let mode = match lane {
+            Lane::Normal => CollectMode::OnDemand,
+            Lane::Store => CollectMode::StoreOnly,
+        };
         thread::spawn(move || {
             let result = Switcher::from_env()
-                .and_then(|switcher| switcher.list_snapshot(lane == Lane::Normal))
+                .and_then(|switcher| switcher.list_snapshot(mode))
                 .map_err(|err| err.to_string());
             let _ = tx.send(Msg::Snapshot {
                 lane,

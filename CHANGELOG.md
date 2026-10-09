@@ -3,6 +3,17 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.7.5 — 2026-10-09
+
+### Added
+
+- `ccsw list --fetch-all` measures every stale or due account in one pass instead
+  of the active account plus a single candidate, for collectors that poll the
+  whole roster on a timer (for example `ccsw list claude --json --fetch-all` every
+  ten minutes). Fresh rows are still served from the cache, and backoff,
+  Retry-After and dead-token gates still apply, so each account stays inside its
+  poll budget. The flag belongs to `list` only.
+
 ## v0.7.4 — 2026-10-09
 
 ### Added
