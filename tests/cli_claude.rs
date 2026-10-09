@@ -6,8 +6,8 @@ mod support;
 
 use serde_json::json;
 use support::usage_mock::{
-    self, CLAUDE_LIMIT_7D, CLAUDE_OK, CLAUDE_POOL_NAME, CLAUDE_REFRESHED, CLAUDE_ROTATED_REFRESH,
-    CLAUDE_STALE, UsageMock,
+    self, CLAUDE_HOT, CLAUDE_LIMIT_7D, CLAUDE_OK, CLAUDE_POOL_NAME, CLAUDE_REFRESHED,
+    CLAUDE_ROTATED_REFRESH, CLAUDE_STALE, UsageMock,
 };
 use support::{Cli, api_key_auth, chatgpt_auth, claude_config, claude_creds};
 
@@ -449,6 +449,53 @@ fn claude_usage_rows_refresh_and_the_active_login_is_never_refreshed() {
     assert_eq!(one["usage"]["scoped"][0]["name"], CLAUDE_POOL_NAME);
     assert_eq!(one["usage"]["scoped"][0]["pct"], 62.0);
     let _ = CLAUDE_LIMIT_7D;
+}
+
+#[test]
+fn list_claude_fetch_all_measures_every_claude_account_in_one_pass() {
+    let mock = UsageMock::start();
+    let cli = Cli::new().with_mock(&mock);
+    for (email, org, bearer) in [
+        ("one@example.com", "org-1", CLAUDE_OK),
+        ("two@example.com", "org-2", CLAUDE_HOT),
+        ("three@example.com", "org-3", CLAUDE_LIMIT_7D),
+    ] {
+        cli.write_claude_live_with(
+            &claude_creds(&usage_mock::claude_live_refresh_token(email), bearer),
+            &claude_config(email, org, ""),
+        );
+        let run = cli.run(&["add", "claude"]);
+        assert_eq!(run.status, 0, "{}", run.stderr);
+    }
+
+    // The collector's call: three is the live login, one and two are inactive
+    // candidates, and all three are measured by a single pass.
+    let run = cli.run(&["list", "claude", "--json", "--fetch-all"]);
+    assert_eq!(run.status, 0, "{}", run.stderr);
+    assert_eq!(run.stderr, "");
+    let payload = run.json();
+    let rows = payload["accounts"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "{payload}");
+    for row in rows {
+        assert_eq!(row["provider"], "claude");
+        assert_eq!(row["usageStatus"], "ok", "{row}");
+        assert!(row["usageFetchedAt"].is_string(), "{row}");
+    }
+    for bearer in [CLAUDE_OK, CLAUDE_HOT, CLAUDE_LIMIT_7D] {
+        assert_eq!(mock.claude_usage_calls(bearer), 1, "{bearer}");
+    }
+    assert_eq!(
+        mock.claude_token_calls(),
+        0,
+        "no credential needed a refresh"
+    );
+
+    // Within the serve TTL a second collector pass is served from the cache.
+    let again = cli.run(&["list", "claude", "--json", "--fetch-all"]);
+    assert_eq!(again.status, 0, "{}", again.stderr);
+    for bearer in [CLAUDE_OK, CLAUDE_HOT, CLAUDE_LIMIT_7D] {
+        assert_eq!(mock.claude_usage_calls(bearer), 1, "{bearer} fetched again");
+    }
 }
 
 #[test]

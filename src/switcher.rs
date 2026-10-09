@@ -2316,8 +2316,9 @@ impl Switcher {
 
     // -- snapshots ------------------------------------------------------------
 
-    /// Rows for `list`; `None` when no roster exists (first run).
-    pub fn list_snapshot(&self, fetch: bool) -> Result<Option<ListSnapshot>> {
+    /// Rows for `list`; `None` when no roster exists (first run). `mode`
+    /// decides which rows the pass may fetch (`StoreOnly` never fetches).
+    pub fn list_snapshot(&self, mode: CollectMode) -> Result<Option<ListSnapshot>> {
         let Some(roster) = self.roster_opt()? else {
             return Ok(None);
         };
@@ -2334,11 +2335,6 @@ impl Switcher {
             .copied()
             .filter(|s| roster.record(*s).is_some())
             .collect();
-        let mode = if fetch {
-            CollectMode::OnDemand
-        } else {
-            CollectMode::StoreOnly
-        };
         let mut collected = collect::run_pass(
             &self.store,
             &roster,
@@ -3533,7 +3529,11 @@ mod tests {
         fx.write_live(&chatgpt("a@example.com", "acct-1", "rt-1"));
         fx.write_claude_live("c@example.com", "org", "Acme", "crt-1");
         fx.switcher.add_accounts(None, None, None).unwrap();
-        let list = fx.switcher.list_snapshot(false).unwrap().unwrap();
+        let list = fx
+            .switcher
+            .list_snapshot(CollectMode::StoreOnly)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             list.actives,
             ActiveSlots {
