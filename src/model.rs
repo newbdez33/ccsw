@@ -300,6 +300,10 @@ pub struct NormalizedUsage {
     /// Rate-limit reset credits ("reset cards") the account can still spend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_credits: Option<u32>,
+    /// When the soonest-ending grant behind `reset_credits` stops being
+    /// spendable (ISO 8601); absent when no counted grant has an end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits_end_at: Option<String>,
 }
 
 impl NormalizedUsage {
@@ -613,5 +617,27 @@ mod tests {
         let legacy: NormalizedUsage =
             serde_json::from_str("{\"five_hour\": {\"pct\": 1.0}}").unwrap();
         assert_eq!(legacy.spend, None);
+    }
+
+    #[test]
+    fn reset_credits_end_is_optional_in_the_cache() {
+        let usage = NormalizedUsage {
+            reset_credits: Some(2),
+            reset_credits_end_at: Some("2026-10-22T16:00:00Z".into()),
+            ..NormalizedUsage::default()
+        };
+        let json = serde_json::to_value(&usage).unwrap();
+        assert_eq!(json["reset_credits_end_at"], "2026-10-22T16:00:00Z");
+        let back: NormalizedUsage = serde_json::from_value(json).unwrap();
+        assert_eq!(back, usage);
+        let legacy: NormalizedUsage = serde_json::from_str("{\"reset_credits\": 2}").unwrap();
+        assert_eq!(legacy.reset_credits_end_at, None);
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("reset_credits_end_at")
+                .is_none(),
+            "absent stays absent"
+        );
     }
 }

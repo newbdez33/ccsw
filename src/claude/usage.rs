@@ -13,7 +13,7 @@ use crate::codex::app_server::command_on_path;
 pub use crate::codex::usage::FetchError;
 use crate::codex::usage::{build_client_with_agent, retry_after_hint, transport_error};
 use crate::errors::Result;
-use crate::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, now_unix};
+use crate::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso, now_unix};
 use crate::usage_math::parse_reset;
 
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -211,16 +211,27 @@ fn scoped(value: Option<&Value>) -> Vec<ScopedWindow> {
         .collect()
 }
 
-/// `cedar_ember` → the resets left on grants that can be spent now: not paused,
-/// started, not ended. A block the server marked ineligible describes the
-/// request (surface, CLI version), not the account, so it stays unknown.
-fn reset_credits(block: Option<&Value>, now: i64) -> Option<u32> {
+/// The spendable limit resets of a `cedar_ember` block.
+struct LimitResets {
+    left: u32,
+    /// The earliest `ends_at` among the grants counted into `left`.
+    ends_at: Option<i64>,
+}
+
+/// `cedar_ember` → the resets left on grants that can be spent now (not
+/// paused, started, not ended) and when the soonest of them ends. A block the
+/// server marked ineligible describes the request (surface, CLI version), not
+/// the account, so it stays unknown.
+fn limit_resets(block: Option<&Value>, now: i64) -> Option<LimitResets> {
     let block = block?.as_object()?;
     if block.get("eligible") == Some(&Value::Bool(false)) {
         return None;
     }
     let grants = block.get("grants").and_then(Value::as_array);
-    let mut total: u32 = 0;
+    let mut resets = LimitResets {
+        left: 0,
+        ends_at: None,
+    };
     for grant in grants.into_iter().flatten() {
         if grant.get("paused") == Some(&Value::Bool(true)) {
             continue;
@@ -230,15 +241,21 @@ fn reset_credits(block: Option<&Value>, now: i64) -> Option<u32> {
             .and_then(Value::as_u64)
             .unwrap_or(0);
         let time = |key: &str| grant.get(key).and_then(Value::as_str).and_then(parse_reset);
+        let ends_at = time("ends_at");
         if left == 0
             || time("starts_at").is_some_and(|starts| starts > now)
-            || time("ends_at").is_some_and(|ends| ends <= now)
+            || ends_at.is_some_and(|ends| ends <= now)
         {
             continue;
         }
-        total = total.saturating_add(u32::try_from(left).unwrap_or(u32::MAX));
+        resets.left = resets
+            .left
+            .saturating_add(u32::try_from(left).unwrap_or(u32::MAX));
+        if let Some(ends) = ends_at {
+            resets.ends_at = Some(resets.ends_at.map_or(ends, |soonest| soonest.min(ends)));
+        }
     }
-    Some(total)
+    Some(resets)
 }
 
 /// Normalize a usage body (spec §8). A body with no window at all is not a measurement.
@@ -248,6 +265,7 @@ pub fn parse_usage(body: &Value) -> std::result::Result<NormalizedUsage, String>
 
 /// `parse_usage` against a given clock, which decides which limit resets are live.
 pub fn parse_usage_at(body: &Value, now: i64) -> std::result::Result<NormalizedUsage, String> {
+    let resets = limit_resets(body.get("cedar_ember"), now);
     let usage = NormalizedUsage {
         five_hour: window(body.get("five_hour"))?,
         seven_day: window(body.get("seven_day"))?,
@@ -255,7 +273,8 @@ pub fn parse_usage_at(body: &Value, now: i64) -> std::result::Result<NormalizedU
         credits: None,
         limited: false,
         plan_type: None,
-        reset_credits: reset_credits(body.get("cedar_ember"), now),
+        reset_credits: resets.as_ref().map(|resets| resets.left),
+        reset_credits_end_at: resets.and_then(|resets| resets.ends_at).map(format_iso),
         spend: spend(body.get("extra_usage")),
     };
     if usage.five_hour.is_none() && usage.seven_day.is_none() && usage.scoped.is_empty() {
@@ -471,6 +490,34 @@ mod tests {
             None
         );
         assert_eq!(parse_usage(&body()).unwrap().reset_credits, None);
+    }
+
+    #[test]
+    fn limit_resets_record_the_earliest_end() {
+        let now = crate::model::parse_iso("2026-10-08T12:00:00Z").unwrap();
+        let grants = json!({"eligible": true, "grants": [
+            {"id": "g1", "resets_left": 2, "ends_at": "2026-10-22T16:00:00Z"},
+            {"id": "g2", "resets_left": 1, "ends_at": "2026-10-18T00:00:00Z"},
+            {"id": "g3", "resets_left": 1, "paused": true, "ends_at": "2026-10-09T00:00:00Z"},
+            {"id": "g4", "resets_left": 0, "ends_at": "2026-10-10T00:00:00Z"},
+            {"id": "g5", "resets_left": 1}
+        ]});
+        let usage = parse_usage_at(&with_resets(grants), now).unwrap();
+        assert_eq!(usage.reset_credits, Some(4));
+        assert_eq!(
+            usage.reset_credits_end_at.as_deref(),
+            Some("2026-10-18T00:00:00Z"),
+            "only grants that count set the end"
+        );
+        let open = json!({"eligible": true, "grants": [{"id": "g5", "resets_left": 1}]});
+        assert_eq!(
+            parse_usage_at(&with_resets(open), now)
+                .unwrap()
+                .reset_credits_end_at,
+            None,
+            "a grant without an end leaves it unknown"
+        );
+        assert_eq!(parse_usage(&body()).unwrap().reset_credits_end_at, None);
     }
 
     #[test]

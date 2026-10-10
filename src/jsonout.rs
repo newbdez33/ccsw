@@ -305,6 +305,7 @@ mod tests {
             limited: false,
             plan_type: Some("pro".into()),
             reset_credits: None,
+            reset_credits_end_at: None,
             spend: None,
         }
     }

@@ -65,12 +65,28 @@ pub fn credits_text(credits: Option<&Credits>) -> Option<String> {
     }
 }
 
-/// `♥ 2`: the rate-limit reset cards left; `None` when there are none or
-/// the API did not say.
-pub fn reset_cards_text(count: Option<u32>) -> Option<String> {
-    count
-        .filter(|count| *count > 0)
-        .map(|count| format!("♥ {count}"))
+/// `♥ 2` / `♥ 2 (in 10d)`: the rate-limit reset cards left and, when known,
+/// how long the soonest-ending grant stays spendable; `None` when there are
+/// none or the API did not say.
+pub fn reset_cards_text(count: Option<u32>, ends_at: Option<i64>, now: i64) -> Option<String> {
+    let count = count.filter(|count| *count > 0)?;
+    Some(match reset_cards_hint(ends_at, now) {
+        Some(hint) => format!("♥ {count} ({hint})"),
+        None => format!("♥ {count}"),
+    })
+}
+
+/// `in 10d` (whole days from a day out), `in 5h 12m` under that, `expired`
+/// once a stale measurement outlives the grant; `None` without an end.
+pub fn reset_cards_hint(ends_at: Option<i64>, now: i64) -> Option<String> {
+    let remaining = ends_at? - now;
+    Some(if remaining <= 0 {
+        "expired".to_string()
+    } else if remaining >= 86_400 {
+        format!("in {}d", remaining / 86_400)
+    } else {
+        format!("in {}", format_duration(remaining as f64))
+    })
 }
 
 /// One bar row: `suffix` is the short form, `suffix_full` adds the reset clock.
@@ -249,12 +265,42 @@ mod tests {
 
     #[test]
     fn reset_cards_icon() {
-        assert_eq!(reset_cards_text(None), None);
-        assert_eq!(reset_cards_text(Some(2)), Some("♥ 2".into()));
+        let now = 1_790_000_000;
+        assert_eq!(reset_cards_text(None, None, now), None);
+        assert_eq!(reset_cards_text(Some(2), None, now), Some("♥ 2".into()));
         assert_eq!(
-            reset_cards_text(Some(0)),
+            reset_cards_text(Some(0), None, now),
             None,
             "nothing left, nothing shown"
+        );
+        assert_eq!(
+            reset_cards_text(Some(0), Some(now + 86_400), now),
+            None,
+            "no hint without cards"
+        );
+    }
+
+    #[test]
+    fn reset_cards_hint_counts_down_to_the_earliest_end() {
+        let now = 1_790_000_000;
+        assert_eq!(reset_cards_hint(None, now), None);
+        assert_eq!(
+            reset_cards_hint(Some(now + 10 * 86_400 + 4 * 3600), now),
+            Some("in 10d".into()),
+            "whole days once a day or more remains"
+        );
+        assert_eq!(
+            reset_cards_hint(Some(now + 5 * 3600 + 12 * 60), now),
+            Some("in 5h 12m".into())
+        );
+        assert_eq!(
+            reset_cards_hint(Some(now - 1), now),
+            Some("expired".into()),
+            "a stale measurement past the end"
+        );
+        assert_eq!(
+            reset_cards_text(Some(2), Some(now + 10 * 86_400), now),
+            Some("♥ 2 (in 10d)".into())
         );
     }
 

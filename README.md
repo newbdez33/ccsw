@@ -155,7 +155,8 @@ cached for three minutes, so run `ccsw list` again to fill in the remaining rows
 `--fetch-all` to measure every stale row at once. Each account's poll budget still applies.
 Claude rows add a `$$` line for extra-usage spend and per-model windows such as
 `Fable: 62%`. The dashboard shows an account's saved limit resets (Codex's reset credits,
-Claude Code's `/limit-reset` grants) as a red heart with a green count (`♥ n`). Anthropic lists those grants only
+Claude Code's `/limit-reset` grants) as a red heart with a green count (`♥ n`); when a Claude grant
+has an end date, the soonest one follows as `(in 10d)`. Anthropic lists those grants only
 for the Claude Code CLI, so Claude usage requests identify as the installed Claude Code
 (`claude-cli/<version> (external, cli) ccsw/<version>`, the version read from the `claude`
 on your `PATH`).
