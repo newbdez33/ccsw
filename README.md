@@ -58,18 +58,18 @@ Release binary — fetch the current release and replace the `ccsw` already on y
 (`SHA256SUMS` next to the archives lists their checksums):
 
 ```bash
-VERSION=v0.8.0; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl
+VERSION=v0.8.1; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl
 curl -fsSL "https://github.com/newbdez33/ccsw/releases/download/$VERSION/ccsw-$VERSION-$TARGET.tar.gz" | tar xz
 install "ccsw-$VERSION-$TARGET/ccsw" "$(command -v ccsw)"
 ```
 
-On Windows, download `ccsw-v0.8.0-x86_64-pc-windows-msvc.zip` from the
+On Windows, download `ccsw-v0.8.1-x86_64-pc-windows-msvc.zip` from the
 [releases page](https://github.com/newbdez33/ccsw/releases) and replace `ccsw.exe`.
 
 From source:
 
 ```bash
-cargo install --git https://github.com/newbdez33/ccsw --tag v0.8.0 --locked --force
+cargo install --git https://github.com/newbdez33/ccsw --tag v0.8.1 --locked --force
 ```
 
 `ccsw upgrade` only prints these instructions; ccsw does not update itself.

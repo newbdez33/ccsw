@@ -3,6 +3,17 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.8.1 — 2026-10-10
+
+### Added
+
+- The dashboard's reset-card heart says when the soonest grant behind it ends:
+  `♥ 2 (in 10d)` on account cards and mini rows (hours and minutes under a day,
+  `expired` once a stale measurement outlives the grant). The earliest `ends_at`
+  of the counted `cedar_ember` grants is kept in the usage cache as
+  `reset_credits_end_at`; rows cached by earlier releases show the hint after
+  their next fetch.
+
 ## v0.8.0 — 2026-10-10
 
 ### Added
