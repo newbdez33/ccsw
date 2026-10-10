@@ -175,6 +175,8 @@ pub enum ReserveMode {
 }
 
 /// The outcome of one usage fetch, merged by [`UsageStore::record`].
+// One value per fetch, consumed at once: boxing the measurement buys nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum FetchRecord {
     Success {

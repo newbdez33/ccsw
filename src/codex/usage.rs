@@ -410,6 +410,7 @@ pub fn parse_usage(body: &Value) -> std::result::Result<NormalizedUsage, String>
             .and_then(Value::as_str)
             .map(str::to_string),
         reset_credits: parse_reset_credits(body),
+        reset_credits_end_at: None,
         spend: None,
     };
     if usage.is_empty() {

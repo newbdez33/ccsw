@@ -15,7 +15,9 @@
 - `ccsw list --fetch-all`：一次 pass 测量所有过期或到期的账号（而不是活跃账号加一个候选），供定时轮询整个名单的采集器使用（如 token-beats 的 account-usage collector 每 10 分钟跑 `ccsw list claude --json --fetch-all`）。新鲜行仍走缓存，backoff、Retry-After 和 dead-token 门禁照旧；仅限 `list`。版本 `v0.7.5`。
 - README 新增「Upgrade」一节（版本化的下载 / `cargo install --tag` 命令，发版时随版本号更新）。分支 `newbdez33/readme-upgrade`，文档 PR，不发版。
 - `ccsw import --from-cswap [DIR] [--retire] [--json]`：直接读 claude-swap 的存储（`sequence.json` 名单、macOS Keychain `claude-swap` 条目或 base64 `.enc` 凭证、`configs/` 的 `.claude.json` 快照），在内存里拼成 cswap 导出包后走现有导入器；`--retire` 在至少导入 1 个账号后把目录改名为 `<dir>.migrated-<时间戳>`；退出码 2 表示无可导入（无存储 / 空名单 / 已迁移）；`--json` 输出报告供 token-beats 桌面版首次启动时调用。release 矩阵新增 `x86_64-unknown-linux-musl` 静态包（WSL 用）。PR #13，版本 `v0.8.0`；发版清单核对：本机 Claude Code 为 2.1.296，`FALLBACK_CLI_VERSION` 同步更新。实施计划 `docs/plans/2026-10-10-ccsw-import-from-cswap.md`。
-- 当前工作区为 `.worktrees/import-from-cswap`；当前分支为 `newbdez33/import-from-cswap`。
+- reset card 加最早到期提示：`cedar_ember` 里被计入的 grant 取最早 `ends_at`，存为 `NormalizedUsage.reset_credits_end_at`（缓存里的可选字段，旧缓存读为空，下次抓取补上）；卡片表头和 mini 行显示 `♥ 2 (in 10d)`，不足一天显示 `in 5h 12m`，缓存过旧超过 `ends_at` 显示 `expired`；`--json` 不输出。`FetchRecord` 因此加了 `allow(clippy::large_enum_variant)`。分支 `newbdez33/tui-cursor-and-reset`，版本 `v0.8.1`；发版清单核对：本机 Claude Code 为 2.1.296，`FALLBACK_CLI_VERSION` 未变。
+- TUI 光标可见问题已排查：pty 抓包显示每帧绘制后都发 `ESC[?25l`，运行期间（含鼠标点击、按键）没有 `ESC[?25h`，只有退出时才显示光标；程序侧无问题，是 Orca 终端（1.4.222）未执行隐藏。程序不做 workaround。
+- 当前工作区为 `char`；当前分支为 `newbdez33/tui-cursor-and-reset`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换

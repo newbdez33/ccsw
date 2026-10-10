@@ -12,6 +12,7 @@ use ratatui::widgets::{
 
 use crate::provider::Provider;
 use crate::store::usage_store::{UsageEntry, UsageSentinel};
+use crate::usage_math::parse_reset;
 
 use super::data::{
     DisplayRow, age_note, credits_text, display_rows, is_stale, last_seen_note, reset_cards_text,
@@ -139,7 +140,7 @@ fn card_lines(
     if let Some(note) = age_note(acc.usage.age_s) {
         header.push_span(Span::styled(format!("   {note}"), p.muted_style()));
     }
-    if let Some(cards) = reset_cards_spans(reset_credits(&acc.usage), p) {
+    if let Some(cards) = reset_cards_spans(&acc.usage, now as i64, p) {
         header.push_span(Span::raw("   "));
         header.spans.extend(cards);
     }
@@ -222,18 +223,25 @@ fn card_lines(
     lines
 }
 
-fn reset_credits(usage: &UsageEntry) -> Option<u32> {
-    usage.last_good.as_ref().and_then(|last| last.reset_credits)
-}
-
-/// `♥ 2` as spans: a red heart and the green count.
-fn reset_cards_spans(count: Option<u32>, p: &Palette) -> Option<Vec<Span<'static>>> {
-    let text = reset_cards_text(count)?;
-    let (heart, count) = text.split_once(' ')?;
-    Some(vec![
+/// `♥ 2 (in 10d)` as spans: a red heart, the green count and the muted time
+/// the soonest-ending grant has left.
+fn reset_cards_spans(usage: &UsageEntry, now: i64, p: &Palette) -> Option<Vec<Span<'static>>> {
+    let last = usage.last_good.as_ref()?;
+    let ends_at = last.reset_credits_end_at.as_deref().and_then(parse_reset);
+    let text = reset_cards_text(last.reset_credits, ends_at, now)?;
+    let (heart, rest) = text.split_once(' ')?;
+    let (count, hint) = match rest.split_once(' ') {
+        Some((count, hint)) => (count, Some(hint)),
+        None => (rest, None),
+    };
+    let mut spans = vec![
         Span::styled(heart.to_string(), p.bold_crit()),
         Span::styled(format!(" {count}"), p.bold_ok()),
-    ])
+    ];
+    if let Some(hint) = hint {
+        spans.push(Span::styled(format!(" {hint}"), p.muted_style()));
+    }
+    Some(spans)
 }
 
 /// The one-line form used for inactive accounts on the dashboard:
@@ -293,7 +301,7 @@ pub fn mini_line(acc: &AccountSnapshot, now: f64, p: &Palette) -> Line<'static> 
         }
         parts.push(part);
     }
-    if let Some(cards) = reset_cards_spans(reset_credits(usage), p) {
+    if let Some(cards) = reset_cards_spans(usage, now as i64, p) {
         parts.push(cards);
     }
     if parts.is_empty() {
@@ -758,6 +766,28 @@ mod tests {
         assert_eq!(cards.style.fg, Some(p.ok), "green");
         assert!(cards.style.add_modifier.contains(Modifier::BOLD), "bold");
         assert_eq!(text(&lines[2]), "    credits $12.50");
+        credits
+            .usage
+            .last_good
+            .as_mut()
+            .unwrap()
+            .reset_credits_end_at = Some(format_iso(now as i64 + 10 * 86_400 + 3600));
+        let lines = account_card(&credits, 100, None, now, p);
+        assert_eq!(
+            text(&lines[0]),
+            " 7  c@y.z  [personal]   ♥ 2 (in 10d)",
+            "the soonest-ending grant follows the count"
+        );
+        let hint = lines[0].spans.last().unwrap();
+        assert_eq!(hint.style.fg, Some(p.muted), "the hint is muted");
+        let count = &lines[0].spans[lines[0].spans.len() - 2];
+        assert_eq!(count.style.fg, Some(p.ok), "the count stays green");
+        credits
+            .usage
+            .last_good
+            .as_mut()
+            .unwrap()
+            .reset_credits_end_at = None;
         credits.usage.last_good.as_mut().unwrap().credits = None;
         credits.usage.last_good.as_mut().unwrap().reset_credits = Some(0);
         let lines = account_card(&credits, 100, None, now, p);
@@ -817,6 +847,12 @@ mod tests {
         let cards = line.spans.last().unwrap();
         assert_eq!(cards.style.fg, Some(p.ok), "green");
         assert!(cards.style.add_modifier.contains(Modifier::BOLD), "bold");
+        acc.usage.last_good.as_mut().unwrap().reset_credits_end_at =
+            Some(format_iso(now as i64 + 5 * 3600 + 12 * 60));
+        assert!(
+            text(&mini_line(&acc, now, p)).ends_with("Fable (!) · ♥ 2 (in 5h 12m)"),
+            "under a day the hint keeps hours and minutes"
+        );
         acc.usage.last_good.as_mut().unwrap().reset_credits = Some(0);
         assert!(
             text(&mini_line(&acc, now, p)).ends_with("Fable (!)"),

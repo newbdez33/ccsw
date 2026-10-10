@@ -501,6 +501,7 @@ mod tests {
             limited: false,
             plan_type: None,
             reset_credits: None,
+            reset_credits_end_at: None,
             spend: None,
         });
         e.fetched_at = Some(now as f64 - 10.0);

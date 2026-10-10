@@ -58,18 +58,18 @@ Release binary — fetch the current release and replace the `ccsw` already on y
 (`SHA256SUMS` next to the archives lists their checksums):
 
 ```bash
-VERSION=v0.8.0; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl
+VERSION=v0.8.1; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl
 curl -fsSL "https://github.com/newbdez33/ccsw/releases/download/$VERSION/ccsw-$VERSION-$TARGET.tar.gz" | tar xz
 install "ccsw-$VERSION-$TARGET/ccsw" "$(command -v ccsw)"
 ```
 
-On Windows, download `ccsw-v0.8.0-x86_64-pc-windows-msvc.zip` from the
+On Windows, download `ccsw-v0.8.1-x86_64-pc-windows-msvc.zip` from the
 [releases page](https://github.com/newbdez33/ccsw/releases) and replace `ccsw.exe`.
 
 From source:
 
 ```bash
-cargo install --git https://github.com/newbdez33/ccsw --tag v0.8.0 --locked --force
+cargo install --git https://github.com/newbdez33/ccsw --tag v0.8.1 --locked --force
 ```
 
 `ccsw upgrade` only prints these instructions; ccsw does not update itself.
@@ -155,7 +155,8 @@ cached for three minutes, so run `ccsw list` again to fill in the remaining rows
 `--fetch-all` to measure every stale row at once. Each account's poll budget still applies.
 Claude rows add a `$$` line for extra-usage spend and per-model windows such as
 `Fable: 62%`. The dashboard shows an account's saved limit resets (Codex's reset credits,
-Claude Code's `/limit-reset` grants) as a red heart with a green count (`♥ n`). Anthropic lists those grants only
+Claude Code's `/limit-reset` grants) as a red heart with a green count (`♥ n`); when a Claude grant
+has an end date, the soonest one follows as `(in 10d)`. Anthropic lists those grants only
 for the Claude Code CLI, so Claude usage requests identify as the installed Claude Code
 (`claude-cli/<version> (external, cli) ccsw/<version>`, the version read from the `claude`
 on your `PATH`).

@@ -1,6 +1,6 @@
 [package]
 name = "ccsw"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Multi-account switcher for the OpenAI Codex CLI and Claude Code (cswap-compatible interface)"
