@@ -1,5 +1,5 @@
-//! `codex::usage::fetch_usage` against an axum mock of the usage and token
-//! endpoints, reached through the `CCSW_USAGE_URL` / `CCSW_TOKEN_URL`
+//! `codex::usage::fetch_usage` against an axum mock of the usage, reset credit
+//! list and token endpoints, reached through `CCSW_USAGE_URL` / `CCSW_TOKEN_URL`
 //! overrides.
 //!
 //! The mock answers by the credential it is shown: the bearer token picks the
@@ -35,6 +35,9 @@ struct Recorded {
     account_id: Option<String>,
     fedramp: Option<String>,
     user_agent: Option<String>,
+    accept: Option<String>,
+    beta: Option<String>,
+    originator: Option<String>,
     body: Value,
 }
 
@@ -58,6 +61,9 @@ impl Mock {
             account_id: header("chatgpt-account-id"),
             fedramp: header("x-openai-fedramp"),
             user_agent: header("user-agent"),
+            accept: header("accept"),
+            beta: header("openai-beta"),
+            originator: header("originator"),
             body,
         });
     }
@@ -110,6 +116,17 @@ async fn usage(State(mock): State<Arc<Mock>>, headers: HeaderMap) -> Response {
     }
     match bearer {
         "at-good" => Json(usage_body()).into_response(),
+        bearer if bearer.starts_with("at-reset-") => {
+            let mut body = usage_body();
+            body["rate_limit_reset_credits"] = match bearer {
+                "at-reset-zero" => json!({"available_count": 0}),
+                "at-reset-inline" => json!({"available_count": 2, "credits": [
+                    {"id": "inline", "expires_at": "2026-10-22T16:00:00Z"}
+                ]}),
+                _ => json!({"available_count": 2, "applicable_available_count": 2}),
+            };
+            Json(body).into_response()
+        }
         "at-limited" => (
             StatusCode::TOO_MANY_REQUESTS,
             [("Retry-After", "7")],
@@ -127,6 +144,29 @@ async fn usage(State(mock): State<Arc<Mock>>, headers: HeaderMap) -> Response {
             Json(json!({"detail": "Unauthorized"})),
         )
             .into_response(),
+    }
+}
+
+async fn reset_credits(State(mock): State<Arc<Mock>>, headers: HeaderMap) -> Response {
+    mock.record("/rate-limit-reset-credits", &headers, Value::Null);
+    match headers.get("authorization").and_then(|v| v.to_str().ok()) {
+        Some("Bearer at-reset-denied") => StatusCode::UNAUTHORIZED.into_response(),
+        Some("Bearer at-reset-forbidden") => StatusCode::FORBIDDEN.into_response(),
+        Some("Bearer at-reset-throttled") => {
+            (StatusCode::TOO_MANY_REQUESTS, [("Retry-After", "300")]).into_response()
+        }
+        Some("Bearer at-reset-unavailable") => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Some("Bearer at-reset-invalid-json") => "not json".into_response(),
+        Some("Bearer at-reset-invalid-body") => Json(json!({"credits": null})).into_response(),
+        _ => Json(json!({"available_count": 3, "credits": [
+            {"id": "later", "reset_type": "codex_rate_limits", "status": "available",
+             "expires_at": "2026-10-25T16:00:00Z"},
+            {"id": "first", "reset_type": "codex_rate_limits", "status": "available",
+             "expires_at": "2026-10-22T16:00:00.123456Z"},
+            {"id": "used", "reset_type": "codex_rate_limits", "status": "consumed",
+             "expires_at": "2026-10-20T16:00:00Z"}
+        ]}))
+        .into_response(),
     }
 }
 
@@ -151,6 +191,16 @@ async fn token(
             "refresh_token": "rt-next"
         }))
         .into_response(),
+        "rt-reset-live" | "rt-reset-denied" => Json(json!({
+            "id_token": id_token(now_unix() + 86_400),
+            "access_token": if body["refresh_token"] == "rt-reset-live" {
+                "at-reset-live"
+            } else {
+                "at-reset-denied"
+            },
+            "refresh_token": "rt-next"
+        }))
+        .into_response(),
         "rt-rotate-only" => Json(json!({"refresh_token": "rt-next"})).into_response(),
         "rt-dead" => (
             StatusCode::BAD_REQUEST,
@@ -169,6 +219,7 @@ async fn token(
 async fn start(mock: Arc<Mock>) -> SocketAddr {
     let app = Router::new()
         .route("/usage", get(usage))
+        .route("/rate-limit-reset-credits", get(reset_credits))
         .route("/token", post(token))
         .with_state(mock);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -250,6 +301,113 @@ async fn usage_200_parses_and_sends_the_routing_headers() {
     assert_eq!(requests[0].fedramp.as_deref(), Some("true"));
     let ua = requests[0].user_agent.clone().unwrap();
     assert!(ua.starts_with("codex_cli_rs/0.144.1 ("), "{ua}");
+}
+
+#[tokio::test]
+async fn reset_credit_expiry_is_fetched_when_usage_only_has_the_count() {
+    let auth = chatgpt_auth(Some("at-reset-live"), Some("rt-live"), FAR);
+    let (outcome, mock) = run(&auth).await;
+    assert_eq!(outcome.refreshed, None);
+    let usage = outcome.result.unwrap();
+    assert_eq!(
+        usage.reset_credits,
+        Some(2),
+        "keep the usage endpoint's count"
+    );
+    assert_eq!(
+        usage.reset_credits_end_at.as_deref(),
+        Some("2026-10-22T16:00:00Z")
+    );
+    assert_eq!(
+        ccsw::tui::data::reset_cards_text(
+            usage.reset_credits,
+            usage
+                .reset_credits_end_at
+                .as_deref()
+                .and_then(ccsw::usage_math::parse_reset),
+            ccsw::usage_math::parse_reset("2026-10-12T16:00:00Z").unwrap(),
+        )
+        .as_deref(),
+        Some("♥ 2 (in 10d)")
+    );
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let list = &requests[1];
+    assert_eq!(list.path, "/rate-limit-reset-credits");
+    assert_eq!(list.bearer.as_deref(), Some("at-reset-live"));
+    assert_eq!(list.account_id.as_deref(), Some(ACCOUNT_ID));
+    assert_eq!(list.fedramp.as_deref(), Some("true"));
+    assert_eq!(list.accept.as_deref(), Some("application/json"));
+    assert_eq!(list.beta.as_deref(), Some("codex-1"));
+    assert_eq!(list.originator.as_deref(), Some("Codex Desktop"));
+    assert_eq!(list.user_agent, requests[0].user_agent);
+}
+
+#[tokio::test]
+async fn reset_credit_list_is_skipped_when_no_expiry_is_needed() {
+    for (bearer, count, expiry) in [
+        ("at-good", None, None),
+        ("at-reset-zero", Some(0), None),
+        ("at-reset-inline", Some(2), Some("2026-10-22T16:00:00Z")),
+    ] {
+        let (outcome, mock) = run(&chatgpt_auth(Some(bearer), None, FAR)).await;
+        let usage = outcome.result.unwrap();
+        assert_eq!(usage.reset_credits, count);
+        assert_eq!(usage.reset_credits_end_at.as_deref(), expiry);
+        assert_eq!(mock.requests().len(), 1, "{bearer}");
+    }
+}
+
+#[tokio::test]
+async fn reset_credit_list_failures_keep_successful_usage_without_refresh_or_retry() {
+    for bearer in [
+        "at-reset-denied",
+        "at-reset-forbidden",
+        "at-reset-throttled",
+        "at-reset-unavailable",
+        "at-reset-invalid-json",
+        "at-reset-invalid-body",
+    ] {
+        let auth = chatgpt_auth(Some(bearer), Some("rt-live"), FAR);
+        let (outcome, mock) = run(&auth).await;
+        assert_eq!(outcome.refreshed, None);
+        let usage = outcome.result.unwrap();
+        assert_eq!(usage.five_hour.unwrap().pct, 42.0);
+        assert_eq!(usage.reset_credits, Some(2));
+        assert_eq!(usage.reset_credits_end_at, None);
+        assert_eq!(mock.requests().len(), 2, "{bearer}");
+    }
+}
+
+#[tokio::test]
+async fn reset_credit_list_uses_the_rotated_token_and_keeps_the_rotation_on_failure() {
+    for (refresh, bearer, expiry) in [
+        (
+            "rt-reset-live",
+            "at-reset-live",
+            Some("2026-10-22T16:00:00Z"),
+        ),
+        ("rt-reset-denied", "at-reset-denied", None),
+    ] {
+        let auth = chatgpt_auth(Some("at-stale"), Some(refresh), FAR);
+        let (outcome, mock) = run(&auth).await;
+        let rotated = outcome.refreshed.unwrap();
+        assert_eq!(rotated.access_token, bearer);
+        assert_eq!(rotated.refresh_token, "rt-next");
+        assert_eq!(
+            outcome.result.unwrap().reset_credits_end_at.as_deref(),
+            expiry
+        );
+        assert_eq!(
+            mock.trail(),
+            vec![
+                ("/usage".into(), Some("at-stale".into())),
+                ("/token".into(), None),
+                ("/usage".into(), Some(bearer.into())),
+                ("/rate-limit-reset-credits".into(), Some(bearer.into())),
+            ]
+        );
+    }
 }
 
 #[tokio::test]
