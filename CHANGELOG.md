@@ -3,6 +3,15 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.8.2 — 2026-10-10
+
+### Added
+
+- Codex accounts show when their soonest reset credit expires, the same
+  `♥ 3 (in 12d)` hint Claude accounts got in v0.8.1: the earliest `expires_at`
+  of the counted `rate_limit_reset_credits.credits[]` entries is kept as
+  `reset_credits_end_at` and appears after the account's next fetch.
+
 ## v0.8.1 — 2026-10-10
 
 ### Added
