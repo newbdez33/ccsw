@@ -285,22 +285,22 @@ fn import_from_cswap_accepts_an_explicit_directory_and_keeps_it_without_retire()
 }
 
 #[test]
-fn all_accounts_already_present_imports_nothing_and_keeps_the_store() {
+fn all_accounts_already_present_imports_nothing_but_still_retires() {
     let cli = Cli::new();
     let dir = cswap_store(cli.root.path(), &[(1, "one@example.com", "crt-1")]);
     assert_eq!(cli.run(&["import", "--from-cswap"]).status, 0);
-    // Same identity again, no --force: the importer skips it.
+    // Same identity again, no --force: the importer skips it — but every
+    // store account is now in ccsw, so the store can be retired.
     let run = cli.run(&["import", "--from-cswap", "--retire", "--json"]);
     assert_eq!(run.status, 0, "{}", run.stderr);
     let report = run.json();
     assert_eq!(report["imported"], 0);
     assert_eq!(report["skipped"], 1);
-    assert_eq!(
-        report["retired"],
-        serde_json::Value::Null,
-        "imported 0 → not retired"
+    assert!(
+        report["retired"].is_string(),
+        "retired after a successful run: {report}"
     );
-    assert!(dir.join("sequence.json").is_file());
+    assert!(!dir.exists(), "the store was renamed");
 }
 
 #[test]
@@ -322,4 +322,54 @@ fn a_corrupt_slot_is_reported_and_the_rest_imported() {
         "{}",
         run.stderr
     );
+}
+
+#[test]
+fn import_from_cswap_json_error_uses_the_standard_envelope() {
+    let cli = Cli::new();
+    let dir = cli.root.path().join("broken");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("sequence.json"), "{not json").unwrap();
+    let run = cli.run(&["import", "--from-cswap", dir.to_str().unwrap(), "--json"]);
+    assert_eq!(run.status, 1, "{}", run.stderr);
+    let report = run.json();
+    assert_eq!(report["schemaVersion"], 2);
+    assert_eq!(report["error"]["type"], "TransferError");
+    assert!(
+        report["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not valid JSON"),
+        "{report}"
+    );
+}
+
+#[test]
+fn import_file_json_prints_the_report() {
+    let cli = Cli::new();
+    let export = json!({
+        "version": 1,
+        "exportedAt": "2026-01-01T00:00:00Z",
+        "exportedFrom": "macos",
+        "swapVersion": "0.25.0",
+        "encrypted": false,
+        "activeAccountNumber": 1,
+        "accounts": [{
+            "number": 1, "email": "alice@example.com", "uuid": "acct-uuid",
+            "organizationUuid": "org-a", "organizationName": "Acme",
+            "added": "2024-01-01T00:00:00Z",
+            "credentials": {"claudeAiOauth": {"accessToken": "at", "refreshToken": "crt-a",
+                            "expiresAt": 4_102_444_800_000i64, "scopes": ["user:inference"]}},
+            "config": {"oauthAccount": {"emailAddress": "alice@example.com", "accountUuid": "acct-uuid",
+                       "organizationUuid": "org-a", "organizationName": "Acme"}}
+        }]
+    });
+    let file = cli.root.path().join("backup.cswap");
+    std::fs::write(&file, export.to_string()).unwrap();
+    let run = cli.run(&["import", file.to_str().unwrap(), "--json"]);
+    assert_eq!(run.status, 0, "{}", run.stderr);
+    let report = run.json();
+    assert_eq!(report["schemaVersion"], 2);
+    assert_eq!(report["imported"], 1);
+    assert_eq!(report["retired"], serde_json::Value::Null);
 }

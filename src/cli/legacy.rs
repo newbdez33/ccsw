@@ -459,9 +459,9 @@ options:
                         always carry each account's stored identity
   --from-cswap          With 'import': read a claude-swap store directory
                         instead of an export file
-  --retire              With 'import --from-cswap': rename the store to
-                        <dir>.migrated-<stamp> once at least one account was
-                        imported, so a leftover claude-swap finds no accounts
+  --retire              With 'import --from-cswap': after a successful run,
+                        rename the store to <dir>.migrated-<stamp> so a
+                        leftover claude-swap finds no accounts
   --provider {{codex,claude}}
                         Act on one provider; the same as the word after
                         'switch', 'add', 'list' or 'status'

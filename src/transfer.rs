@@ -182,19 +182,47 @@ pub fn import_cmd(paths: &Paths, path: &str, opts: ImportOptions) -> i32 {
     } else {
         ImportSource::File(expand_tilde(path))
     };
-    exit_status(import_accounts(paths, source, opts.force).map(|_| ()))
+    match import_accounts(paths, source, opts.force) {
+        Ok(report) => {
+            if opts.json {
+                print_report(&report, None);
+            }
+            0
+        }
+        Err(err) => fail(opts.json, &err),
+    }
 }
 
-/// `import --from-cswap [DIR] [--retire] [--json]`: exit 0 with ≥ 1
-/// account imported, [`EXIT_NOTHING_TO_IMPORT`] when there is no store to
-/// read, 1 on any error. `--retire` renames the store only after a run
-/// that imported at least one account.
+/// The `--json` import report: one document on stdout.
+fn print_report(report: &ImportReport, retired: Option<&Path>) {
+    print!(
+        "{}",
+        crate::jsonout::render_document(&json!({
+            "schemaVersion": crate::model::SCHEMA_VERSION,
+            "imported": report.imported, "overwritten": report.overwritten,
+            "skipped": report.skipped, "replaced": report.replaced,
+            "retired": retired.map(|p| p.display().to_string()),
+        }))
+    );
+}
+
+/// `import --from-cswap [DIR] [--retire] [--json]`: exit 0 when the store
+/// was read and imported (accounts already present count as skipped),
+/// [`EXIT_NOTHING_TO_IMPORT`] when there is no store to read, 1 on any
+/// error. `--retire` renames the store after any successful run: every
+/// account the store held is in ccsw by then, so nothing is lost and a
+/// leftover claude-swap finds no tokens to refresh.
 fn import_from_cswap_cmd(paths: &Paths, path: &str, opts: ImportOptions) -> i32 {
     use crate::cswap_store::{self, Probe};
     let dir = if path.is_empty() {
         match cswap_store::default_dir() {
             Some(dir) => dir,
-            None => return fail(opts.json, "could not determine the home directory"),
+            None => {
+                return fail(
+                    opts.json,
+                    &CcswError::config("could not determine the home directory"),
+                );
+            }
         }
     } else {
         expand_tilde(path)
@@ -216,7 +244,7 @@ fn import_from_cswap_cmd(paths: &Paths, path: &str, opts: ImportOptions) -> i32 
             "empty",
             format!("the claude-swap store at {} has no accounts", dir.display()),
         )),
-        Err(err) => return fail(opts.json, &err.to_string()),
+        Err(err) => return fail(opts.json, &err),
     };
     if let Some((reason, human)) = reason {
         if opts.json {
@@ -239,9 +267,9 @@ fn import_from_cswap_cmd(paths: &Paths, path: &str, opts: ImportOptions) -> i32 
         opts.force,
     ) {
         Ok(report) => report,
-        Err(err) => return fail(opts.json, &err.to_string()),
+        Err(err) => return fail(opts.json, &err),
     };
-    let retired = if opts.retire && report.imported >= 1 {
+    let retired = if opts.retire {
         match cswap_store::retire(&dir) {
             Ok(target) => {
                 printer::error(&format!(
@@ -250,37 +278,26 @@ fn import_from_cswap_cmd(paths: &Paths, path: &str, opts: ImportOptions) -> i32 
                 ));
                 Some(target)
             }
-            Err(err) => return fail(opts.json, &err.to_string()),
+            Err(err) => return fail(opts.json, &err),
         }
     } else {
         None
     };
     if opts.json {
-        print!(
-            "{}",
-            crate::jsonout::render_document(&json!({
-                "schemaVersion": crate::model::SCHEMA_VERSION,
-                "imported": report.imported, "overwritten": report.overwritten,
-                "skipped": report.skipped, "replaced": report.replaced,
-                "retired": retired.as_ref().map(|p| p.display().to_string()),
-            }))
-        );
+        print_report(&report, retired.as_deref());
     }
     0
 }
 
-/// Error → exit 1, as the `--json` envelope or a stderr line.
-fn fail(json: bool, message: &str) -> i32 {
+/// Error → exit 1, as the standard `--json` error envelope or a stderr line.
+fn fail(json: bool, err: &CcswError) -> i32 {
     if json {
         print!(
             "{}",
-            crate::jsonout::render_document(&json!({
-                "schemaVersion": crate::model::SCHEMA_VERSION,
-                "error": {"type": "transfer", "message": message},
-            }))
+            crate::jsonout::render_document(&crate::jsonout::error_envelope(err))
         );
     } else {
-        printer::error(&format!("Error: {message}"));
+        printer::error(&format!("Error: {err}"));
     }
     1
 }

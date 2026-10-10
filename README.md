@@ -291,8 +291,10 @@ keep them private.
 roster from `sequence.json`, each account's credentials from the macOS Keychain (service
 `claude-swap`) or its base64 `.enc` file, and the `.claude.json` snapshot from `configs/`.
 `DIR` defaults to claude-swap's location (`~/.claude-swap-backup`, or
-`$XDG_DATA_HOME/claude-swap` on Linux). Add `--retire` to rename the store to
-`<dir>.migrated-<stamp>` once at least one account was imported, so a leftover claude-swap
+`$XDG_DATA_HOME/claude-swap` on Linux). Reads are `.enc`-wins, as in claude-swap: the
+Keychain item is consulted only when the file is absent or corrupt. Add `--retire` to
+rename the store to `<dir>.migrated-<stamp>` after a successful run (every account it held
+is in ccsw by then, including ones that were already managed), so a leftover claude-swap
 cannot keep refreshing the same tokens; `--json` prints the report. Exit 2 means there was
 nothing to import (no store, an empty roster, or an already-migrated one).
 

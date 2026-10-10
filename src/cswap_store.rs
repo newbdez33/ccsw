@@ -1,10 +1,11 @@
 //! Read a claude-swap store directly, as the shape of a cswap export, so
 //! `import --from-cswap` can reuse the bundle importer (ccsw-engine spec,
 //! "ccsw side"). Layout from claude-swap 0.25.0: `sequence.json` holds the
-//! roster; per-account credentials are a Keychain item (macOS, service
-//! `claude-swap`, account `account-{n}-{email}`) with a base64 `.enc` file
-//! fallback (`credentials/.creds-{n}-{email}.enc`, the only backend off
-//! macOS); `configs/.claude-config-{n}-{email}.json` is the `.claude.json`
+//! roster; per-account credentials are a base64 `.enc` file
+//! (`credentials/.creds-{n}-{email}.enc`, the only backend off macOS) or,
+//! on macOS, a Keychain item (service `claude-swap`, account
+//! `account-{n}-{email}`) — reads are `.enc`-wins, as in claude-swap;
+//! `configs/.claude-config-{n}-{email}.json` is the `.claude.json`
 //! snapshot the export's `config` field carries.
 
 use std::fs;
@@ -129,8 +130,9 @@ pub struct StoreEnvelope {
 }
 
 /// Build the envelope. `use_keychain` is `paths.keychain_enabled` (macOS
-/// with `CCSW_KEYCHAIN` not off): the Keychain item is tried first and the
-/// `.enc` file is the fallback; off macOS only the file is read.
+/// with `CCSW_KEYCHAIN` not off): the `.enc` file wins, the Keychain item
+/// is read only when the file is absent or corrupt; off macOS only the
+/// file is read.
 pub fn envelope(
     dir: &Path,
     security: &dyn SecurityCli,
@@ -194,8 +196,11 @@ pub fn envelope(
     })
 }
 
-/// Keychain first (when enabled), then the `.enc` file. `Ok(None)` = no
-/// credential anywhere; `Err(reason)` = a copy exists but is unreadable.
+/// The `.enc` file first, the Keychain only when the file is absent or
+/// corrupt — claude-swap's own `.enc`-wins rule: a file beside a Keychain
+/// item was written while the Keychain was unusable and holds the newer
+/// refresh token. `Ok(None)` = no credential anywhere; `Err(reason)` = a
+/// copy exists but is unreadable.
 fn read_credentials(
     dir: &Path,
     keychain: &Keychain<'_>,
@@ -203,6 +208,11 @@ fn read_credentials(
     slot: u32,
     email: &str,
 ) -> std::result::Result<Option<Value>, String> {
+    let file_problem = match read_enc(dir, slot, email) {
+        Ok(Some(value)) => return Ok(Some(value)),
+        Ok(None) => None,
+        Err(reason) => Some(reason),
+    };
     if use_keychain {
         let account = format!("account-{slot}-{email}");
         match keychain.get_password(KEYCHAIN_SERVICE, &account) {
@@ -213,10 +223,18 @@ fn read_credentials(
             }
             Ok(None) => {}
             Err(err) => {
-                tracing::warn!(slot, error = %err, "claude-swap Keychain item unreadable; trying the .enc file");
+                tracing::warn!(slot, error = %err, "claude-swap Keychain item unreadable");
             }
         }
     }
+    match file_problem {
+        Some(reason) => Err(reason),
+        None => Ok(None),
+    }
+}
+
+/// `credentials/.creds-{slot}-{email}.enc`: base64 of the credentials JSON.
+fn read_enc(dir: &Path, slot: u32, email: &str) -> std::result::Result<Option<Value>, String> {
     let path = dir
         .join("credentials")
         .join(format!(".creds-{slot}-{email}.enc"));
@@ -433,6 +451,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("s");
         store(&dir);
+        // No .enc files: both slots come from the Keychain.
+        fs::remove_file(dir.join("credentials/.creds-1-alice@example.com.enc")).unwrap();
+        fs::remove_file(dir.join("credentials/.creds-2-Bob+x@Example.com.enc")).unwrap();
         let fake = Fake::new();
         fake.reply(&creds("kc-a").to_string()); // slot 1 from the Keychain
         fake.reply(&creds("kc-b").to_string()); // slot 2 from the Keychain
@@ -462,14 +483,20 @@ mod tests {
     }
 
     #[test]
-    fn keychain_failure_falls_back_to_the_enc_file() {
+    fn an_enc_file_wins_over_the_keychain_without_touching_it() {
+        // claude-swap's reads are `.enc`-wins: a file beside a Keychain item
+        // was written while the Keychain was unusable and holds the newer
+        // refresh token, so the Keychain copy may be superseded.
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("s");
         store(&dir);
         let fake = Fake::new();
-        fake.fail(); // slot 1: Keychain locked → .enc
-        // slot 2: default reply = item not found (44) → .enc
+        fake.reply(&creds("kc-a").to_string()); // must stay unread
         let out = envelope(&dir, &fake, true).unwrap();
+        assert!(
+            fake.calls.borrow().is_empty(),
+            "the Keychain is not consulted while an .enc file exists"
+        );
         let accounts = out.envelope["accounts"].as_array().unwrap();
         assert_eq!(
             accounts[0]["credentials"]["claudeAiOauth"]["refreshToken"],
@@ -480,6 +507,54 @@ mod tests {
             "crt-b"
         );
         assert_eq!(out.readable, 2);
+    }
+
+    #[test]
+    fn keychain_failure_without_an_enc_file_skips_the_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("s");
+        store(&dir);
+        fs::remove_file(dir.join("credentials/.creds-1-alice@example.com.enc")).unwrap();
+        let fake = Fake::new();
+        fake.fail(); // slot 1: Keychain locked, no file → skipped
+        let out = envelope(&dir, &fake, true).unwrap();
+        assert_eq!(out.readable, 1);
+        assert_eq!(
+            fake.calls.borrow().len(),
+            1,
+            "only slot 1 reached the Keychain"
+        );
+        assert_eq!(out.envelope["accounts"].as_array().unwrap()[0]["number"], 2);
+        assert!(
+            out.notices[0].contains("Skipping Account-1 (alice@example.com)"),
+            "{}",
+            out.notices[0]
+        );
+    }
+
+    #[test]
+    fn a_corrupt_enc_file_falls_back_to_the_keychain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("s");
+        store(&dir);
+        fs::write(
+            dir.join("credentials/.creds-2-Bob+x@Example.com.enc"),
+            "%%not-base64%%",
+        )
+        .unwrap();
+        let fake = Fake::new();
+        fake.reply(&creds("kc-b").to_string()); // slot 2 from the Keychain
+        let out = envelope(&dir, &fake, true).unwrap();
+        assert_eq!(out.readable, 2);
+        assert!(out.notices.is_empty(), "{:?}", out.notices);
+        let accounts = out.envelope["accounts"].as_array().unwrap();
+        assert_eq!(
+            accounts[1]["credentials"]["claudeAiOauth"]["refreshToken"],
+            "kc-b"
+        );
+        let calls = fake.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].contains(&"account-2-Bob+x@Example.com".to_string()));
     }
 
     #[test]

@@ -13,12 +13,13 @@ All notable changes to `ccsw` are recorded here. The format follows
   `.claude.json` snapshot — and imports it through the regular importer, so
   identity matching, slot numbers and the Codex roster behave as for any export.
   DIR defaults to claude-swap's location on the platform (`~/.claude-swap-backup`;
-  `$XDG_DATA_HOME/claude-swap` on Linux). `--retire` renames the store to
-  `<dir>.migrated-<stamp>` once at least one account was imported, so a leftover
-  claude-swap finds no accounts to refresh. Exit 2 means there was nothing to
-  import (no store, an empty roster, or an already-migrated store); `--json`
-  prints the report for scripts such as the Token Beats desktop app, which runs
-  this once on first launch.
+  `$XDG_DATA_HOME/claude-swap` on Linux). Reads are `.enc`-wins, as in claude-swap.
+  `--retire` renames the store to `<dir>.migrated-<stamp>` after a successful run
+  (every account it held is in ccsw by then), so a leftover claude-swap finds no
+  accounts to refresh. Exit 2 means there was nothing to import (no store, an
+  empty roster, or an already-migrated store); `--json` prints the report — also
+  for file and stdin imports — for scripts such as the Token Beats desktop app,
+  which runs this once on first launch.
 - A static `x86_64-unknown-linux-musl` release archive, for hosts whose glibc is
   older than the builder's (WSL distributions).
 
