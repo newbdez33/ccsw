@@ -230,6 +230,38 @@ fn import_from_cswap_reads_the_default_store_and_retires_it() {
 }
 
 #[test]
+fn import_from_cswap_counts_accounts_without_credentials_as_skipped() {
+    let cli = Cli::new();
+    let dir = cswap_store(
+        cli.root.path(),
+        &[
+            (1, "one@example.com", "crt-1"),
+            (2, "two@example.com", "crt-2"),
+        ],
+    );
+    // claude-swap lost slot 2's token file: the roster still lists the account.
+    std::fs::remove_file(dir.join("credentials/.creds-2-two@example.com.enc")).unwrap();
+    let run = cli.run(&["import", "--from-cswap", "--retire", "--json"]);
+    assert_eq!(run.status, 0, "{}", run.stderr);
+    let report = run.json();
+    assert_eq!(report["imported"], 1);
+    assert_eq!(
+        report["skipped"], 1,
+        "the account without credentials is reported, not silently dropped: {report}"
+    );
+    assert!(report["retired"].is_string(), "{report}");
+    assert!(
+        run.stderr
+            .contains("Skipping Account-2 (two@example.com): no stored credentials"),
+        "{}",
+        run.stderr
+    );
+    let roster = cli.roster();
+    assert_eq!(roster["accounts"]["1"]["email"], "one@example.com");
+    assert!(roster["accounts"].get("2").is_none(), "{roster}");
+}
+
+#[test]
 fn a_second_run_after_retire_exits_2() {
     let cli = Cli::new();
     cswap_store(cli.root.path(), &[(1, "one@example.com", "crt-1")]);

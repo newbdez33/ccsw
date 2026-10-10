@@ -3,6 +3,18 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.8.3 — 2026-10-10
+
+### Fixed
+
+- `import --from-cswap` now counts the claude-swap accounts it could not read
+  (roster entries with no `.enc` file, no Keychain item, or no email) in the
+  report's `skipped`, so `--json` consumers and the `Done: … skipped` line
+  account for every account the store listed. They were already announced on
+  stderr as `Skipping Account-N …`, but the counter stayed at zero and a
+  `--retire` run could rename the store with no machine-readable trace that an
+  account had been left behind.
+
 ## v0.8.2 — 2026-10-10
 
 ### Added

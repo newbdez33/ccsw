@@ -294,10 +294,12 @@ roster from `sequence.json`, each account's credentials from the macOS Keychain 
 `DIR` defaults to claude-swap's location (`~/.claude-swap-backup`, or
 `$XDG_DATA_HOME/claude-swap` on Linux). Reads are `.enc`-wins, as in claude-swap: the
 Keychain item is consulted only when the file is absent or corrupt. Add `--retire` to
-rename the store to `<dir>.migrated-<stamp>` after a successful run (every account it held
-is in ccsw by then, including ones that were already managed), so a leftover claude-swap
-cannot keep refreshing the same tokens; `--json` prints the report. Exit 2 means there was
-nothing to import (no store, an empty roster, or an already-migrated one).
+rename the store to `<dir>.migrated-<stamp>` after a successful run (every readable account
+it held is in ccsw by then, including ones that were already managed), so a leftover
+claude-swap cannot keep refreshing the same tokens. An account whose credentials cannot be
+read is announced on stderr (`Skipping Account-N …`) and counted as skipped; `--json` prints
+the report (`imported`, `overwritten`, `skipped`, `replaced`, `retired`). Exit 2 means there
+was nothing to import (no store, an empty roster, or an already-migrated one).
 
 Every verb accepts `--help`; `ccsw help` lists them all. The `cswap` flag spellings
 (`ccsw --list`, `ccsw --switch-to 2`, …) keep working.
