@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 
 use crate::errors::{CcswError, Result};
 use crate::model::{Credits, NormalizedUsage, ScopedWindow, WindowUsage, format_iso};
+use crate::usage_math::parse_reset;
 
 use super::auth::AuthJson;
 use super::jwt::{AccountInfo, is_expiring};
@@ -399,6 +400,7 @@ pub fn parse_usage(body: &Value) -> std::result::Result<NormalizedUsage, String>
     ) || flag("/spend_control/reached")
         || flag("/rate_limit/limit_reached");
 
+    let reset_credits = parse_reset_credits(body);
     let usage = NormalizedUsage {
         five_hour,
         seven_day,
@@ -409,8 +411,10 @@ pub fn parse_usage(body: &Value) -> std::result::Result<NormalizedUsage, String>
             .get("plan_type")
             .and_then(Value::as_str)
             .map(str::to_string),
-        reset_credits: parse_reset_credits(body),
-        reset_credits_end_at: None,
+        reset_credits: reset_credits.as_ref().map(|credits| credits.count),
+        reset_credits_end_at: reset_credits
+            .and_then(|credits| credits.expires_at)
+            .map(format_iso),
         spend: None,
     };
     if usage.is_empty() {
@@ -478,17 +482,28 @@ fn scoped_window(item: &Value) -> Option<ScopedWindow> {
 /// `rate_limit_reset_credits` (or camelCase): the server's `available_count`,
 /// else the number of `credits[]` entries that are usable Codex resets (an
 /// `id`, `status` available or absent, `reset_type` codex or absent).
-fn parse_reset_credits(body: &Value) -> Option<u32> {
+/// The spendable reset credits of a usage body.
+struct ResetCredits {
+    count: u32,
+    /// The earliest `expires_at` among the credits that count.
+    expires_at: Option<i64>,
+}
+
+/// `rate_limit_reset_credits`: the server's `available_count` when given,
+/// else the available Codex entries with an id; the soonest expiry always
+/// comes from those entries.
+fn parse_reset_credits(body: &Value) -> Option<ResetCredits> {
     let reset = body
         .get("rate_limit_reset_credits")
         .or_else(|| body.get("rateLimitResetCredits"))?
         .as_object()?;
-    if let Some(count) = reset
+    let server_count = reset
         .get("available_count")
         .or_else(|| reset.get("availableCount"))
-        .and_then(Value::as_u64)
-    {
-        return Some(count.min(u32::MAX as u64) as u32);
+        .and_then(Value::as_u64);
+    let credits = reset.get("credits").and_then(Value::as_array);
+    if server_count.is_none() && credits.is_none() {
+        return None;
     }
     let text = |item: &Value, snake: &str, camel: &str| -> Option<String> {
         item.get(snake)
@@ -496,17 +511,25 @@ fn parse_reset_credits(body: &Value) -> Option<u32> {
             .and_then(Value::as_str)
             .map(str::to_string)
     };
-    let available = reset
-        .get("credits")?
-        .as_array()?
-        .iter()
+    let available: Vec<&Value> = credits
+        .into_iter()
+        .flatten()
         .filter(|item| text(item, "id", "id").is_some_and(|id| !id.trim().is_empty()))
         .filter(|item| {
             text(item, "reset_type", "resetType").is_none_or(|kind| kind == "codex_rate_limits")
         })
         .filter(|item| text(item, "status", "status").is_none_or(|status| status == "available"))
-        .count();
-    Some(available as u32)
+        .collect();
+    let count = match server_count {
+        Some(count) => count.min(u32::MAX as u64) as u32,
+        None => available.len() as u32,
+    };
+    let expires_at = available
+        .iter()
+        .filter_map(|item| text(item, "expires_at", "expiresAt"))
+        .filter_map(|value| parse_reset(&value))
+        .min();
+    Some(ResetCredits { count, expires_at })
 }
 
 /// `has_credits` defaults to true (older API); when false the balance is
@@ -663,6 +686,49 @@ mod tests {
         assert!(
             parse_usage(&json!({"rate_limit_reset_credits": {"available_count": 2}})).is_err(),
             "reset credits alone are not a usage measurement"
+        );
+    }
+
+    #[test]
+    fn reset_credits_record_the_earliest_expiry() {
+        let with = |reset_credits: Value| {
+            let mut body = json!({"rate_limit": {"primary_window": {"used_percent": 1}}});
+            body["rate_limit_reset_credits"] = reset_credits;
+            parse_usage(&body).unwrap()
+        };
+        let usage = with(json!({"available_count": 2, "credits": [
+            {"id": "a", "status": "available", "expires_at": "2026-07-08T00:00:00Z"},
+            {"id": "b", "status": "available", "expires_at": "2026-07-05T12:00:00Z"},
+            {"id": "c", "status": "consumed", "expires_at": "2026-07-01T00:00:00Z"},
+            {"id": "d", "reset_type": "other_product", "expires_at": "2026-07-02T00:00:00Z"},
+            {"status": "available", "expires_at": "2026-07-03T00:00:00Z"},
+            {"id": "e", "status": "available"}
+        ]}));
+        assert_eq!(
+            usage.reset_credits,
+            Some(2),
+            "the server's count still wins"
+        );
+        assert_eq!(
+            usage.reset_credits_end_at.as_deref(),
+            Some("2026-07-05T12:00:00Z"),
+            "only credits that count set the expiry, even beside a server count"
+        );
+        let camel = with(json!({"credits": [{"id": "a", "expiresAt": "2026-07-09T00:00:00Z"}]}));
+        assert_eq!(camel.reset_credits, Some(1));
+        assert_eq!(
+            camel.reset_credits_end_at.as_deref(),
+            Some("2026-07-09T00:00:00Z")
+        );
+        assert_eq!(
+            with(json!({"available_count": 1})).reset_credits_end_at,
+            None,
+            "no list, no expiry"
+        );
+        assert_eq!(
+            with(json!({"credits": [{"id": "a", "expires_at": "soon"}]})).reset_credits_end_at,
+            None,
+            "an unparsable expiry is ignored"
         );
     }
 
