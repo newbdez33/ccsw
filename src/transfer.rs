@@ -44,7 +44,24 @@ pub enum ExportTarget {
 pub enum ImportSource {
     File(PathBuf),
     Stdin,
+    /// A claude-swap store directory (`import --from-cswap`).
+    CswapStore {
+        dir: PathBuf,
+    },
 }
+
+/// Flags of `import` as the front controller parsed them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImportOptions {
+    pub force: bool,
+    pub from_cswap: bool,
+    pub retire: bool,
+    pub json: bool,
+}
+
+/// `import --from-cswap` found nothing to import (no store, an empty
+/// roster, or an already-migrated store).
+pub const EXIT_NOTHING_TO_IMPORT: i32 = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportReport {
@@ -153,14 +170,119 @@ pub fn export_cmd(paths: &Paths, path: &str, account: Option<&str>, full: bool) 
     exit_status(export_accounts(paths, target, account, full).map(|_| ()))
 }
 
-/// `import PATH` as the front controller calls it: `-` is stdin. Returns the exit status.
-pub fn import_cmd(paths: &Paths, path: &str, force: bool) -> i32 {
+/// `import PATH` as the front controller calls it: `-` is stdin. With
+/// `--from-cswap`, PATH is the claude-swap store directory (empty = the
+/// platform default). Returns the exit status.
+pub fn import_cmd(paths: &Paths, path: &str, opts: ImportOptions) -> i32 {
+    if opts.from_cswap {
+        return import_from_cswap_cmd(paths, path, opts);
+    }
     let source = if path == "-" {
         ImportSource::Stdin
     } else {
         ImportSource::File(expand_tilde(path))
     };
-    exit_status(import_accounts(paths, source, force).map(|_| ()))
+    exit_status(import_accounts(paths, source, opts.force).map(|_| ()))
+}
+
+/// `import --from-cswap [DIR] [--retire] [--json]`: exit 0 with ≥ 1
+/// account imported, [`EXIT_NOTHING_TO_IMPORT`] when there is no store to
+/// read, 1 on any error. `--retire` renames the store only after a run
+/// that imported at least one account.
+fn import_from_cswap_cmd(paths: &Paths, path: &str, opts: ImportOptions) -> i32 {
+    use crate::cswap_store::{self, Probe};
+    let dir = if path.is_empty() {
+        match cswap_store::default_dir() {
+            Some(dir) => dir,
+            None => return fail(opts.json, "could not determine the home directory"),
+        }
+    } else {
+        expand_tilde(path)
+    };
+    let reason = match cswap_store::probe(&dir) {
+        Ok(Probe::Ready { .. }) => None,
+        Ok(Probe::Missing) => Some((
+            "no-store",
+            format!("no claude-swap store at {}", dir.display()),
+        )),
+        Ok(Probe::Retired) => Some((
+            "retired",
+            format!(
+                "the claude-swap store at {} was already migrated",
+                dir.display()
+            ),
+        )),
+        Ok(Probe::Empty) => Some((
+            "empty",
+            format!("the claude-swap store at {} has no accounts", dir.display()),
+        )),
+        Err(err) => return fail(opts.json, &err.to_string()),
+    };
+    if let Some((reason, human)) = reason {
+        if opts.json {
+            print!(
+                "{}",
+                crate::jsonout::render_document(&json!({
+                    "schemaVersion": crate::model::SCHEMA_VERSION,
+                    "imported": 0, "overwritten": 0, "skipped": 0, "replaced": 0,
+                    "retired": Value::Null, "reason": reason,
+                }))
+            );
+        } else {
+            printer::error(&format!("Nothing to import: {human}"));
+        }
+        return EXIT_NOTHING_TO_IMPORT;
+    }
+    let report = match import_accounts(
+        paths,
+        ImportSource::CswapStore { dir: dir.clone() },
+        opts.force,
+    ) {
+        Ok(report) => report,
+        Err(err) => return fail(opts.json, &err.to_string()),
+    };
+    let retired = if opts.retire && report.imported >= 1 {
+        match cswap_store::retire(&dir) {
+            Ok(target) => {
+                printer::error(&format!(
+                    "Retired the claude-swap store → {}",
+                    target.display()
+                ));
+                Some(target)
+            }
+            Err(err) => return fail(opts.json, &err.to_string()),
+        }
+    } else {
+        None
+    };
+    if opts.json {
+        print!(
+            "{}",
+            crate::jsonout::render_document(&json!({
+                "schemaVersion": crate::model::SCHEMA_VERSION,
+                "imported": report.imported, "overwritten": report.overwritten,
+                "skipped": report.skipped, "replaced": report.replaced,
+                "retired": retired.as_ref().map(|p| p.display().to_string()),
+            }))
+        );
+    }
+    0
+}
+
+/// Error → exit 1, as the `--json` envelope or a stderr line.
+fn fail(json: bool, message: &str) -> i32 {
+    if json {
+        print!(
+            "{}",
+            crate::jsonout::render_document(&json!({
+                "schemaVersion": crate::model::SCHEMA_VERSION,
+                "error": {"type": "transfer", "message": message},
+            }))
+        );
+    } else {
+        printer::error(&format!("Error: {message}"));
+    }
+    1
 }
 
 fn exit_status(result: Result<()>) -> i32 {
@@ -462,7 +584,7 @@ enum Outcome {
 /// envelope order under the store lock, matching accounts on
 /// `(provider, email, organizationUuid)`.
 pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Result<ImportReport> {
-    let bytes = read_source(&source)?;
+    let bytes = read_source(paths, &source)?;
     let envelope = parse_envelope(&bytes)?;
     let mut report = ImportReport::default();
     let local = roster::read_or_empty(paths)?;
@@ -621,8 +743,24 @@ pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Resu
     Ok(report)
 }
 
-fn read_source(source: &ImportSource) -> Result<Vec<u8>> {
+fn read_source(paths: &Paths, source: &ImportSource) -> Result<Vec<u8>> {
     match source {
+        ImportSource::CswapStore { dir } => {
+            // The store becomes a cswap export in memory; its skipped-slot
+            // notices go to stderr like the importer's own.
+            let store = crate::cswap_store::envelope(dir, &SystemSecurity, paths.keychain_enabled)?;
+            for notice in &store.notices {
+                printer::error(notice);
+            }
+            if store.readable == 0 {
+                return Err(CcswError::transfer(format!(
+                    "no readable credentials in {}",
+                    dir.display()
+                )));
+            }
+            serde_json::to_vec(&store.envelope)
+                .map_err(|err| CcswError::transfer(format!("could not encode the store: {err}")))
+        }
         ImportSource::Stdin => {
             let mut bytes = Vec::new();
             io::stdin()

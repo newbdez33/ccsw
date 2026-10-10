@@ -141,6 +141,8 @@ pub struct Options {
     pub account: Option<String>,
     pub alias: Option<String>,
     pub force: bool,
+    pub from_cswap: bool,
+    pub retire: bool,
     pub full: bool,
     pub version: bool,
     pub help: bool,
@@ -182,6 +184,8 @@ pub fn parse(argv: &[String]) -> Result<Options, String> {
             "--fetch-all" => opts.fetch_all = true,
             "--json" => opts.json = true,
             "--force" => opts.force = true,
+            "--from-cswap" => opts.from_cswap = true,
+            "--retire" => opts.retire = true,
             "--full" => opts.full = true,
             "--strategy" => {
                 let value = take_value(&mut i, false)?;
@@ -251,14 +255,35 @@ pub fn parse(argv: &[String]) -> Result<Options, String> {
                 select(&mut opts, Command::Export(value))?;
             }
             "--import" => {
-                let value = take_value(&mut i, false)?;
+                // The path is optional with --from-cswap (validate() enforces
+                // it otherwise), so a following option is not swallowed.
+                let value = match &inline_value {
+                    Some(value) => value.clone(),
+                    None => match argv.get(i + 1) {
+                        Some(next) if !looks_like_option(next, false) => {
+                            i += 1;
+                            next.clone()
+                        }
+                        _ => String::new(),
+                    },
+                };
                 select(&mut opts, Command::Import(value))?;
             }
             "--tui" => select(&mut opts, Command::Tui)?,
             "--watch" => select(&mut opts, Command::Watch)?,
             "--menubar" => select(&mut opts, Command::Menubar)?,
             "--upgrade" => select(&mut opts, Command::Upgrade)?,
-            _ => unrecognized.push(token.clone()),
+            _ => {
+                // `import --from-cswap DIR`: a bare path after the flags
+                // fills the import path the `--import` arm left empty.
+                let fills_import = !token.starts_with('-')
+                    && matches!(&opts.command, Some(Command::Import(path)) if path.is_empty());
+                if fills_import {
+                    opts.command = Some(Command::Import(token.clone()));
+                } else {
+                    unrecognized.push(token.clone());
+                }
+            }
         }
         i += 1;
     }
@@ -301,8 +326,8 @@ pub fn validate(opts: &Options) -> Result<(), String> {
     if opts.token_status && !is(|c| matches!(c, List)) {
         return Err("--token-status can only be used with 'list'".into());
     }
-    if opts.json && !is(|c| matches!(c, List | Status | Switch | SwitchTo(_))) {
-        return Err("--json can only be used with 'list', 'status', or 'switch'".into());
+    if opts.json && !is(|c| matches!(c, List | Status | Switch | SwitchTo(_) | Import(_))) {
+        return Err("--json can only be used with 'list', 'status', 'switch', or 'import'".into());
     }
     if opts.json && opts.token_status {
         return Err("--token-status cannot be combined with --json".into());
@@ -333,6 +358,15 @@ pub fn validate(opts: &Options) -> Result<(), String> {
     }
     if opts.force && !is(|c| matches!(c, Import(_) | SwitchTo(_))) {
         return Err("--force can only be used with 'import' or 'switch <num|email>'".into());
+    }
+    if matches!(command, Some(Import(path)) if path.is_empty()) && !opts.from_cswap {
+        return Err("argument --import: expected one argument".into());
+    }
+    if opts.from_cswap && !is(|c| matches!(c, Import(_))) {
+        return Err("--from-cswap can only be used with 'import'".into());
+    }
+    if opts.retire && !opts.from_cswap {
+        return Err("--retire can only be used with 'import --from-cswap'".into());
     }
     if opts.full && !is(|c| matches!(c, Export(_))) {
         return Err("--full can only be used with 'export'".into());
@@ -378,7 +412,10 @@ Commands:
   ccsw auto [claude]              auto-switch Claude Code accounts near their rate limits
   ccsw config [set KEY VALUE]     show or change settings (settings.json)
   ccsw export <path>              export accounts
-  ccsw import <path>              import accounts
+  ccsw import <path> [--force]     import accounts from an export file (.ccsw, or claude-swap's)
+  ccsw import --from-cswap [DIR] [--retire]
+                                  import a claude-swap store directly (default DIR: the
+                                  platform's claude-swap location); --retire renames it afterwards
   ccsw tui                        interactive dashboard (also: bare ccsw)
   ccsw watch                      dashboard, opened on the live watch page
   ccsw upgrade                    how to upgrade to the latest release
@@ -395,8 +432,8 @@ options:
                         instead of the active one plus a single due candidate.
                         For collectors; each account's rate budget still applies.
   --json                Emit machine-readable JSON to stdout (use with 'list',
-                        'status', or 'switch'). See README 'JSON output for
-                        scripting'.
+                        'status', 'switch', or 'import'). See README 'JSON
+                        output for scripting'.
   --strategy {{best,next-available}}
                         With bare 'switch': pick the target by remaining 5h/7d
                         quota. 'best' jumps to the account with the most
@@ -420,6 +457,11 @@ options:
                         backing up the current login first
   --full                Accepted for compatibility (use with 'export'); ccsw exports
                         always carry each account's stored identity
+  --from-cswap          With 'import': read a claude-swap store directory
+                        instead of an export file
+  --retire              With 'import --from-cswap': rename the store to
+                        <dir>.migrated-<stamp> once at least one account was
+                        imported, so a leftover claude-swap finds no accounts
   --provider {{codex,claude}}
                         Act on one provider; the same as the word after
                         'switch', 'add', 'list' or 'status'
@@ -528,6 +570,15 @@ mod tests {
         assert!(parse(&argv(&["--version"])).unwrap().version);
         assert!(parse(&argv(&["-h"])).unwrap().help);
         assert!(parse(&argv(&["--list", "--fetch-all"])).unwrap().fetch_all);
+        let opts = parse(&argv(&["--import", "--from-cswap", "--retire"])).unwrap();
+        assert_eq!(opts.command, Some(Command::Import(String::new())));
+        assert!(opts.from_cswap && opts.retire);
+        let opts = parse(&argv(&["--import", "/tmp/s", "--from-cswap"])).unwrap();
+        assert_eq!(opts.command, Some(Command::Import("/tmp/s".into())));
+        // Flags first, path last — the bare path fills the empty import.
+        let opts = parse(&argv(&["--import", "--from-cswap", "/tmp/s"])).unwrap();
+        assert_eq!(opts.command, Some(Command::Import("/tmp/s".into())));
+        assert!(opts.from_cswap);
         let opts = parse(&argv(&["--switch", "--provider", "claude"])).unwrap();
         assert_eq!(opts.provider, Some(Provider::Claude));
         assert_eq!(
@@ -578,7 +629,7 @@ mod tests {
         );
         assert_eq!(
             check(&["--purge", "--json"]),
-            "--json can only be used with 'list', 'status', or 'switch'"
+            "--json can only be used with 'list', 'status', 'switch', or 'import'"
         );
         assert_eq!(
             check(&["--list", "--json", "--token-status"]),
@@ -587,6 +638,18 @@ mod tests {
         assert_eq!(
             check(&["--status", "--fetch-all"]),
             "--fetch-all can only be used with 'list'"
+        );
+        assert_eq!(
+            check(&["--import"]),
+            "argument --import: expected one argument"
+        );
+        assert_eq!(
+            check(&["--list", "--from-cswap"]),
+            "--from-cswap can only be used with 'import'"
+        );
+        assert_eq!(
+            check(&["--import", "f", "--retire"]),
+            "--retire can only be used with 'import --from-cswap'"
         );
         assert_eq!(
             check(&["--switch-to", "2", "--strategy", "best"]),
@@ -630,6 +693,8 @@ mod tests {
             &["--status", "--provider", "codex", "--json"],
             &["--list", "--token-status"],
             &["--list", "--provider", "claude", "--json", "--fetch-all"],
+            &["--import", "--from-cswap", "--retire", "--json"],
+            &["--import", "/tmp/s", "--from-cswap"],
             &["--switch", "--strategy", "best", "--model", "all", "--json"],
             &["--add-account", "--slot", "3", "--alias", "dev"],
             &["--add-token", "tok", "--email", "a@b.co", "--slot", "3"],
@@ -650,7 +715,10 @@ mod tests {
         assert!(help.contains("ccsw switch [codex|claude]"));
         assert!(help.contains("sk-ant-"));
         assert!(help.contains("--fetch-all"));
-        assert!(!help.contains("cswap "));
+        assert!(help.contains("--from-cswap"));
+        assert!(help.contains("--retire"));
+        // The previous engine is named only inside the `--from-cswap` flag.
+        assert!(!help.replace("--from-cswap", "").contains("cswap "));
         assert_eq!(version_line(), format!("ccsw {VERSION}"));
     }
 }

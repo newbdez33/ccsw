@@ -17,8 +17,8 @@ use ccsw::provider::Provider;
 use ccsw::store::usage_store::{FetchRecord, UsageStore};
 use ccsw::store::{Store, credentials, roster};
 use ccsw::transfer::{
-    ExportTarget, ImportReport, ImportSource, export_accounts, export_cmd, import_accounts,
-    import_cmd, platform_name,
+    ExportTarget, ImportOptions, ImportReport, ImportSource, export_accounts, export_cmd,
+    import_accounts, import_cmd, platform_name,
 };
 
 struct Fx {
@@ -1382,11 +1382,28 @@ fn cmd_wrappers_map_results_to_exit_codes() {
     assert_eq!(export_cmd(&fx.paths, "-", None, false), 0, "stdout export");
 
     let target = fixture();
-    assert_eq!(import_cmd(&target.paths, path_str, false), 0);
+    assert_eq!(
+        import_cmd(
+            &target.paths,
+            path_str,
+            ImportOptions {
+                force: false,
+                ..Default::default()
+            }
+        ),
+        0
+    );
     assert_eq!(roster_of(&target).sequence, vec![1, 2, 3]);
     let missing = target.root.join("missing.ccsw");
     assert_eq!(
-        import_cmd(&target.paths, missing.to_str().unwrap(), false),
+        import_cmd(
+            &target.paths,
+            missing.to_str().unwrap(),
+            ImportOptions {
+                force: false,
+                ..Default::default()
+            }
+        ),
         1
     );
 }

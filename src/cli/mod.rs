@@ -120,7 +120,12 @@ pub fn run_with(argv: Vec<String>) -> i32 {
         Command::Import(path) => Ok(crate::transfer::import_cmd(
             &switcher.store.paths,
             &path,
-            opts.force,
+            crate::transfer::ImportOptions {
+                force: opts.force,
+                from_cswap: opts.from_cswap,
+                retire: opts.retire,
+                json,
+            },
         )),
     })
 }
