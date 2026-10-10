@@ -201,6 +201,8 @@ impl Cli {
             )
             .env("CLAUDE_CONFIG_DIR", &self.claude_home)
             .env("CCSW_KEYCHAIN", "off")
+            // `import --from-cswap` resolves the Linux store under XDG_DATA_HOME; keep it inside the test root.
+            .env_remove("XDG_DATA_HOME")
             .env("USER", "tester")
             .env(
                 "CCSW_CLAUDE_USAGE_URL",

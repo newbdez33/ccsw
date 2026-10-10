@@ -150,12 +150,17 @@ fn imports_a_cswap_export_from_stdin() {
 
 // ── import --from-cswap ─────────────────────────────────────────────────
 
-/// A claude-swap store under `root/.claude-swap-backup` (the macOS/Windows
-/// default; the test HOME is the Cli root) with one `.enc` + config per
-/// account. `emails`: (slot, email, refresh token).
+/// A claude-swap store at the platform default under `root` (the test HOME
+/// is the Cli root, `XDG_DATA_HOME` is unset): `~/.claude-swap-backup` on
+/// macOS/Windows, `~/.local/share/claude-swap` on Linux. One `.enc` + config
+/// per account. `emails`: (slot, email, refresh token).
 fn cswap_store(root: &std::path::Path, emails: &[(u32, &str, &str)]) -> std::path::PathBuf {
     use base64::Engine as _;
-    let dir = root.join(".claude-swap-backup");
+    let dir = if cfg!(target_os = "linux") {
+        root.join(".local/share/claude-swap")
+    } else {
+        root.join(".claude-swap-backup")
+    };
     std::fs::create_dir_all(dir.join("credentials")).unwrap();
     std::fs::create_dir_all(dir.join("configs")).unwrap();
     let mut accounts = serde_json::Map::new();
@@ -208,10 +213,7 @@ fn import_from_cswap_reads_the_default_store_and_retires_it() {
     assert_eq!(report["imported"], 2);
     assert_eq!(report["skipped"], 0);
     let retired = report["retired"].as_str().expect("retired path");
-    assert!(
-        retired.contains(".claude-swap-backup.migrated-"),
-        "{retired}"
-    );
+    assert!(retired.contains(".migrated-"), "{retired}");
     assert!(!dir.exists(), "the store was renamed");
     assert!(
         std::path::Path::new(retired)
