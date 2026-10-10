@@ -326,7 +326,7 @@ fn usage_errors_exit_2_with_the_usage_line() {
         ),
         (
             &["purge", "--json"],
-            "--json can only be used with 'list', 'status', or 'switch'",
+            "--json can only be used with 'list', 'status', 'switch', or 'import'",
         ),
         (
             &["list", "--json", "--token-status"],

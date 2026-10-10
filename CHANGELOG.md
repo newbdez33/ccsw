@@ -3,6 +3,31 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.8.0 — 2026-10-10
+
+### Added
+
+- `ccsw import --from-cswap [DIR] [--retire] [--json]` reads a claude-swap store
+  directly — the roster in `sequence.json`, each account's credentials from the
+  macOS Keychain (service `claude-swap`) or its base64 `.enc` file, and the
+  `.claude.json` snapshot — and imports it through the regular importer, so
+  identity matching, slot numbers and the Codex roster behave as for any export.
+  DIR defaults to claude-swap's location on the platform (`~/.claude-swap-backup`;
+  `$XDG_DATA_HOME/claude-swap` on Linux). Reads are `.enc`-wins, as in claude-swap.
+  `--retire` renames the store to `<dir>.migrated-<stamp>` after a successful run
+  (every account it held is in ccsw by then), so a leftover claude-swap finds no
+  accounts to refresh. Exit 2 means there was nothing to import (no store, an
+  empty roster, or an already-migrated store); `--json` prints the report — also
+  for file and stdin imports — for scripts such as the Token Beats desktop app,
+  which runs this once on first launch.
+- A static `x86_64-unknown-linux-musl` release archive, for hosts whose glibc is
+  older than the builder's (WSL distributions).
+
+### Changed
+
+- The Claude Code usage requests identify as `claude-cli/2.1.296` when the local
+  Claude Code version cannot be read.
+
 ## v0.7.5 — 2026-10-09
 
 ### Added

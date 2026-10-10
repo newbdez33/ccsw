@@ -14,7 +14,8 @@
 - 仪表盘账号面板放不下时改为可滚动并显示一列滚动条（滚轮、PgUp/PgDn），switch/watch 列表同样有滚动条且滚轮可自由滚动（光标移动时才拉回视野）；TUI 开启鼠标捕获（与 cswap 一致）。PR #10，版本 `v0.7.4`；发版清单核对：本机 Claude Code 仍为 2.1.295，`FALLBACK_CLI_VERSION` 未变。
 - `ccsw list --fetch-all`：一次 pass 测量所有过期或到期的账号（而不是活跃账号加一个候选），供定时轮询整个名单的采集器使用（如 token-beats 的 account-usage collector 每 10 分钟跑 `ccsw list claude --json --fetch-all`）。新鲜行仍走缓存，backoff、Retry-After 和 dead-token 门禁照旧；仅限 `list`。版本 `v0.7.5`。
 - README 新增「Upgrade」一节（版本化的下载 / `cargo install --tag` 命令，发版时随版本号更新）。分支 `newbdez33/readme-upgrade`，文档 PR，不发版。
-- 当前工作区为 `hraesvelg`；当前分支为 `newbdez33/readme-upgrade`。
+- `ccsw import --from-cswap [DIR] [--retire] [--json]`：直接读 claude-swap 的存储（`sequence.json` 名单、macOS Keychain `claude-swap` 条目或 base64 `.enc` 凭证、`configs/` 的 `.claude.json` 快照），在内存里拼成 cswap 导出包后走现有导入器；`--retire` 在至少导入 1 个账号后把目录改名为 `<dir>.migrated-<时间戳>`；退出码 2 表示无可导入（无存储 / 空名单 / 已迁移）；`--json` 输出报告供 token-beats 桌面版首次启动时调用。release 矩阵新增 `x86_64-unknown-linux-musl` 静态包（WSL 用）。PR #13，版本 `v0.8.0`；发版清单核对：本机 Claude Code 为 2.1.296，`FALLBACK_CLI_VERSION` 同步更新。实施计划 `docs/plans/2026-10-10-ccsw-import-from-cswap.md`。
+- 当前工作区为 `.worktrees/import-from-cswap`；当前分支为 `newbdez33/import-from-cswap`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换

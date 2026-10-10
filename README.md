@@ -33,8 +33,9 @@ token refresh, app-server daemon) come from
 
 Download the archive for your platform from the
 [releases page](https://github.com/newbdez33/ccsw/releases) (macOS arm64 / x86_64,
-Linux x86_64, Windows x86_64), unpack it, and put `ccsw` on your `PATH`. Or build it
-with Rust 1.88 or newer:
+Linux x86_64 as a glibc build and a static musl build, Windows x86_64), unpack it, and
+put `ccsw` on your `PATH`. The musl archive runs on any Linux, including older WSL
+distributions. Or build it with Rust 1.88 or newer:
 
 ```bash
 cargo install --git https://github.com/newbdez33/ccsw --locked
@@ -57,18 +58,18 @@ Release binary — fetch the current release and replace the `ccsw` already on y
 (`SHA256SUMS` next to the archives lists their checksums):
 
 ```bash
-VERSION=v0.7.5; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu
+VERSION=v0.8.0; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl
 curl -fsSL "https://github.com/newbdez33/ccsw/releases/download/$VERSION/ccsw-$VERSION-$TARGET.tar.gz" | tar xz
 install "ccsw-$VERSION-$TARGET/ccsw" "$(command -v ccsw)"
 ```
 
-On Windows, download `ccsw-v0.7.5-x86_64-pc-windows-msvc.zip` from the
+On Windows, download `ccsw-v0.8.0-x86_64-pc-windows-msvc.zip` from the
 [releases page](https://github.com/newbdez33/ccsw/releases) and replace `ccsw.exe`.
 
 From source:
 
 ```bash
-cargo install --git https://github.com/newbdez33/ccsw --tag v0.7.5 --locked --force
+cargo install --git https://github.com/newbdez33/ccsw --tag v0.8.0 --locked --force
 ```
 
 `ccsw upgrade` only prints these instructions; ccsw does not update itself.
@@ -271,6 +272,7 @@ ccsw alias 2 dev / ccsw alias 2 --unset / ccsw alias
 ccsw move 2 1 / ccsw swap 1 2
 ccsw config [list|get KEY|set KEY VALUE|unset KEY|path]
 ccsw export backup.ccsw [--account 2] / ccsw import backup.ccsw [--force]
+ccsw import --from-cswap [DIR] [--retire] [--json]   # read a claude-swap store in place
 ccsw purge
 ```
 
@@ -284,6 +286,17 @@ organization; `--force` overwrites matches in place and a quarantined dead-token
 replaced without it. Importing over a Claude account whose session profile is running keeps
 that session on its old login until it restarts. Exports hold credentials in plain JSON:
 keep them private.
+
+`ccsw import --from-cswap` reads a claude-swap store in place, with no export step: the
+roster from `sequence.json`, each account's credentials from the macOS Keychain (service
+`claude-swap`) or its base64 `.enc` file, and the `.claude.json` snapshot from `configs/`.
+`DIR` defaults to claude-swap's location (`~/.claude-swap-backup`, or
+`$XDG_DATA_HOME/claude-swap` on Linux). Reads are `.enc`-wins, as in claude-swap: the
+Keychain item is consulted only when the file is absent or corrupt. Add `--retire` to
+rename the store to `<dir>.migrated-<stamp>` after a successful run (every account it held
+is in ccsw by then, including ones that were already managed), so a leftover claude-swap
+cannot keep refreshing the same tokens; `--json` prints the report. Exit 2 means there was
+nothing to import (no store, an empty roster, or an already-migrated one).
 
 Every verb accepts `--help`; `ccsw help` lists them all. The `cswap` flag spellings
 (`ccsw --list`, `ccsw --switch-to 2`, …) keep working.

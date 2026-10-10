@@ -22,6 +22,7 @@ pub mod store;
 
 pub mod autoswitch;
 pub mod collect;
+pub mod cswap_store;
 pub mod session;
 pub mod switcher;
 pub mod transfer;
