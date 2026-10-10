@@ -127,6 +127,8 @@ pub struct StoreEnvelope {
     pub notices: Vec<String>,
     /// Accounts that made it into the envelope.
     pub readable: usize,
+    /// Roster accounts left out: no email, or no readable credentials.
+    pub skipped: usize,
 }
 
 /// Build the envelope. `use_keychain` is `paths.keychain_enabled` (macOS
@@ -142,7 +144,9 @@ pub fn envelope(
     let keychain = Keychain::new(security);
     let mut accounts = Vec::new();
     let mut notices = Vec::new();
-    for (slot, record) in roster_accounts(&roster) {
+    let listed = roster_accounts(&roster);
+    let total = listed.len();
+    for (slot, record) in listed {
         let email = record
             .get("email")
             .and_then(Value::as_str)
@@ -180,6 +184,7 @@ pub fn envelope(
         accounts.push(Value::Object(entry));
     }
     let readable = accounts.len();
+    let skipped = total - readable;
     let envelope = json!({
         "version": 1,
         "swapVersion": "store",
@@ -193,6 +198,7 @@ pub fn envelope(
         envelope,
         notices,
         readable,
+        skipped,
     })
 }
 
@@ -417,6 +423,7 @@ mod tests {
             "file backend never calls security"
         );
         assert_eq!(out.readable, 2);
+        assert_eq!(out.skipped, 0);
         assert!(out.notices.is_empty(), "{:?}", out.notices);
         let env = &out.envelope;
         assert_eq!(env["version"], 1);
@@ -507,6 +514,7 @@ mod tests {
             "crt-b"
         );
         assert_eq!(out.readable, 2);
+        assert_eq!(out.skipped, 0);
     }
 
     #[test]
@@ -519,6 +527,7 @@ mod tests {
         fake.fail(); // slot 1: Keychain locked, no file → skipped
         let out = envelope(&dir, &fake, true).unwrap();
         assert_eq!(out.readable, 1);
+        assert_eq!(out.skipped, 1);
         assert_eq!(
             fake.calls.borrow().len(),
             1,
@@ -546,6 +555,7 @@ mod tests {
         fake.reply(&creds("kc-b").to_string()); // slot 2 from the Keychain
         let out = envelope(&dir, &fake, true).unwrap();
         assert_eq!(out.readable, 2);
+        assert_eq!(out.skipped, 0);
         assert!(out.notices.is_empty(), "{:?}", out.notices);
         let accounts = out.envelope["accounts"].as_array().unwrap();
         assert_eq!(
@@ -569,6 +579,7 @@ mod tests {
         .unwrap();
         let out = envelope(&dir, &Fake::new(), false).unwrap();
         assert_eq!(out.readable, 1);
+        assert_eq!(out.skipped, 1);
         let accounts = out.envelope["accounts"].as_array().unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0]["number"], 1);
@@ -588,6 +599,7 @@ mod tests {
         fs::remove_file(dir.join("credentials/.creds-1-alice@example.com.enc")).unwrap();
         let out = envelope(&dir, &Fake::new(), true).unwrap();
         assert_eq!(out.readable, 1);
+        assert_eq!(out.skipped, 1);
         assert_eq!(out.envelope["accounts"].as_array().unwrap()[0]["number"], 2);
         assert!(
             out.notices[0].contains("no stored credentials"),

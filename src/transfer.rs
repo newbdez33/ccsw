@@ -207,7 +207,8 @@ fn print_report(report: &ImportReport, retired: Option<&Path>) {
 }
 
 /// `import --from-cswap [DIR] [--retire] [--json]`: exit 0 when the store
-/// was read and imported (accounts already present count as skipped),
+/// was read and imported (accounts already present, and store accounts
+/// without readable credentials, count as skipped),
 /// [`EXIT_NOTHING_TO_IMPORT`] when there is no store to read, 1 on any
 /// error. `--retire` renames the store after any successful run: every
 /// account the store held is in ccsw by then, so nothing is lost and a
@@ -601,9 +602,15 @@ enum Outcome {
 /// envelope order under the store lock, matching accounts on
 /// `(provider, email, organizationUuid)`.
 pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Result<ImportReport> {
-    let bytes = read_source(paths, &source)?;
+    let (bytes, source_skipped) = read_source(paths, &source)?;
     let envelope = parse_envelope(&bytes)?;
-    let mut report = ImportReport::default();
+    let mut report = ImportReport {
+        // Accounts the source itself left out (a claude-swap roster entry
+        // with no readable credentials) are skipped like duplicates are:
+        // the report must account for every account the store listed.
+        skipped: source_skipped,
+        ..ImportReport::default()
+    };
     let local = roster::read_or_empty(paths)?;
     let entries = validate_entries(
         &envelope.accounts,
@@ -760,7 +767,9 @@ pub fn import_accounts(paths: &Paths, source: ImportSource, force: bool) -> Resu
     Ok(report)
 }
 
-fn read_source(paths: &Paths, source: &ImportSource) -> Result<Vec<u8>> {
+/// The envelope bytes plus the accounts the source itself skipped (only a
+/// claude-swap store skips: roster entries without readable credentials).
+fn read_source(paths: &Paths, source: &ImportSource) -> Result<(Vec<u8>, usize)> {
     match source {
         ImportSource::CswapStore { dir } => {
             // The store becomes a cswap export in memory; its skipped-slot
@@ -776,6 +785,7 @@ fn read_source(paths: &Paths, source: &ImportSource) -> Result<Vec<u8>> {
                 )));
             }
             serde_json::to_vec(&store.envelope)
+                .map(|bytes| (bytes, store.skipped))
                 .map_err(|err| CcswError::transfer(format!("could not encode the store: {err}")))
         }
         ImportSource::Stdin => {
@@ -783,10 +793,10 @@ fn read_source(paths: &Paths, source: &ImportSource) -> Result<Vec<u8>> {
             io::stdin()
                 .read_to_end(&mut bytes)
                 .map_err(|err| CcswError::transfer(format!("could not read stdin: {err}")))?;
-            Ok(bytes)
+            Ok((bytes, 0))
         }
         ImportSource::File(path) => match fs::read(path) {
-            Ok(bytes) => Ok(bytes),
+            Ok(bytes) => Ok((bytes, 0)),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Err(CcswError::transfer(format!(
                 "import file not found: {}",
                 path.display()

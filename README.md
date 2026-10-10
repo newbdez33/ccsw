@@ -58,18 +58,18 @@ Release binary — fetch the current release and replace the `ccsw` already on y
 (`SHA256SUMS` next to the archives lists their checksums):
 
 ```bash
-VERSION=v0.8.2; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl
+VERSION=v0.8.3; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl
 curl -fsSL "https://github.com/newbdez33/ccsw/releases/download/$VERSION/ccsw-$VERSION-$TARGET.tar.gz" | tar xz
 install "ccsw-$VERSION-$TARGET/ccsw" "$(command -v ccsw)"
 ```
 
-On Windows, download `ccsw-v0.8.2-x86_64-pc-windows-msvc.zip` from the
+On Windows, download `ccsw-v0.8.3-x86_64-pc-windows-msvc.zip` from the
 [releases page](https://github.com/newbdez33/ccsw/releases) and replace `ccsw.exe`.
 
 From source:
 
 ```bash
-cargo install --git https://github.com/newbdez33/ccsw --tag v0.8.2 --locked --force
+cargo install --git https://github.com/newbdez33/ccsw --tag v0.8.3 --locked --force
 ```
 
 `ccsw upgrade` only prints these instructions; ccsw does not update itself.
@@ -294,10 +294,12 @@ roster from `sequence.json`, each account's credentials from the macOS Keychain 
 `DIR` defaults to claude-swap's location (`~/.claude-swap-backup`, or
 `$XDG_DATA_HOME/claude-swap` on Linux). Reads are `.enc`-wins, as in claude-swap: the
 Keychain item is consulted only when the file is absent or corrupt. Add `--retire` to
-rename the store to `<dir>.migrated-<stamp>` after a successful run (every account it held
-is in ccsw by then, including ones that were already managed), so a leftover claude-swap
-cannot keep refreshing the same tokens; `--json` prints the report. Exit 2 means there was
-nothing to import (no store, an empty roster, or an already-migrated one).
+rename the store to `<dir>.migrated-<stamp>` after a successful run (every readable account
+it held is in ccsw by then, including ones that were already managed), so a leftover
+claude-swap cannot keep refreshing the same tokens. An account whose credentials cannot be
+read is announced on stderr (`Skipping Account-N …`) and counted as skipped; `--json` prints
+the report (`imported`, `overwritten`, `skipped`, `replaced`, `retired`). Exit 2 means there
+was nothing to import (no store, an empty roster, or an already-migrated one).
 
 Every verb accepts `--help`; `ccsw help` lists them all. The `cswap` flag spellings
 (`ccsw --list`, `ccsw --switch-to 2`, …) keep working.

@@ -18,6 +18,7 @@
 - reset card 加最早到期提示：`cedar_ember` 里被计入的 grant 取最早 `ends_at`，存为 `NormalizedUsage.reset_credits_end_at`（缓存里的可选字段，旧缓存读为空，下次抓取补上）；卡片表头和 mini 行显示 `♥ 2 (in 10d)`，不足一天显示 `in 5h 12m`，缓存过旧超过 `ends_at` 显示 `expired`；`--json` 不输出。`FetchRecord` 因此加了 `allow(clippy::large_enum_variant)`。PR #14，版本 `v0.8.1`；发版清单核对：本机 Claude Code 为 2.1.296，`FALLBACK_CLI_VERSION` 未变。
 - TUI 光标可见问题已排查：pty 抓包显示每帧绘制后都发 `ESC[?25l`，运行期间（含鼠标点击、按键）没有 `ESC[?25h`，只有退出时才显示光标；程序侧无问题，是 Orca 终端（1.4.222）未执行隐藏。程序不做 workaround。
 - Codex 的 reset credits 也接上到期提示：`rate_limit_reset_credits.credits[]` 中被计入的条目（有 id、`codex_rate_limits`、`available`）取最早的 `expires_at`（RFC3339，容忍 `expiresAt`），写进同一个 `reset_credits_end_at`；`available_count` 仍决定数量。显示逻辑复用 v0.8.1。分支 `newbdez33/codex-reset-expiry`，版本 `v0.8.2`；发版清单核对：本机 Claude Code 仍为 2.1.296，`FALLBACK_CLI_VERSION` 未变。
+- `import --from-cswap` 的 `--json` 报告现在把读不到凭证的 claude-swap 账号（没有 `.enc`、没有 Keychain 条目、或没有 email）计入 `skipped`：`StoreEnvelope` 新增 `skipped`（名单数减可读数），`read_source` 连同导出包字节一起返回，`import_accounts` 以它初始化报告，重复账号和不可读账号共用同一个计数（stderr 的 `Skipping Account-N` 提示不变）。token-beats 桌面端据此显示「N 个无法迁移」。PR #16，版本 `v0.8.3`；发版清单核对：本机 Claude Code 仍为 2.1.296，`FALLBACK_CLI_VERSION`（2.1.296）未变。
 - 当前工作区为 `char`；当前分支为 `newbdez33/codex-reset-expiry`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
