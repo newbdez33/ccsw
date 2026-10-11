@@ -3,6 +3,13 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.9.1 — 2026-10-11
+
+### Added
+
+- A QR code below the Remote Console pairing code. Phones on the same tailnet
+  can scan a Tailscale pairing link to open the console and pair automatically.
+
 ## v0.9.0 — 2026-10-11
 
 ### Added

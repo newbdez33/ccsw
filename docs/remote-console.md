@@ -7,6 +7,7 @@ default Codex or Claude Code login on your host. The console is embedded in
 `ccsw`; it needs no separate web server or frontend build.
 
 Remote Console requires **v0.9.0 or newer**. See [installation and upgrades](installation.md).
+QR pairing in the TUI requires **v0.9.1 or newer**.
 
 ## Start and pair
 
@@ -23,7 +24,9 @@ automatically. The page removes the code from the address bar immediately.
   starting to connect from another device on your tailnet.
 - **Read-only** blocks switches and manual refreshes. Set it before starting.
 - An available port is selected at startup. The TUI shows the console URL,
-  pairing link, code, and expiry. Share a fresh link with your other device.
+  pairing link, code, expiry, and a QR code below the pairing code. With
+  **Access: Tailscale**, scan it with a phone on your tailnet to open and pair
+  automatically. A **This computer** link only works on the host.
 - **Open browser** (`o`) creates a new link and opens it on the host.
   **New pairing link** (`n`) creates one without opening a browser.
 - **Stop console** (`s`) ends the service. **Back** (`Esc`) keeps it running;
@@ -33,8 +36,10 @@ If a code is expired or already used, generate another link. If the host cannot
 open a browser, open the displayed link yourself. In an SSH session, the browser
 action runs on the host; use a Tailscale link on your own device instead.
 Use `PgUp` / `PgDn` or the mouse wheel to scroll the details in a short terminal.
+Enlarge the terminal if it cannot fit the full QR code. Use **New pairing link**
+before scanning if another browser has already used the code.
 
-<img src="images/tui-remote-console.png" width="900" alt="Remote Console controls in the TUI, with browser and pairing actions, URL, and expiry">
+<img src="images/tui-remote-console.png" width="900" alt="Remote Console controls in the TUI, with browser and pairing actions, URL, expiry, and a QR code for phone access">
 
 ### From the CLI
 

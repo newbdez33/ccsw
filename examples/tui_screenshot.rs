@@ -180,12 +180,21 @@ fn render(start: TuiStart, console: bool) -> Buffer {
     let mut app = App::new(start, ThemeName::Dark, 90.0, None);
     app.apply_snapshot(fixture(), 1, NOW);
     if console {
-        for code in [KeyCode::End, KeyCode::Up, KeyCode::Enter, KeyCode::Enter] {
+        for code in [
+            KeyCode::End,
+            KeyCode::Up,
+            KeyCode::Enter,
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Enter,
+            KeyCode::Up,
+            KeyCode::Enter,
+        ] {
             app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), NOW);
         }
         app.receive(
             Inbound::Console(Event::Link(PairingLink {
-                origin: "http://127.0.0.1:49152".into(),
+                origin: "http://100.101.102.103:49152".into(),
                 code: "0123456789abcdef".repeat(4),
                 expires_at: NOW + 300.0,
             })),
@@ -194,7 +203,7 @@ fn render(start: TuiStart, console: bool) -> Buffer {
     }
     let backend = TestBackend::new(
         if console { 108 } else { COLS },
-        if console { 25 } else { ROWS },
+        if console { 48 } else { ROWS },
     );
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| app.render(frame, NOW)).unwrap();
@@ -229,7 +238,8 @@ fn html(buffer: &Buffer, title: &str) -> String {
         out,
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title><style>\
          body{{margin:0;background:{bg};}} \
-         pre{{margin:0;padding:22px 26px;font:15px/19px Menlo,\"DejaVu Sans Mono\",monospace;color:{fg};}} \
+         pre{{margin:0;padding:22px 26px;font:15px/18px Menlo,\"DejaVu Sans Mono\",monospace;color:{fg};}} \
+         pre span{{display:inline-block;vertical-align:top}} \
          .b{{font-weight:bold}} .d{{opacity:.55}}\
          </style></head><body><pre>",
         fg = css_color(DARK.fg, DARK.fg)
