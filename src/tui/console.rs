@@ -6,10 +6,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
-use ratatui_image::picker::Picker;
 
 use super::app::Effect;
-use super::console_qr::PairingQr;
+use super::console_qr;
 use super::theme::Palette;
 use super::widgets::wrap_line;
 
@@ -67,14 +66,13 @@ pub enum Status {
     Stopping,
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConsoleScreen {
     pub options: Options,
     pub status: Status,
     pub link: Option<PairingLink>,
     pub error: Option<String>,
-    qr: PairingQr,
-    image_picker: Option<Picker>,
+    qr_lines: Vec<Line<'static>>,
     cursor: usize,
     link_pending: bool,
     scroll: u16,
@@ -82,13 +80,6 @@ pub struct ConsoleScreen {
 }
 
 impl ConsoleScreen {
-    pub fn set_image_picker(&mut self, picker: Option<Picker>) {
-        self.image_picker = picker;
-        if let Some(link) = &self.link {
-            self.qr = PairingQr::new(&link.url(), self.image_picker.as_ref());
-        }
-    }
-
     pub fn active(&self) -> bool {
         self.status != Status::Stopped
     }
@@ -97,7 +88,7 @@ impl ConsoleScreen {
         match event {
             Event::Link(link) if matches!(self.status, Status::Starting | Status::Running) => {
                 self.status = Status::Running;
-                self.qr = PairingQr::new(&link.url(), self.image_picker.as_ref());
+                self.qr_lines = console_qr::lines(&link.url());
                 self.link = Some(link);
                 self.link_pending = false;
                 self.error = None;
@@ -108,7 +99,7 @@ impl ConsoleScreen {
             Event::Stopped(result) => {
                 self.status = Status::Stopped;
                 self.link = None;
-                self.qr = PairingQr::default();
+                self.qr_lines.clear();
                 self.link_pending = false;
                 self.cursor = 0;
                 self.scroll = 0;
@@ -178,7 +169,7 @@ impl ConsoleScreen {
             (Status::Running, 2) | (Status::Starting, 0) => {
                 self.status = Status::Stopping;
                 self.link = None;
-                self.qr = PairingQr::default();
+                self.qr_lines.clear();
                 Some(Request::Stop)
             }
             _ => return vec![Effect::Pop],
@@ -239,7 +230,7 @@ impl ConsoleScreen {
         self.scroll = self.scroll.saturating_add_signed(delta);
     }
 
-    pub fn draw(&mut self, area: Rect, buf: &mut Buffer, now: f64, p: &Palette, show_image: bool) {
+    pub fn draw(&mut self, area: Rect, buf: &mut Buffer, now: f64, p: &Palette) {
         let inner = Rect::new(
             area.x + 2.min(area.width),
             area.y,
@@ -363,8 +354,6 @@ impl ConsoleScreen {
             ),
             details.width as usize,
         );
-        let mut image_row = None;
-        let qr_size = self.qr.size();
         if self.link.as_ref().is_some_and(|link| link.expires_at > now) {
             lines.push(Line::default());
             let hint = match self.options.access {
@@ -379,9 +368,10 @@ impl ConsoleScreen {
                 Line::styled(hint, Style::new().fg(p.muted)),
                 details.width as usize,
             ));
-            let qr_fits = qr_size.width <= details.width
-                && qr_size.height as usize + 1 + footer.len() <= details.height as usize;
-            let qr_hint = if self.qr.lines.is_empty() {
+            let qr_width = self.qr_lines.first().map_or(0, Line::width);
+            let qr_fits = qr_width <= details.width as usize
+                && self.qr_lines.len() + 1 + footer.len() <= details.height as usize;
+            let qr_hint = if self.qr_lines.is_empty() {
                 "QR code unavailable. Use the pairing link."
             } else if !qr_fits {
                 "Enlarge terminal to show QR code."
@@ -393,16 +383,8 @@ impl ConsoleScreen {
                 details.width as usize,
             ));
             if qr_fits {
-                if self.qr.image.is_some() {
-                    image_row = Some(lines.len() as u16);
-                    lines.extend(std::iter::repeat_n(
-                        Line::default(),
-                        qr_size.height as usize,
-                    ));
-                } else {
-                    // Wrapping trims the white quiet zone and can split QR rows.
-                    lines.extend(self.qr.lines.iter().cloned());
-                }
+                // Wrapping trims the white quiet zone and can split QR rows.
+                lines.extend(self.qr_lines.iter().cloned());
             }
         }
         lines.push(Line::default());
@@ -413,15 +395,6 @@ impl ConsoleScreen {
         Paragraph::new(lines)
             .scroll((self.scroll, 0))
             .render(details, buf);
-        if show_image
-            && let Some(row) = image_row.and_then(|row| row.checked_sub(self.scroll))
-            && row + qr_size.height <= details.height
-        {
-            self.qr.render_image(
-                Rect::new(details.x, details.y + row, qr_size.width, qr_size.height),
-                buf,
-            );
-        }
     }
 }
 

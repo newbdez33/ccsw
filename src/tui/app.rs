@@ -284,10 +284,6 @@ impl App {
         &self.console
     }
 
-    pub fn set_image_picker(&mut self, picker: Option<ratatui_image::picker::Picker>) {
-        self.console.set_image_picker(picker);
-    }
-
     pub fn dashboard(&self) -> &DashboardScreen {
         match &self.screens[0] {
             Screen::Dashboard(d) => d,
@@ -860,13 +856,7 @@ impl App {
                     ("s", "stop"),
                     ("esc", "back"),
                 ];
-                self.console.draw(
-                    body,
-                    buf,
-                    now,
-                    &p,
-                    self.modal.is_none() && self.toasts.is_empty(),
-                );
+                self.console.draw(body, buf, now, &p);
             }
         }
         Paragraph::new(footer_line(&chips, &p))

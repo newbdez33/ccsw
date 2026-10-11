@@ -3,6 +3,15 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.9.4 — 2026-10-11
+
+### Changed
+
+- Remote Console uses the character pairing QR code in every terminal for
+  consistent rendering. Remove terminal image detection and image dependencies.
+- Keep the character QR font-spacing fix and the console address above the
+  scrolling pairing details.
+
 ## v0.9.3 — 2026-10-11
 
 ### Fixed

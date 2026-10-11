@@ -38,13 +38,10 @@ open a browser, open the displayed link yourself. In an SSH session, the browser
 action runs on the host; use a Tailscale link on your own device instead.
 Use `PgUp` / `PgDn` or the mouse wheel to scroll the details in a short terminal.
 The console address stays visible above the details; Tailscale sessions show
-**Tailscale URL**. Terminals with detected Kitty, iTerm2, or Sixel image support
-show a compact QR code at about one quarter of the character version's area.
-Use **v0.9.3 or newer** for QR compatibility fixes in Orca and macOS Terminal.
-Warp and terminals without usable image support use the character version.
-Enlarge the terminal if it cannot fit the full QR code.
-Use **New pairing link** before scanning if
-another browser has already used the code.
+**Tailscale URL**. The QR code uses terminal characters for consistent display
+across terminals. Enlarge the terminal if it cannot fit the full QR code.
+Use **New pairing link** before scanning if another browser has already used
+the code.
 
 <img src="images/tui-remote-console.png" width="900" alt="Remote Console controls in the TUI, with browser and pairing actions, URL, expiry, and a QR code for phone access">
 
