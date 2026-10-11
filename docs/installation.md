@@ -19,7 +19,7 @@ extract it, and put `ccsw` on your `PATH`.
 
 Choose the static musl build if your Linux distribution has an older glibc.
 Releases include `SHA256SUMS` for the archives. To install from source, use
-Rust 1.88 or newer:
+Rust 1.90 or newer:
 
 ```bash
 cargo install --git https://github.com/newbdez33/ccsw --locked
@@ -47,18 +47,18 @@ Release binary — fetch the current release and replace the `ccsw` already on y
 (`SHA256SUMS` next to the archives lists their checksums):
 
 ```bash
-VERSION=v0.9.1; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl
+VERSION=v0.9.2; TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl
 curl -fsSL "https://github.com/newbdez33/ccsw/releases/download/$VERSION/ccsw-$VERSION-$TARGET.tar.gz" | tar xz
 install "ccsw-$VERSION-$TARGET/ccsw" "$(command -v ccsw)"
 ```
 
-On Windows, download `ccsw-v0.9.1-x86_64-pc-windows-msvc.zip` from the
+On Windows, download `ccsw-v0.9.2-x86_64-pc-windows-msvc.zip` from the
 [releases page](https://github.com/newbdez33/ccsw/releases) and replace `ccsw.exe`.
 
 From source:
 
 ```bash
-cargo install --git https://github.com/newbdez33/ccsw --tag v0.9.1 --locked --force
+cargo install --git https://github.com/newbdez33/ccsw --tag v0.9.2 --locked --force
 ```
 
 `ccsw upgrade` only prints these instructions; ccsw does not update itself.

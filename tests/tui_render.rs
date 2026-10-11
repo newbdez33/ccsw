@@ -7,6 +7,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
+use ratatui_image::picker::{Picker, ProtocolType};
 
 use ccsw::cli::tui::TuiStart;
 use ccsw::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso};
@@ -152,6 +153,151 @@ fn console_qr_pairs_with_current_link_in_both_themes() {
 }
 
 #[test]
+fn console_address_stays_visible_while_pairing_details_scroll() {
+    for (width, height) in [(80, 36), (40, 24)] {
+        let (mut app, link) = paired_console(ThemeName::Dark, "http://100.101.102.103:12345");
+        let address = format!("{}/", link.origin);
+        let initial = render(&mut app, width, height, NOW);
+        let rows = screen_rows(&initial);
+        find_row(&rows, "Tailscale URL:");
+        let (address_y, _) = find_row(&rows, &address);
+        for _ in 0..12 {
+            app.handle_key(key(KeyCode::PageDown), NOW);
+        }
+        let scrolled = render(&mut app, width, height, NOW);
+        assert_eq!(find_row(&screen_rows(&scrolled), &address).0, address_y);
+    }
+}
+
+fn iterm_qr(buf: &Buffer) -> Option<(u16, u16, image::GrayImage)> {
+    use base64::Engine;
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let symbol = buf[(x, y)].symbol();
+            if let Some((_, encoded)) = symbol.split_once("doNotMoveCursor=1:") {
+                let encoded = encoded.split('\x07').next().unwrap();
+                let png = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .unwrap();
+                return Some((x, y, image::load_from_memory(&png).unwrap().into_luma8()));
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn console_image_qr_is_compact_and_contains_the_current_pairing_link() {
+    for theme in [ThemeName::Dark, ThemeName::Light] {
+        let (mut app, mut link) = paired_console(theme, "http://100.101.102.103:12345");
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Iterm2);
+        app.set_image_picker(Some(picker));
+        let buf = render(&mut app, 80, 40, NOW);
+        let (_, y, pixels) = iterm_qr(&buf).expect("inline PNG");
+        // A 49 x 25 character QR becomes a 25 x 13 cell image at 10 x 20 pixels per cell.
+        assert_eq!(pixels.dimensions(), (250, 260));
+        assert!(y as usize > find_row(&screen_rows(&buf), "Pairing code:").0);
+        let decode = |pixels: &image::GrayImage| {
+            quircs::Quirc::default()
+                .identify(
+                    pixels.width() as usize,
+                    pixels.height() as usize,
+                    pixels.as_raw(),
+                )
+                .map(|code| code.unwrap().decode().unwrap().payload)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(decode(&pixels), vec![link.url().into_bytes()]);
+        app.handle_key(key(KeyCode::Char('n')), NOW);
+        link.code = "fedcba9876543210".repeat(4);
+        app.receive(Inbound::Console(console::Event::Link(link.clone())), NOW);
+        let (_, _, pixels) = iterm_qr(&render(&mut app, 80, 40, NOW)).unwrap();
+        assert_eq!(decode(&pixels), vec![link.url().into_bytes()]);
+        assert!(iterm_qr(&render(&mut app, 80, 40, NOW + 301.0)).is_none());
+        app.handle_key(key(KeyCode::Char('s')), NOW);
+        assert!(iterm_qr(&render(&mut app, 80, 40, NOW)).is_none());
+    }
+}
+
+#[test]
+fn console_image_qr_scrolls_without_clipping_and_falls_back_to_text() {
+    let (mut app, link) = paired_console(ThemeName::Dark, "http://100.101.102.103:12345");
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Iterm2);
+    app.set_image_picker(Some(picker));
+    assert!(iterm_qr(&render(&mut app, 40, 28, NOW)).is_none());
+    for _ in 0..12 {
+        app.handle_key(key(KeyCode::PageDown), NOW);
+    }
+    let buf = render(&mut app, 40, 28, NOW);
+    let (_, y, _) = iterm_qr(&buf).expect("scroll reveals the full image");
+    assert!(y + 13 <= 27, "image must fit above the footer");
+    find_row(&screen_rows(&buf), "Tailscale URL:");
+    for (width, height) in [(28, 40), (40, 20), (1, 1)] {
+        assert!(iterm_qr(&render(&mut app, width, height, NOW)).is_none());
+    }
+    app.set_image_picker(Some(Picker::halfblocks()));
+    assert_eq!(
+        decode_console_qr(&render(&mut app, 110, 60, NOW)),
+        vec![link.url().into_bytes()]
+    );
+}
+
+#[test]
+fn console_graphics_clear_every_covered_cell_on_navigation_expiry_and_stop() {
+    use ratatui::layout::Rect;
+    for protocol in [
+        ProtocolType::Iterm2,
+        ProtocolType::Kitty,
+        ProtocolType::Sixel,
+    ] {
+        for action in [KeyCode::Esc, KeyCode::Char('s'), KeyCode::Null] {
+            let (mut app, _) = paired_console(ThemeName::Dark, "http://100.101.102.103:12345");
+            let mut picker = Picker::halfblocks();
+            picker.set_protocol_type(protocol);
+            app.set_image_picker(Some(picker));
+            let area = Rect::new(0, 0, 80, 40);
+            let mut before = Buffer::empty(area);
+            app.draw(area, &mut before, NOW);
+            let top = (0..area.height)
+                .find(|&y| before[(2, y)].symbol().contains('\x1b'))
+                .expect("image protocol data");
+            app.handle_key(key(action), NOW);
+            let mut after = Buffer::empty(area);
+            app.draw(
+                area,
+                &mut after,
+                if action == KeyCode::Null {
+                    NOW + 301.0
+                } else {
+                    NOW
+                },
+            );
+            assert!(
+                after
+                    .content
+                    .iter()
+                    .all(|cell| !cell.symbol().contains('\x1b'))
+            );
+            let changed: Vec<_> = before
+                .diff(&after)
+                .into_iter()
+                .map(|(x, y, _)| (x, y))
+                .collect();
+            for y in top..top + 13 {
+                for x in 2..27 {
+                    assert!(
+                        changed.contains(&(x, y)),
+                        "{protocol:?} {action:?}: stale image at {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn console_qr_survives_scrolling_and_resizing_without_wrapping() {
     let (mut app, link) = paired_console(ThemeName::Dark, "http://100.101.102.103:12345");
     for (width, height) in [(40, 60), (110, 24)] {
@@ -160,7 +306,7 @@ fn console_qr_survives_scrolling_and_resizing_without_wrapping() {
         assert!(decode_console_qr(&buf).is_empty());
     }
 
-    for (width, height) in [(80, 35), (53, 36)] {
+    for (width, height) in [(80, 36), (53, 37)] {
         render(&mut app, width, height, NOW);
         for _ in 0..12 {
             app.handle_key(key(KeyCode::PageDown), NOW);

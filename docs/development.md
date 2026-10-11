@@ -6,7 +6,7 @@ Build, test, and maintain ccsw from a source checkout.
 
 ## Build from source
 
-Use Rust 1.88 or newer. From the branch or tag you want to use:
+Use Rust 1.90 or newer. From the branch or tag you want to use:
 
 ```bash
 cargo build --locked
