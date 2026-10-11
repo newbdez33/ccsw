@@ -11,7 +11,6 @@ mod console_host;
 mod console_qr;
 pub mod dashboard;
 pub mod data;
-mod graphics;
 pub mod modals;
 pub mod snapshot;
 pub mod switch;
@@ -80,7 +79,6 @@ pub fn run(start: TuiStart) -> i32 {
         }
     };
     let _guard = RestoreGuard;
-    app.set_image_picker(graphics::detect_picker());
     // cswap captures the mouse too: the wheel scrolls the accounts panel and
     // the card lists. Selecting text then takes the terminal's modifier key.
     if let Err(err) = crossterm::execute!(io::stdout(), EnableMouseCapture) {
