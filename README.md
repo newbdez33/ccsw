@@ -55,7 +55,7 @@ extract it, and put `ccsw` on your `PATH`:
 | Linux / WSL | x86_64, glibc or static musl |
 | Windows | x86_64 |
 
-Or install from source with Rust 1.88 or newer:
+Or install from source with Rust 1.90 or newer:
 
 ```bash
 cargo install --git https://github.com/newbdez33/ccsw --locked

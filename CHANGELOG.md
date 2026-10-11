@@ -3,6 +3,20 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.9.2 — 2026-10-11
+
+### Changed
+
+- Remote Console detects terminal graphics support and displays its pairing QR
+  code at about one quarter of the character version's area. Other terminals
+  keep the scannable character QR code.
+- Building from source requires Rust 1.90 for the terminal image dependencies.
+
+### Fixed
+
+- The console address stays visible above the scrolling pairing details.
+  Tailscale sessions label it **Tailscale URL**.
+
 ## v0.9.1 — 2026-10-11
 
 ### Added

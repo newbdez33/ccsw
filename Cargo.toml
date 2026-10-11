@@ -1,8 +1,8 @@
 [package]
 name = "ccsw"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.90"
 description = "Multi-account switcher for the OpenAI Codex CLI and Claude Code (cswap-compatible interface)"
 license = "MIT"
 repository = "https://github.com/newbdez33/ccsw"
@@ -39,6 +39,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 ratatui = "0.30"
+ratatui-image = { version = "11.1", default-features = false }
+image = { version = "0.25", default-features = false }
+terminal-trx = "0.2.6"
 crossterm = "0.29"
 supports-color = "3"
 owo-colors = "4"

@@ -10,6 +10,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
+use ratatui_image::picker::{Picker, ProtocolType};
 
 use ccsw::cli::tui::TuiStart;
 use ccsw::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso};
@@ -180,6 +181,11 @@ fn render(start: TuiStart, console: bool) -> Buffer {
     let mut app = App::new(start, ThemeName::Dark, 90.0, None);
     app.apply_snapshot(fixture(), 1, NOW);
     if console {
+        // Match the preview font's cell size. Inline PNG data can also be shown in HTML.
+        #[allow(deprecated)]
+        let mut picker = Picker::from_fontsize(ratatui_image::FontSize::new(9, 18));
+        picker.set_protocol_type(ProtocolType::Iterm2);
+        app.set_image_picker(Some(picker));
         for code in [
             KeyCode::End,
             KeyCode::Up,
@@ -201,10 +207,7 @@ fn render(start: TuiStart, console: bool) -> Buffer {
             NOW,
         );
     }
-    let backend = TestBackend::new(
-        if console { 108 } else { COLS },
-        if console { 48 } else { ROWS },
-    );
+    let backend = TestBackend::new(if console { 108 } else { COLS }, ROWS);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| app.render(frame, NOW)).unwrap();
     terminal.backend().buffer().clone()
@@ -238,13 +241,15 @@ fn html(buffer: &Buffer, title: &str) -> String {
         out,
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title><style>\
          body{{margin:0;background:{bg};}} \
-         pre{{margin:0;padding:22px 26px;font:15px/18px Menlo,\"DejaVu Sans Mono\",monospace;color:{fg};}} \
+         pre{{position:relative;margin:0;padding:22px 26px;font:15px/18px Menlo,\"DejaVu Sans Mono\",monospace;color:{fg};}} \
          pre span{{display:inline-block;vertical-align:top}} \
+         pre img{{position:absolute;image-rendering:pixelated;}} \
          .b{{font-weight:bold}} .d{{opacity:.55}}\
          </style></head><body><pre>",
         fg = css_color(DARK.fg, DARK.fg)
     )
     .unwrap();
+    let mut images = String::new();
     for y in 0..buffer.area.height {
         let mut run = String::new();
         let mut run_style: Option<(String, String, bool, bool)> = None;
@@ -291,6 +296,18 @@ fn html(buffer: &Buffer, title: &str) -> String {
                 run_style = Some(style);
             }
             let symbol = cell.symbol();
+            if let Some((header, data)) = symbol.split_once("doNotMoveCursor=1:") {
+                use base64::Engine;
+                let data = data.split('\x07').next().unwrap();
+                let png = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .unwrap();
+                let image = image::load_from_memory(&png).unwrap();
+                assert!(header.contains("]1337;File="));
+                write!(images, "<img alt=\"Pairing QR code\" src=\"data:image/png;base64,{data}\" style=\"left:calc(26px + {x}ch);top:{}px;width:{}ch;height:{}px\">", 22 + y * 18, image.width() / 9, image.height()).unwrap();
+                run.push(' ');
+                continue;
+            }
             let escaped = symbol
                 .replace('&', "&amp;")
                 .replace('<', "&lt;")
@@ -300,6 +317,7 @@ fn html(buffer: &Buffer, title: &str) -> String {
         flush(&mut out, &mut run, &run_style);
         out.push('\n');
     }
+    out.push_str(&images);
     out.push_str("</pre></body></html>\n");
     out
 }
