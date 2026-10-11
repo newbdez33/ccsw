@@ -33,7 +33,8 @@ pub(super) fn detect_picker() -> Option<Picker> {
     let blocked = ["WEZTERM_EXECUTABLE", "KONSOLE_VERSION"]
         .iter()
         .any(|name| std::env::var(name).is_ok_and(|value| !value.is_empty()));
-    let protocol = select_protocol(&responses, picker.protocol_type(), blocked);
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    let protocol = select_protocol(&responses, picker.protocol_type(), blocked, &term_program);
     if protocol == ProtocolType::Halfblocks {
         return None;
     }
@@ -48,13 +49,31 @@ fn window_font_size() -> Option<FontSize> {
     (width > 0 && height > 0).then_some(FontSize::new(width, height))
 }
 
-fn select_protocol(responses: &[Response], fallback: ProtocolType, blocked: bool) -> ProtocolType {
-    if !blocked && responses.contains(&Response::Kitty) {
+fn select_protocol(
+    responses: &[Response],
+    env_protocol: ProtocolType,
+    blocked: bool,
+    term_program: &str,
+) -> ProtocolType {
+    // Warp does not clear inline PNG images reliably or render Kitty Unicode placeholders.
+    if term_program == "WarpTerminal" {
+        return ProtocolType::Halfblocks;
+    }
+    // A Kitty query confirms image transfer, not Unicode placeholder rendering. Orca accepts
+    // the query but draws placeholder glyphs. Prefer inline PNG or Sixel when available.
+    if blocked {
+        env_protocol
+    } else if responses.contains(&Response::Sixel) {
+        if env_protocol == ProtocolType::Iterm2 {
+            ProtocolType::Iterm2
+        } else {
+            ProtocolType::Sixel
+        }
+    } else if responses.contains(&Response::Kitty) {
+        // Kitty-only replies override stale inline PNG hints inherited from an outer shell.
         ProtocolType::Kitty
-    } else if !blocked && responses.contains(&Response::Sixel) {
-        ProtocolType::Sixel
     } else {
-        fallback
+        env_protocol
     }
 }
 
@@ -144,6 +163,56 @@ mod tests {
     }
 
     #[test]
+    fn inline_png_support_takes_priority_over_kitty_and_sixel() {
+        assert_eq!(
+            select_protocol(
+                &[Response::Kitty, Response::Sixel],
+                ProtocolType::Iterm2,
+                false,
+                "iTerm.app",
+            ),
+            ProtocolType::Iterm2
+        );
+    }
+
+    #[test]
+    fn kitty_only_reply_overrides_inherited_inline_png_hints() {
+        assert_eq!(
+            select_protocol(&[Response::Kitty], ProtocolType::Iterm2, false, "ghostty"),
+            ProtocolType::Kitty
+        );
+    }
+
+    #[test]
+    fn warp_uses_text_even_when_graphics_support_is_reported() {
+        assert_eq!(
+            select_protocol(
+                &[Response::Kitty, Response::Sixel],
+                ProtocolType::Iterm2,
+                false,
+                "WarpTerminal",
+            ),
+            ProtocolType::Halfblocks
+        );
+    }
+
+    #[test]
+    fn orca_replies_select_sixel_without_kitty_placeholders() {
+        let mut terminal = Terminal {
+            input: Cursor::new(b"\x1b[6;16;8t\x1b_Gi=31;OK\x1b\\\x1b[?1;2;4c\x1b[0n".to_vec()),
+            output: Vec::new(),
+        };
+        let responses = query(&mut terminal, false, Duration::from_secs(1), |_, _| {
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(
+            select_protocol(&responses, ProtocolType::Halfblocks, false, "Orca"),
+            ProtocolType::Sixel
+        );
+    }
+
+    #[test]
     fn capability_reply_preserves_keys_after_the_status_report() {
         let mut terminal = Terminal {
             input: Cursor::new(b"\x1b_Gi=31;OK\x1b\\\x1b[?64;4c\x1b[6;20;10t\x1b[0nq".to_vec()),
@@ -165,16 +234,24 @@ mod tests {
         terminal.read_to_string(&mut key).unwrap();
         assert_eq!(key, "q");
         assert_eq!(
-            select_protocol(&responses, ProtocolType::Halfblocks, false),
-            ProtocolType::Kitty
+            select_protocol(&responses, ProtocolType::Halfblocks, false, ""),
+            ProtocolType::Sixel
         );
         assert_eq!(
-            select_protocol(&responses, ProtocolType::Iterm2, true),
+            select_protocol(&responses, ProtocolType::Iterm2, true, "WezTerm"),
             ProtocolType::Iterm2
         );
         assert_eq!(
-            select_protocol(&[Response::Sixel], ProtocolType::Halfblocks, false),
+            select_protocol(&[Response::Sixel], ProtocolType::Halfblocks, false, ""),
             ProtocolType::Sixel
+        );
+        assert_eq!(
+            select_protocol(&[Response::Kitty], ProtocolType::Halfblocks, false, "kitty"),
+            ProtocolType::Kitty
+        );
+        assert_eq!(
+            select_protocol(&responses, ProtocolType::Halfblocks, true, ""),
+            ProtocolType::Halfblocks
         );
     }
 
@@ -191,7 +268,12 @@ mod tests {
         assert!(responses.is_empty());
         assert_eq!(terminal.input.position(), 0);
         assert_eq!(
-            select_protocol(&responses, ProtocolType::Halfblocks, false),
+            select_protocol(
+                &responses,
+                ProtocolType::Halfblocks,
+                false,
+                "Apple_Terminal"
+            ),
             ProtocolType::Halfblocks
         );
     }

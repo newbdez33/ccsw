@@ -82,6 +82,10 @@ fn paired_console(theme: ThemeName, origin: &str) -> (App, PairingLink) {
 }
 
 fn decode_console_qr(buf: &Buffer) -> Vec<Vec<u8>> {
+    decode_console_qr_with_glyph_gap(buf, 0)
+}
+
+fn decode_console_qr_with_glyph_gap(buf: &Buffer, glyph_gap: usize) -> Vec<Vec<u8>> {
     // Rasterize terminal half-blocks to verify the displayed code with an independent decoder.
     let scale = 4;
     let width = buf.area.width as usize * scale;
@@ -94,12 +98,17 @@ fn decode_console_qr(buf: &Buffer) -> Vec<Vec<u8>> {
                 Color::Rgb(r, g, b) => ((r as u16 + g as u16 + b as u16) / 3) as u8,
                 _ => 255,
             };
-            let halves = if cell.fg == Color::Rgb(0, 0, 0) && cell.bg == Color::Rgb(255, 255, 255) {
+            let qr_shade = |color| match color {
+                Color::Rgb(0, 0, 0) => Some(0),
+                Color::Rgb(255, 255, 255) => Some(255),
+                _ => None,
+            };
+            let halves = if let (Some(fg), Some(bg)) = (qr_shade(cell.fg), qr_shade(cell.bg)) {
                 match cell.symbol() {
-                    "█" => [0, 0],
-                    "▀" => [0, 255],
-                    "▄" => [255, 0],
-                    " " => [255, 255],
+                    "█" => [fg, fg],
+                    "▀" => [fg, bg],
+                    "▄" => [bg, fg],
+                    " " => [bg, bg],
                     other => panic!("unexpected QR cell: {other:?}"),
                 }
             } else {
@@ -109,6 +118,11 @@ fn decode_console_qr(buf: &Buffer) -> Vec<Vec<u8>> {
                 for dy in 0..scale {
                     let row = (y as usize * 2 + half) * scale + dy;
                     let start = row * width + x as usize * scale;
+                    let shade = if half * scale + dy < glyph_gap {
+                        background
+                    } else {
+                        shade
+                    };
                     pixels[start..start + scale].fill(shade);
                 }
             }
@@ -118,6 +132,16 @@ fn decode_console_qr(buf: &Buffer) -> Vec<Vec<u8>> {
         .identify(width, height, &pixels)
         .map(|code| code.unwrap().decode().unwrap().payload)
         .collect()
+}
+
+#[test]
+fn console_character_qr_decodes_with_space_above_block_glyphs() {
+    let (mut app, link) = paired_console(ThemeName::Dark, "http://100.101.102.103:12345");
+    let buf = render(&mut app, 110, 60, NOW);
+    assert_eq!(
+        decode_console_qr_with_glyph_gap(&buf, 2),
+        vec![link.url().into_bytes()]
+    );
 }
 
 #[test]
