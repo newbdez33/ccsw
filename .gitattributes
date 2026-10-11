@@ -1,0 +1,2 @@
+# Keep vendored font licenses identical to the upstream files.
+docs/previews/web/fonts/LICENSE-*.txt -whitespace

@@ -14,11 +14,50 @@ use ccsw::provider::Provider;
 use ccsw::store::AutoSwitchSettings;
 use ccsw::store::usage_store::{UsageEntry, UsageSentinel};
 use ccsw::tui::app::{Action, ActionResult, App, Command, Inbound, ScreenKind};
+use ccsw::tui::console::{self, PairingLink};
 use ccsw::tui::snapshot::{AccountSnapshot, AccountsSnapshot};
 use ccsw::tui::theme::{DARK, ThemeName};
 
 /// 2026-09-21T14:13:20Z.
 const NOW: f64 = 1_790_000_000.0;
+
+#[test]
+fn console_actions_click_pairing_expiry_and_small_viewports() {
+    let mut app = app_with(TuiStart::Dashboard);
+    app.handle_key(key(KeyCode::End), NOW);
+    app.handle_key(key(KeyCode::Up), NOW);
+    app.handle_key(key(KeyCode::Enter), NOW);
+    let rows = screen_rows(&render(&mut app, 110, 28, NOW));
+    let (y, _) = find_row(&rows, "Start and open browser");
+    assert_eq!(
+        app.handle_click(4, y as u16, NOW),
+        vec![Command::Console(console::Request::Start {
+            options: console::Options::default(),
+            open_browser: true
+        })]
+    );
+    let link = PairingLink {
+        origin: "http://127.0.0.1:12345".into(),
+        code: "a".repeat(64),
+        expires_at: NOW + 300.0,
+    };
+    app.receive(Inbound::Console(console::Event::Link(link.clone())), NOW);
+    let rows = screen_rows(&render(&mut app, 110, 28, NOW));
+    find_row(&rows, &link.url());
+    find_row(&rows, "Single use · expires in 5:00 if unused");
+    let rows = screen_rows(&render(&mut app, 110, 28, NOW + 301.0));
+    let (y, line) = find_row(&rows, "Link expired.");
+    let x = line.find('L').unwrap() as u16;
+    assert_eq!(fg(&render(&mut app, 110, 28, NOW + 301.0), x, y), DARK.crit);
+    for (width, height) in [(40, 14), (20, 8), (8, 4), (1, 1)] {
+        render(&mut app, width, height, NOW);
+        app.handle_key(key(KeyCode::PageDown), NOW);
+        render(&mut app, width, height, NOW);
+    }
+    // Mouse clicks only activate action rows, never the text of a pairing code.
+    render(&mut app, 110, 28, NOW);
+    assert!(app.handle_click(4, 10, NOW).is_empty());
+}
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -285,7 +324,8 @@ fn dashboard_active_card_minis_menu_and_footer() {
     assert_eq!(rows[menu_y], "   menu");
     assert_eq!(rows[menu_y + 2], " ▌ Switch account…");
     assert_eq!(rows[menu_y + 3], "   Watch accounts");
-    assert_eq!(rows[menu_y + 9], "   Quit");
+    assert_eq!(rows[menu_y + 9], "   Remote Console…");
+    assert_eq!(rows[menu_y + 10], "   Quit");
     assert_eq!(
         rows[29],
         " s  Switch accounts   w  Watch   q  Quit   ^t  Theme"
@@ -315,8 +355,8 @@ fn dashboard_keeps_every_account_and_scrolls_the_menu_when_the_terminal_is_short
     app.handle_key(key(KeyCode::End), NOW);
     let rows = screen_rows(&render(&mut app, 110, 20, NOW));
     find_row(&rows, "expired@x.y");
-    assert_eq!(rows[16], "   Remove account…");
-    assert_eq!(rows[17], "   Theme…");
+    assert_eq!(rows[16], "   Theme…");
+    assert_eq!(rows[17], "   Remote Console…");
     assert_eq!(rows[18], " ▌ Quit");
 }
 

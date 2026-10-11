@@ -9,6 +9,8 @@ use thiserror::Error;
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum CcswError {
     #[error("{0}")]
+    Conflict(&'static str),
+    #[error("{0}")]
     Config(String),
     #[error("{0}")]
     Switch(String),
@@ -32,6 +34,7 @@ impl CcswError {
     /// The JSON `error.type` string.
     pub fn type_name(&self) -> &'static str {
         match self {
+            Self::Conflict(_) => "ConflictError",
             Self::Config(_) => "ConfigError",
             Self::Switch(_) => "SwitchError",
             Self::Session(_) => "SessionError",

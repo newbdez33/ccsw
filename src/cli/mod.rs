@@ -11,6 +11,7 @@ pub mod config;
 pub mod legacy;
 pub mod list;
 pub mod misc;
+pub mod serve;
 pub mod session;
 pub mod switch;
 pub mod tui;
@@ -45,6 +46,7 @@ pub fn run_with(argv: Vec<String>) -> i32 {
             "env" => return session::env_cmd(rest),
             "auto" => return auto::run(rest),
             "config" => return config::run(rest),
+            "serve" => return serve::run(rest),
             "map" => return session::map_cmd(rest),
             "unmap" => return session::unmap_cmd(rest),
             "alias" => return misc::alias_cmd(rest),

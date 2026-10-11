@@ -19,6 +19,7 @@ pub enum MenuId {
     DisableMenu,
     RemoveMenu,
     ThemeMenu,
+    Console,
     Quit,
     AddNew,
     AddLogin,
@@ -85,6 +86,7 @@ fn root_menu() -> MenuLevel {
             entry("Disable / enable account…", MenuId::DisableMenu),
             entry("Remove account…", MenuId::RemoveMenu),
             entry("Theme…", MenuId::ThemeMenu),
+            entry("Remote Console…", MenuId::Console),
             entry("Quit", MenuId::Quit),
         ],
     }
@@ -200,6 +202,7 @@ impl DashboardScreen {
             MenuId::Switch => vec![Effect::OpenSwitch],
             MenuId::Watch => vec![Effect::OpenWatch],
             MenuId::Auto => vec![Effect::OpenAuto],
+            MenuId::Console => vec![Effect::OpenConsole],
             MenuId::Quit => vec![Effect::Quit],
             MenuId::Header => Vec::new(),
             MenuId::Back => {
@@ -496,6 +499,7 @@ mod tests {
                 "Disable / enable account…",
                 "Remove account…",
                 "Theme…",
+                "Remote Console…",
                 "Quit"
             ]
         );
@@ -662,8 +666,8 @@ mod tests {
         let mut dash = DashboardScreen::new();
         assert_eq!(
             dash.menu_lines(usize::MAX, p).len(),
-            10,
-            "breadcrumb, blank, eight entries"
+            11,
+            "breadcrumb, blank, nine entries"
         );
         assert_eq!(
             texts(&dash.menu_lines(5, p)),
@@ -678,12 +682,12 @@ mod tests {
         dash.handle_key(key(KeyCode::End), None, ThemeName::Dark);
         assert_eq!(
             texts(&dash.menu_lines(5, p)),
-            ["menu", "", "  Remove account…", "  Theme…", "▌ Quit"]
+            ["menu", "", "  Theme…", "  Remote Console…", "▌ Quit"]
         );
         dash.handle_key(key(KeyCode::Char('k')), None, ThemeName::Dark);
         assert_eq!(
             texts(&dash.menu_lines(5, p)),
-            ["menu", "", "  Remove account…", "▌ Theme…", "  Quit"],
+            ["menu", "", "  Theme…", "▌ Remote Console…", "  Quit"],
             "moving inside the window does not scroll"
         );
         dash.handle_key(key(KeyCode::Home), None, ThemeName::Dark);

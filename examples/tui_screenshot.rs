@@ -5,6 +5,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -14,7 +15,8 @@ use ccsw::cli::tui::TuiStart;
 use ccsw::model::{NormalizedUsage, ScopedWindow, Spend, WindowUsage, format_iso};
 use ccsw::provider::Provider;
 use ccsw::store::usage_store::UsageEntry;
-use ccsw::tui::app::App;
+use ccsw::tui::app::{App, Inbound};
+use ccsw::tui::console::{Event, PairingLink};
 use ccsw::tui::snapshot::{AccountSnapshot, AccountsSnapshot};
 use ccsw::tui::theme::{DARK, ThemeName};
 
@@ -174,10 +176,26 @@ fn fixture() -> AccountsSnapshot {
     }
 }
 
-fn render(start: TuiStart) -> Buffer {
+fn render(start: TuiStart, console: bool) -> Buffer {
     let mut app = App::new(start, ThemeName::Dark, 90.0, None);
     app.apply_snapshot(fixture(), 1, NOW);
-    let backend = TestBackend::new(COLS, ROWS);
+    if console {
+        for code in [KeyCode::End, KeyCode::Up, KeyCode::Enter, KeyCode::Enter] {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), NOW);
+        }
+        app.receive(
+            Inbound::Console(Event::Link(PairingLink {
+                origin: "http://127.0.0.1:49152".into(),
+                code: "0123456789abcdef".repeat(4),
+                expires_at: NOW + 300.0,
+            })),
+            NOW,
+        );
+    }
+    let backend = TestBackend::new(
+        if console { 108 } else { COLS },
+        if console { 25 } else { ROWS },
+    );
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| app.render(frame, NOW)).unwrap();
     terminal.backend().buffer().clone()
@@ -282,11 +300,12 @@ fn main() {
         .expect("usage: tui_screenshot <out-dir>");
     let out_dir = Path::new(&out_dir);
     std::fs::create_dir_all(out_dir).unwrap();
-    for (name, start) in [
-        ("tui-dashboard", TuiStart::Dashboard),
-        ("tui-watch", TuiStart::Watch),
+    for (name, start, console) in [
+        ("tui-dashboard", TuiStart::Dashboard, false),
+        ("tui-watch", TuiStart::Watch, false),
+        ("tui-remote-console", TuiStart::Dashboard, true),
     ] {
-        let page = html(&render(start), name);
+        let page = html(&render(start, console), name);
         let path = out_dir.join(format!("{name}.html"));
         std::fs::write(&path, page).unwrap();
         println!("{}", path.display());

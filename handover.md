@@ -1,4 +1,4 @@
-# ccsw 交接（2026-10-08）
+# ccsw 交接（2026-10-11）
 
 ## 当前状态
 
@@ -19,7 +19,16 @@
 - TUI 光标可见问题已排查：pty 抓包显示每帧绘制后都发 `ESC[?25l`，运行期间（含鼠标点击、按键）没有 `ESC[?25h`，只有退出时才显示光标；程序侧无问题，是 Orca 终端（1.4.222）未执行隐藏。程序不做 workaround。
 - Codex 的 reset credits 也接上到期提示：`rate_limit_reset_credits.credits[]` 中被计入的条目（有 id、`codex_rate_limits`、`available`）取最早的 `expires_at`（RFC3339，容忍 `expiresAt`），写进同一个 `reset_credits_end_at`；`available_count` 仍决定数量。显示逻辑复用 v0.8.1。分支 `newbdez33/codex-reset-expiry`，版本 `v0.8.2`；发版清单核对：本机 Claude Code 仍为 2.1.296，`FALLBACK_CLI_VERSION` 未变。
 - `import --from-cswap` 的 `--json` 报告现在把读不到凭证的 claude-swap 账号（没有 `.enc`、没有 Keychain 条目、或没有 email）计入 `skipped`：`StoreEnvelope` 新增 `skipped`（名单数减可读数），`read_source` 连同导出包字节一起返回，`import_accounts` 以它初始化报告，重复账号和不可读账号共用同一个计数（stderr 的 `Skipping Account-N` 提示不变）。token-beats 桌面端据此显示「N 个无法迁移」。PR #16，版本 `v0.8.3`；发版清单核对：本机 Claude Code 仍为 2.1.296，`FALLBACK_CLI_VERSION`（2.1.296）未变。
-- 当前工作区为 `char`；当前分支为 `newbdez33/codex-reset-expiry`。
+- 当前工作区为 `hind`；当前分支为 `newbdez33/web-endpoint-remote-switch`。
+- `v0.9.0` 增加 `ccsw serve`：内嵌定稿的 bitmap 界面、一次性配对、12 小时会话、只读范围、账号与用量快照、SSE、共享刷新队列和带版本校验的远程切换。默认监听 loopback；直接绑定需由本机 Tailscale 确认，HTTPS 代理需显式 `--external-origin`。悬停四级动画已缩短为约 267 ms。
+- 远程切换复用现有凭据写入、备份和 daemon 路径；在 store lock 内重读账号与活跃状态。拒绝禁用、过期、失效 token、未纳管当前登录和未确认的 Codex 中断。请求 ID 按会话去重；断线只查询原操作。部分成功不暴露底层错误，活动中保留后续处理说明。
+- 控制台新增外观设置：保留 Bitmap，增加参考 `exam.jacky.jp` 的 Paper；两套都支持系统跟随及手动深浅色，选择按浏览器保存并跨标签页同步。配对前可设置。168 项外观检查、48 项原有浏览器检查与 9 项服务集成测试通过。
+- Paper 已进一步对齐参考站：本地 Inter 字体、实心进度条与斜线底纹、无外描边卡片和细分隔线。124 项专项检查覆盖比例边界、数据更新、未知读数、主题切换及深浅色手机布局；原有 48 项浏览器检查和 9 项集成测试也通过。
+- Paper 的 20 个图标已重绘为圆角线稿，包括提供方、导航、按钮和状态图标，随主题即时切换。两套主题的卡片、列表和详情在用量达到 90% 时标红，与终端阈值一致；颜色适配黄色卡片、深浅背景和悬停反色。172 项浏览器检查通过，包括阈值边界、用量回落和系统主题切换。
+- README 已压缩为产品介绍、截图与安装入口；详细用法拆到 `docs/installation.md`、`docs/usage.md`、`docs/remote-console.md`、`docs/sessions.md`、`docs/transfers.md`、`docs/development.md`。新增 4 张独立演示账号的控制台截图，位于 `docs/images/`；发布包带上指南与图片，升级版本检查移至 `tests/docs_release.rs`。README 和指南注明控制台从 `v0.9.0` 开始提供。
+- TUI 新增 Remote Console：启动 / 停止、本机 / Tailscale、只读选项、生成一次性链接并打开浏览器。自动分配空闲端口，返回菜单继续运行，退出 TUI 停止；CLI 和 TUI 共用监听与退出逻辑。链接配对码使用 `#pair=`，页面启动时立即清理地址栏，已有有效会话不消耗新码。指南新增 TUI 控制页截图。
+- `v0.9.0` 同时纳入主分支 PR #17 的重置卡列表到期补查修复。发版清单核对：本机 Claude Code 仍为 2.1.296，`FALLBACK_CLI_VERSION` 保持一致；升级示例和版本号同步更新。
+- 设计与验证记录：`docs/specs/2026-10-11-ccsw-web-design.md`。测试只用临时 home、假 CLI 与本地 HTTP mock；没有切换真实账号，也未执行跨设备 Tailscale 或 Serve 部署验证。原静态预览仍位于 `docs/previews/web/`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
 ## 已完成：Claude Code 自动切换
@@ -82,7 +91,7 @@ env -u CODEX_HOME cargo test --all
 ```
 
 - 宿主环境设置了 `CODEX_HOME`，测试前必须移除该变量。
-- 发版清单：把 `src/claude/usage.rs` 的 `FALLBACK_CLI_VERSION` 更新为当前 Claude Code 版本（本机 `readlink ~/.local/bin/claude` 或 `npm view @anthropic-ai/claude-code version`），再改 `Cargo.toml` 版本与 CHANGELOG，并把 README「Upgrade」一节里的版本号（`VERSION=vX.Y.Z`、Windows 归档名、`--tag vX.Y.Z`）改成本次发布版本；`tests/readme_release.rs` 会校验它与 `Cargo.toml` 一致。
+- 发版清单：把 `src/claude/usage.rs` 的 `FALLBACK_CLI_VERSION` 更新为当前 Claude Code 版本（本机 `readlink ~/.local/bin/claude` 或 `npm view @anthropic-ai/claude-code version`），再改 `Cargo.toml` 版本与 CHANGELOG，并把 `docs/installation.md`「Upgrade」一节里的版本号（`VERSION=vX.Y.Z`、Windows 归档名、`--tag vX.Y.Z`）改成本次发布版本；`tests/docs_release.rs` 会校验它与 `Cargo.toml` 一致。发布控制台时同步移除 README 和指南中的未发布说明。
 - MSRV 为 Rust 1.88，edition 为 2024。
 - 测试使用临时目录、假 CLI 和本地 mock，禁止访问真实 Keychain 或真实账号数据。
 - 不进入或改名主仓库及 Orca 工作区目录；不新建 worktree，不重写历史，不使用裸 `git stash` / `pop`。
