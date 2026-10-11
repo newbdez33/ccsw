@@ -457,7 +457,8 @@ async fn queued_switch_rechecks_the_roster_after_taking_the_store_lock() {
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let mut roster = cli.roster();
     roster["accounts"]["1"]["disabled"] = json!(true);
-    std::fs::write(cli.ccsw_home.join("sequence.json"), roster.to_string()).unwrap();
+    // Readers can inspect the roster before they wait for the store lock.
+    ccsw::fsutil::write_json_private(&cli.ccsw_home.join("sequence.json"), &roster).unwrap();
     drop(lock);
     let operation = server.operation(&cookie, "queued-request-0001").await;
     assert_eq!(operation["state"], "failed");
