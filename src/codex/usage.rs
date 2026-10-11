@@ -170,6 +170,19 @@ struct Routing {
     fedramp: bool,
 }
 
+impl Routing {
+    fn get(&self, client: &reqwest::Client, url: &str, bearer: &str) -> reqwest::RequestBuilder {
+        let mut request = client.get(url).bearer_auth(bearer);
+        if let Some(account_id) = &self.account_id {
+            request = request.header("ChatGPT-Account-ID", account_id);
+        }
+        if self.fedramp {
+            request = request.header("X-OpenAI-Fedramp", "true");
+        }
+        request
+    }
+}
+
 async fn fetch_capturing_refresh(
     client: &reqwest::Client,
     auth: &AuthJson,
@@ -249,14 +262,12 @@ async fn get_usage(
     bearer: &str,
     routing: &Routing,
 ) -> std::result::Result<NormalizedUsage, FetchError> {
-    let mut request = client.get(usage_url()).bearer_auth(bearer);
-    if let Some(account_id) = &routing.account_id {
-        request = request.header("ChatGPT-Account-ID", account_id);
-    }
-    if routing.fedramp {
-        request = request.header("X-OpenAI-Fedramp", "true");
-    }
-    let response = request.send().await.map_err(transport_error)?;
+    let url = usage_url();
+    let response = routing
+        .get(client, &url, bearer)
+        .send()
+        .await
+        .map_err(transport_error)?;
     let status = response.status();
     let headers = response.headers().clone();
     let body = response.bytes().await.map_err(transport_error)?;
@@ -265,7 +276,19 @@ async fn get_usage(
         let value: Value = serde_json::from_slice(&body).map_err(|err| {
             FetchError::BadResponse(format!("invalid JSON (HTTP {status}): {err}"))
         })?;
-        return parse_usage(&value).map_err(FetchError::BadResponse);
+        let mut usage = parse_usage(&value).map_err(FetchError::BadResponse)?;
+        // Usage can report only a count; the separate list carries expiry dates.
+        if usage.reset_credits.is_some_and(|count| count > 0)
+            && usage.reset_credits_end_at.is_none()
+            && let Ok(url) =
+                reqwest::Url::parse(&url).and_then(|url| url.join("rate-limit-reset-credits"))
+        {
+            match get_reset_credit_expiry(client, bearer, routing, url.as_str()).await {
+                Ok(expiry) => usage.reset_credits_end_at = expiry.map(format_iso),
+                Err(err) => debug!("reset credit expiry unavailable: {err}"),
+            }
+        }
+        return Ok(usage);
     }
     let retry_after = (status == reqwest::StatusCode::TOO_MANY_REQUESTS)
         .then(|| retry_after_hint(&headers, &body))
@@ -274,6 +297,27 @@ async fn get_usage(
         status: status.as_u16(),
         retry_after,
     })
+}
+
+/// Optional metadata must not trigger token refresh or fail a usage measurement.
+async fn get_reset_credit_expiry(
+    client: &reqwest::Client,
+    bearer: &str,
+    routing: &Routing,
+    url: &str,
+) -> std::result::Result<Option<i64>, reqwest::Error> {
+    let body: Value = routing
+        .get(client, url, bearer)
+        .header("Accept", "application/json")
+        .header("OpenAI-Beta", "codex-1")
+        .header("Originator", "Codex Desktop")
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(parse_reset_credits(&body).and_then(|credits| credits.expires_at))
 }
 
 pub(crate) fn transport_error(err: reqwest::Error) -> FetchError {
@@ -400,7 +444,10 @@ pub fn parse_usage(body: &Value) -> std::result::Result<NormalizedUsage, String>
     ) || flag("/spend_control/reached")
         || flag("/rate_limit/limit_reached");
 
-    let reset_credits = parse_reset_credits(body);
+    let reset_credits = body
+        .get("rate_limit_reset_credits")
+        .or_else(|| body.get("rateLimitResetCredits"))
+        .and_then(parse_reset_credits);
     let usage = NormalizedUsage {
         five_hour,
         seven_day,
@@ -479,24 +526,18 @@ fn scoped_window(item: &Value) -> Option<ScopedWindow> {
     })
 }
 
-/// `rate_limit_reset_credits` (or camelCase): the server's `available_count`,
-/// else the number of `credits[]` entries that are usable Codex resets (an
-/// `id`, `status` available or absent, `reset_type` codex or absent).
-/// The spendable reset credits of a usage body.
+/// The spendable reset credits in a usage block or the separate list response.
 struct ResetCredits {
     count: u32,
     /// The earliest `expires_at` among the credits that count.
     expires_at: Option<i64>,
 }
 
-/// `rate_limit_reset_credits`: the server's `available_count` when given,
+/// The server's `available_count` when given,
 /// else the available Codex entries with an id; the soonest expiry always
 /// comes from those entries.
-fn parse_reset_credits(body: &Value) -> Option<ResetCredits> {
-    let reset = body
-        .get("rate_limit_reset_credits")
-        .or_else(|| body.get("rateLimitResetCredits"))?
-        .as_object()?;
+fn parse_reset_credits(reset: &Value) -> Option<ResetCredits> {
+    let reset = reset.as_object()?;
     let server_count = reset
         .get("available_count")
         .or_else(|| reset.get("availableCount"))
