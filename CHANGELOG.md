@@ -3,6 +3,18 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.9.3 — 2026-10-11
+
+### Fixed
+
+- Compact pairing QR codes use Sixel in Orca's built-in terminal instead of
+  showing colored Kitty placeholder characters. Prefer inline PNG or Sixel
+  when a terminal supports more than one image protocol.
+- Kitty-only capability replies override inherited inline PNG hints.
+- Warp uses the character QR code to avoid image rendering and cleanup issues.
+- Character QR codes fill dark upper halves with cell backgrounds so font
+  line spacing does not break the code in macOS Terminal.
+
 ## v0.9.2 — 2026-10-11
 
 ### Changed

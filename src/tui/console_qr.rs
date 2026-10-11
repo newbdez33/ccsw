@@ -21,15 +21,30 @@ impl PairingQr {
         let Ok(code) = QrCode::new(url) else {
             return Self::default();
         };
-        let style = Style::reset()
+        let light = Style::reset()
             .fg(Color::Rgb(0, 0, 0))
             .bg(Color::Rgb(255, 255, 255));
+        let dark = Style::reset()
+            .fg(Color::Rgb(255, 255, 255))
+            .bg(Color::Rgb(0, 0, 0));
         let lines = code
             .render::<Dense1x2>()
             .quiet_zone(true)
             .build()
             .lines()
-            .map(|row| Line::from(Span::styled(row.to_string(), style)))
+            .map(|row| {
+                // Backgrounds fill line spacing that block glyphs can leave above each row.
+                Line::from(
+                    row.chars()
+                        .map(|cell| match cell {
+                            '█' => Span::styled(" ", dark),
+                            '▄' => Span::styled("▄", light),
+                            '▀' => Span::styled("▄", dark),
+                            _ => Span::styled(" ", light),
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
             .collect();
         let image = picker
             .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks)
