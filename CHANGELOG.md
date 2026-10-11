@@ -3,7 +3,7 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## v0.9.0 — 2026-10-11
 
 ### Added
 
@@ -32,6 +32,13 @@ All notable changes to `ccsw` are recorded here. The format follows
   Separate guides cover account usage, the remote console, session profiles,
   transfers, upgrades, and development. Release archives include the guides
   and screenshots.
+
+### Fixed
+
+- Codex reset cards now fetch the earliest expiry from the reset credit list
+  when the usage response reports only a count, so the `(in 10d)` hint appears
+  after the next usage fetch. A failed list request keeps the usage result
+  and does not trigger a token refresh.
 
 ## v0.8.3 — 2026-10-10
 
