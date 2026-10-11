@@ -48,6 +48,10 @@ jobs:
           name="ccsw-${tag}-${TARGET}"
           mkdir -p "dist/${name}"
           cp README.md LICENSE NOTICE CHANGELOG.md "dist/${name}/"
+          # Keep README links usable in extracted archives.
+          mkdir -p "dist/${name}/docs/images"
+          cp docs/*.md docs/tui-dashboard.png docs/tui-watch.png "dist/${name}/docs/"
+          cp docs/images/*.png "dist/${name}/docs/images/"
           case "$TARGET" in
             *windows*)
               cp "target/${TARGET}/release/ccsw.exe" "dist/${name}/"

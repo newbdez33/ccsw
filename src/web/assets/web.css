@@ -1,0 +1,68 @@
+/* Remote console states. Shared bitmap styles come from the approved preview. */
+.pair-screen { min-height:100dvh; display:grid; place-items:center; padding:32px 18px; }
+.pair-panel { width:100%; max-width:470px; border:2px solid var(--line); background:var(--paper); padding:36px; }
+.pair-panel .brand { padding:0; }
+.pair-panel .brand-word { display:inline; }
+.pair-panel .eyebrow { color:var(--muted); margin:16px 0 35px; }
+.pair-panel h1 { font-size:43px; }
+.pair-description { margin-top:20px; color:var(--muted); font-size:13px; }
+.pair-panel form { margin-top:30px; }
+.pair-panel label { display:block; font:11px var(--mono); margin-bottom:10px; }
+.pair-panel input { width:100%; border:2px solid var(--line); background:var(--paper); padding:12px; font:16px var(--mono); color:var(--ink); }
+.pair-panel #pair-help { font:10px/1.8 var(--mono); margin:12px 0 24px; }
+.pair-panel .button { width:100%; min-height:44px; }
+.pair-address { overflow-wrap:anywhere; color:var(--muted); font:10px var(--mono); border-top:1px solid var(--line); padding-top:22px; margin-top:30px; }
+.form-error { font-size:12px; border-left:2px solid var(--accent); padding-left:12px; margin:18px 0; }
+.notice { border:2px solid var(--line); border-left-color:var(--accent); background:var(--paper); padding:14px 18px; font-size:12px; margin-bottom:24px; overflow-wrap:anywhere; }
+.operation-panel { display:flex; align-items:center; justify-content:space-between; gap:20px; }
+.operation-panel h2 { font:12px var(--mono); margin-bottom:6px; }
+.operation-panel p { color:var(--muted); line-height:1.7; }
+.operation-panel .text-button { flex-shrink:0; min-height:36px; }
+.provider-count { font-size:10px; }
+.machine-name, .breadcrumb, .active-email, .active-identity, .connection-node { min-width:0; overflow-wrap:anywhere; }
+.machine-name [data-host], .breadcrumb [data-host] { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.machine-address { overflow-wrap:anywhere; }
+.active-identity h2 { overflow-wrap:anywhere; min-width:0; }
+.slot-tag { white-space:nowrap; }
+.card-empty { margin:25px 0; color:var(--sub); font-size:12px; min-height:153px; }
+.account-name { color:inherit; border:0; padding:0; background:transparent; text-align:left; overflow-wrap:anywhere; }
+.account-name:hover { text-decoration:underline; text-underline-offset:3px; }
+.account-notice { margin:19px 0 27px; }
+.account-status { white-space:normal; font-size:9px; }
+.unknown-chart { display:flex; align-items:center; min-height:30px; font:9px var(--mono); color:var(--sub); }
+.mini-meter .unknown-chart { min-height:12px; }
+.mini-meter .meter-value { flex-wrap:wrap; }
+.minor-panel .subtext { line-height:1.8; }
+.connection-details li > :last-child { text-align:right; overflow-wrap:anywhere; min-width:0; }
+.disconnect { margin-top:26px; }
+.switch-route > div { min-width:0; overflow-wrap:anywhere; }
+.switch-route > div:last-child { text-align:right; }
+.switch-route strong { display:block; }
+.dialog-error { font-size:11px; margin-top:18px; color:var(--ink); border-left:2px solid var(--accent); padding-left:12px; }
+.details-meta { margin-top:18px; }
+.detail-windows { margin-top:24px; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+.detail-window { border-top:2px solid var(--line); padding-top:15px; min-width:0; }
+.detail-window h3 { font:10px var(--mono); }
+.detail-window p { font:11px var(--mono); margin-top:8px; color:var(--muted); overflow-wrap:anywhere; }
+.detail-window strong { display:block; font:32px var(--digits); margin-top:10px; }
+#details-dialog { width:580px; }
+.details-summary { line-height:1.8; color:var(--muted); font-size:12px; margin-top:20px; }
+.activity-list .event-copy { min-width:0; overflow-wrap:anywhere; }
+.empty-row { display:table-cell; }
+.refreshing .icon { animation:spin 800ms steps(4,end) infinite; }
+@media(max-width:700px) {
+  .pair-panel { padding:27px; }
+  .pair-panel h1 { font-size:38px; }
+  .notice { padding:12px 14px; font-size:11px; margin-bottom:22px; }
+  .operation-panel { align-items:flex-start; gap:12px; }
+  .heading-actions #refresh span { display:none; }
+  .empty-row { display:block; grid-column:1 / -1; }
+  .page-heading > .preview-tag { display:none; }
+  .status { font-size:9px; }
+  .table-footer span:first-child { line-height:1.7; }
+  .breadcrumb [data-host] { max-width:145px; font-size:9px; }
+  .provider-count { font-size:9px; }
+  .detail-windows { gap:15px; }
+  .connection-details { font-size:10px; }
+  .event-time { max-width:80px; white-space:normal; text-align:right; }
+}

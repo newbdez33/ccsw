@@ -1,0 +1,55 @@
+[
+  {
+    "file": "geist-sans.woff2",
+    "bytes": 69760,
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/10dc7658f13c38a474cde201bb09a4617267545b/fonts/Geist/webfonts/Geist%5Bwght%5D.woff2"
+  },
+  {
+    "file": "geist-mono.woff2",
+    "bytes": 71596,
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/10dc7658f13c38a474cde201bb09a4617267545b/fonts/GeistMono/webfonts/GeistMono%5Bwght%5D.woff2"
+  },
+  {
+    "file": "geist-pixel-square.woff2",
+    "bytes": 28540,
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/10dc7658f13c38a474cde201bb09a4617267545b/fonts/GeistPixel/webfonts/GeistPixel-Square.woff2"
+  },
+  {
+    "file": "geist-pixel-circle.woff2",
+    "bytes": 28044,
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/10dc7658f13c38a474cde201bb09a4617267545b/fonts/GeistPixel/webfonts/GeistPixel-Circle.woff2"
+  },
+  {
+    "file": "LICENSE-geist.txt",
+    "bytes": 4383,
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/10dc7658f13c38a474cde201bb09a4617267545b/OFL.txt"
+  },
+  {
+    "file": "source-han-sans-cn.woff2",
+    "bytes": 7995716,
+    "source": "https://raw.githubusercontent.com/adobe-fonts/source-han-sans/a4f7cf94edfb9d7ffbdfc4841de276358bd7e0f2/Variable/WOFF2/OTF/Subset/SourceHanSansCN-VF.otf.woff2"
+  },
+  {
+    "file": "LICENSE-source-han.txt",
+    "bytes": 4463,
+    "source": "https://raw.githubusercontent.com/adobe-fonts/source-han-sans/a4f7cf94edfb9d7ffbdfc4841de276358bd7e0f2/LICENSE.txt"
+  },
+  {
+    "file": "inter-latin.woff2",
+    "bytes": 73016,
+    "source": "https://fonts.gstatic.com/s/inter/v20/UcCo3FwrK3iLTcviYwYZ8UA3.woff2",
+    "sha256": "dd8a4575be9806105ac3decd02805cd2782fe7c05abb02c582316bc436ce03ae"
+  },
+  {
+    "file": "inter-latin-ext.woff2",
+    "bytes": 133704,
+    "source": "https://fonts.gstatic.com/s/inter/v20/UcCo3FwrK3iLTcvsYwYZ8UA3J58.woff2",
+    "sha256": "8bc9dee39deab5dc6599980e563c5023053387e4c391f5c419543e493e024c39"
+  },
+  {
+    "file": "LICENSE-inter.txt",
+    "bytes": 4377,
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/OFL.txt",
+    "sha256": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57"
+  }
+]

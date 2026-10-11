@@ -1,6 +1,6 @@
 [package]
 name = "ccsw"
-version = "0.8.3"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Multi-account switcher for the OpenAI Codex CLI and Claude Code (cswap-compatible interface)"
@@ -27,7 +27,11 @@ base64 = "0.22"
 rand = "0.10"
 chrono = { version = "0.4", features = ["clock"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "socks", "macos-system-configuration"], default-features = false }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync", "net", "process"] }
+axum = "0.8"
+async-stream = "0.3"
+futures-util = "0.3"
+subtle = "2.6"
 fs4 = "1.1"
 tempfile = "3"
 toml = "1"
@@ -47,6 +51,3 @@ unicode-normalization = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
-
-[dev-dependencies]
-axum = "0.8"

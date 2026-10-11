@@ -18,6 +18,7 @@ use crate::store::{AutoSwitchSettings, Settings};
 use crate::switcher::{Line as UiLine, SilentUi, Strategy, Switcher, Ui};
 
 use super::app::{Action, ActionResult, App, Command, Inbound, Lane, POLL_INTERVAL_S};
+use super::{console, console_host};
 
 /// Records what the switcher says and answers every prompt with a yes: the
 /// TUI has already confirmed through its own modals.
@@ -54,6 +55,7 @@ enum Msg {
         id: u64,
         error: String,
     },
+    Console(console::Event),
 }
 
 struct EngineHandle {
@@ -92,6 +94,7 @@ pub struct Runtime {
     engine: Option<EngineHandle>,
     engine_seq: u64,
     login: Option<LoginHandle>,
+    console: Option<console_host::Handle>,
 }
 
 /// Unix seconds with sub-second precision.
@@ -113,6 +116,7 @@ impl Runtime {
             engine: None,
             engine_seq: 0,
             login: None,
+            console: None,
         }
     }
 
@@ -251,7 +255,13 @@ impl Runtime {
     pub fn execute(&mut self, commands: Vec<Command>, app: &mut App, now: f64) {
         for command in commands {
             match command {
-                Command::Quit | Command::CancelLogin => self.cancel_login(),
+                Command::Quit => {
+                    self.cancel_login();
+                    if let Some(console) = &self.console {
+                        console.stop();
+                    }
+                }
+                Command::CancelLogin => self.cancel_login(),
                 Command::Refresh { .. } => self.request_refresh(app.store_only(), now),
                 Command::Action(action) => self.run_action(action),
                 Command::OpenAuto => {
@@ -261,6 +271,33 @@ impl Runtime {
                 }
                 Command::StartEngine { settings, dry_run } => self.start_engine(settings, dry_run),
                 Command::StopEngine => self.stop_engine(),
+                Command::Console(request) => match request {
+                    console::Request::Start {
+                        options,
+                        open_browser,
+                    } if self.console.is_none() => {
+                        let tx = self.tx.clone();
+                        self.console = Some(console_host::Handle::start(
+                            self.paths.clone(),
+                            options,
+                            open_browser,
+                            move |event| {
+                                let _ = tx.send(Msg::Console(event));
+                            },
+                        ));
+                    }
+                    console::Request::NewLink { open_browser } => {
+                        if let Some(console) = &self.console {
+                            console.new_link(open_browser);
+                        }
+                    }
+                    console::Request::Stop => {
+                        if let Some(console) = &self.console {
+                            console.stop();
+                        }
+                    }
+                    _ => {}
+                },
                 Command::PersistTheme(name) => {
                     if let Err(err) = config_set(&self.paths, "ui.theme", name.as_str()) {
                         app.theme_save_failed(&err.to_string(), now);
@@ -300,6 +337,12 @@ impl Runtime {
                     inbound.push(Inbound::ActionDone(result));
                 }
                 Ok(Msg::LoginUrl(url)) => inbound.push(Inbound::LoginUrl(url)),
+                Ok(Msg::Console(event)) => {
+                    if matches!(event, console::Event::Stopped(_)) {
+                        self.console = None;
+                    }
+                    inbound.push(Inbound::Console(event));
+                }
                 Ok(Msg::Engine { id, event }) => {
                     if self.engine.as_ref().is_some_and(|e| e.id == id) {
                         inbound.push(Inbound::Engine(event));

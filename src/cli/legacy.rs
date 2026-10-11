@@ -411,6 +411,7 @@ Commands:
   ccsw move <a> <slot>            assign an account to a slot (swaps if taken)
   ccsw auto [claude]              auto-switch Claude Code accounts near their rate limits
   ccsw config [set KEY VALUE]     show or change settings (settings.json)
+  ccsw serve [--bind IP:PORT]     serve the paired remote account console
   ccsw export <path>              export accounts
   ccsw import <path> [--force]     import accounts from an export file (.ccsw, or claude-swap's)
   ccsw import --from-cswap [DIR] [--retire]
@@ -432,8 +433,8 @@ options:
                         instead of the active one plus a single due candidate.
                         For collectors; each account's rate budget still applies.
   --json                Emit machine-readable JSON to stdout (use with 'list',
-                        'status', 'switch', or 'import'). See README 'JSON
-                        output for scripting'.
+                        'status', 'switch', or 'import'). See docs/usage.md
+                        under 'JSON output for scripting'.
   --strategy {{best,next-available}}
                         With bare 'switch': pick the target by remaining 5h/7d
                         quota. 'best' jumps to the account with the most

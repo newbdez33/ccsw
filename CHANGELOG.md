@@ -3,7 +3,35 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## v0.9.0 — 2026-10-11
+
+### Added
+
+- `ccsw serve`: an embedded remote console for account quota, details, usage
+  refresh, and guarded Codex or Claude switches. It supports loopback, a
+  verified local Tailscale address, or an explicit HTTPS origin behind
+  Tailscale Serve. One-use pairing, expiring browser sessions, read-only mode,
+  request deduplication, and live snapshots protect remote actions.
+- A responsive bitmap interface with provider filters, search, account details,
+  activity, offline states, and explicit partial switch results. Hover fills
+  complete in about 267 ms and respect reduced motion.
+- Switchable Bitmap and Paper console themes. Paper uses local Inter fonts,
+  solid quota bars with hatched tracks, borderless rounded panels, rounded
+  line icons, and yellow highlights. Both themes support light and dark colors,
+  follow the system by default, and remember manual choices.
+- Usage values at or above 90% turn red in console cards, account rows, and
+  details, matching the terminal's critical threshold.
+- A Remote Console TUI menu to start or stop the server, select local or
+  Tailscale access and read-only mode, and open a browser with a fresh pairing
+  link. Links pair automatically and clear the code from the address bar.
+  The service stays active on Back and stops when the TUI exits.
+
+### Changed
+
+- Shortened the README to a product overview, screenshots, and installation.
+  Separate guides cover account usage, the remote console, session profiles,
+  transfers, upgrades, and development. Release archives include the guides
+  and screenshots.
 
 ### Fixed
 

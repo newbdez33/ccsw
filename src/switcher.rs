@@ -35,6 +35,9 @@ use crate::store::{
 };
 use crate::usage_math::{headroom, relevant_windows};
 
+mod guard;
+pub use guard::SwitchState;
+
 // ---------------------------------------------------------------------------
 // Human output
 // ---------------------------------------------------------------------------
@@ -220,6 +223,14 @@ pub struct SwitchReport {
     pub followup: Option<String>,
     /// Print the account list after the switch line.
     pub show_list: bool,
+    /// The provider effect, without parsing a human follow-up message.
+    pub effect: Option<SwitchEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchEffect {
+    Codex(crate::codex::app_server::DaemonRestart),
+    Claude(crate::claude::live::Backend),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1553,17 +1564,41 @@ impl Switcher {
     /// write the target, mark it active, then restart the daemon if needed.
     fn perform_switch(
         &mut self,
-        mut roster: Roster,
+        roster: Roster,
         target: u32,
         strategy: &str,
         force: bool,
     ) -> Result<SwitchReport> {
-        let record = roster
-            .record(target)
-            .cloned()
-            .ok_or_else(|| missing(target))?;
+        self.perform_switch_checked(roster, target, strategy, force, None)
+    }
+
+    fn perform_switch_checked(
+        &mut self,
+        mut roster: Roster,
+        target: u32,
+        strategy: &str,
+        force: bool,
+        guard: Option<&guard::SwitchGuard<'_>>,
+    ) -> Result<SwitchReport> {
+        let mut record = roster.record(target).cloned().ok_or_else(|| {
+            if guard.is_some() {
+                CcswError::Conflict("state_changed")
+            } else {
+                missing(target)
+            }
+        })?;
         if record.provider == Provider::Claude {
-            return self.perform_claude_switch(roster, target, record, strategy, force);
+            return self.perform_claude_switch(roster, target, record, strategy, force, guard);
+        }
+        let lock = self.store.lock()?;
+        if let Some(guard) = guard {
+            roster = self.roster_opt()?.unwrap_or_else(Roster::empty);
+            self.check_switch_guard(&roster, target, guard)?;
+            record = roster
+                .record(target)
+                .cloned()
+                .ok_or_else(|| missing(target))?;
+            self.check_switch_credentials(target, &record)?;
         }
         let mut stored = credentials::read(&self.store, target)?
             .map(AuthJson::from_value)
@@ -1579,7 +1614,6 @@ impl Switcher {
             email: record.email.clone(),
         };
 
-        let lock = self.store.lock()?;
         let live = AuthJson::read(&live_path)?;
         let live_slot = live.as_ref().and_then(|l| self.slot_of_live(&roster, l));
         let from = live.as_ref().map(|live| match live_slot {
@@ -1610,6 +1644,7 @@ impl Switcher {
                 },
                 followup: None,
                 show_list: false,
+                effect: None,
             });
         }
         if !force && let Some(live) = &live {
@@ -1690,6 +1725,7 @@ impl Switcher {
             },
             followup,
             show_list,
+            effect: Some(SwitchEffect::Codex(restart)),
         })
     }
 
@@ -1699,10 +1735,20 @@ impl Switcher {
         &mut self,
         mut roster: Roster,
         target: u32,
-        record: AccountRecord,
+        mut record: AccountRecord,
         strategy: &str,
         force: bool,
+        guard: Option<&guard::SwitchGuard<'_>>,
     ) -> Result<SwitchReport> {
+        let store_lock = self.store.lock()?;
+        if let Some(guard) = guard {
+            roster = self.roster_opt()?.unwrap_or_else(Roster::empty);
+            self.check_switch_guard(&roster, target, guard)?;
+            record = roster
+                .record(target)
+                .cloned()
+                .ok_or_else(|| missing(target))?;
+        }
         let to = AccountRef {
             number: Some(target),
             email: record.email.clone(),
@@ -1710,7 +1756,6 @@ impl Switcher {
         let mut warnings = Vec::new();
         let live_api = ClaudeLive::new(&self.store.paths, &SystemSecurity);
 
-        let store_lock = self.store.lock()?;
         let _consume = crate::claude::session::mutation_lock(&self.store, target)?;
         let profile = self.store.paths.session_dir(target, &record.email);
         crate::claude::session::require_quiescent(&profile)?;
@@ -1731,6 +1776,10 @@ impl Switcher {
             )));
         }
         let claude_locks = crate::claude::locks::acquire(&self.store.paths)?;
+        if let Some(guard) = guard {
+            self.check_switch_guard(&roster, target, guard)?;
+            self.check_switch_credentials(target, &record)?;
+        }
         let live = live_api.read()?;
         let live_slot = self.claude_slot_of_live(&roster, &live);
         let from = live.credential.as_ref().map(|_| match live_slot {
@@ -1762,6 +1811,7 @@ impl Switcher {
                 },
                 followup: None,
                 show_list: false,
+                effect: None,
             });
         }
         let mut target_credential = stored.credential.clone();
@@ -1891,6 +1941,7 @@ impl Switcher {
             },
             followup,
             show_list,
+            effect: Some(SwitchEffect::Claude(backend)),
         })
     }
 
@@ -1933,6 +1984,7 @@ impl Switcher {
             },
             followup: None,
             show_list: false,
+            effect: None,
         };
         let current = self.current_account_for(provider)?;
         let live_slot = match &current {
@@ -2197,6 +2249,7 @@ impl Switcher {
             },
             followup: None,
             show_list: false,
+            effect: None,
         };
         let Some(target) = target else {
             if exhausted {
@@ -2254,6 +2307,7 @@ impl Switcher {
             },
             followup: None,
             show_list: false,
+            effect: None,
         };
         let Some(current_head) = head(live_slot) else {
             let message = format!(

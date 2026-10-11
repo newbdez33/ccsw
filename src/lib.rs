@@ -29,5 +29,6 @@ pub mod transfer;
 
 pub mod cli;
 pub mod tui;
+pub mod web;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

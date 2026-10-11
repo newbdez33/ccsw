@@ -6,6 +6,8 @@
 
 pub mod app;
 pub mod auto;
+pub mod console;
+mod console_host;
 pub mod dashboard;
 pub mod data;
 pub mod modals;
@@ -23,7 +25,7 @@ use std::io::{self, IsTerminal};
 use std::time::Duration;
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEventKind,
 };
 
 use crate::cli::tui::TuiStart;
@@ -114,6 +116,10 @@ fn event_loop(
                     Event::Mouse(mouse) => match mouse.kind {
                         MouseEventKind::ScrollUp => app.handle_scroll(-1),
                         MouseEventKind::ScrollDown => app.handle_scroll(1),
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let commands = app.handle_click(mouse.column, mouse.row, now_s());
+                            runtime.execute(commands, app, now_s());
+                        }
                         _ => {}
                     },
                     _ => {}

@@ -21,6 +21,7 @@ use crate::store::AutoSwitchSettings;
 use crate::switcher::{Line as UiLine, ListSnapshot};
 
 use super::auto::AutoScreen;
+use super::console::{self, ConsoleScreen};
 use super::dashboard::DashboardScreen;
 use super::modals::{
     ConfirmModal, LoginModal, Modal, ModalOutcome, OutputModal, PendingAction, TokenForm,
@@ -85,6 +86,8 @@ pub enum Effect {
     OpenSwitch,
     OpenWatch,
     OpenAuto,
+    OpenConsole,
+    Console(console::Request),
     Pop,
     OpenModal(Modal),
     ApplyTheme(ThemeName),
@@ -107,6 +110,7 @@ pub enum Command {
         dry_run: bool,
     },
     StopEngine,
+    Console(console::Request),
     PersistTheme(ThemeName),
 }
 
@@ -116,6 +120,7 @@ pub enum Screen {
     Switch(SwitchScreen),
     Watch(WatchScreen),
     Auto(AutoScreen),
+    Console,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +129,7 @@ pub enum ScreenKind {
     Switch,
     Watch,
     Auto,
+    Console,
 }
 
 impl Screen {
@@ -133,6 +139,7 @@ impl Screen {
             Self::Switch(_) => ScreenKind::Switch,
             Self::Watch(_) => ScreenKind::Watch,
             Self::Auto(_) => ScreenKind::Auto,
+            Self::Console => ScreenKind::Console,
         }
     }
 }
@@ -168,6 +175,7 @@ pub enum Inbound {
     LoginUrl(String),
     Engine(Event),
     EngineStopped(String),
+    Console(console::Event),
 }
 
 /// Local `HH:MM:SS` for the event log.
@@ -193,6 +201,7 @@ pub struct App {
     quit: bool,
     refreshing_since: Option<f64>,
     last_refresh_error: Option<String>,
+    console: ConsoleScreen,
 }
 
 impl App {
@@ -220,6 +229,7 @@ impl App {
             quit: false,
             refreshing_since: None,
             last_refresh_error: None,
+            console: ConsoleScreen::default(),
         }
     }
 
@@ -265,9 +275,13 @@ impl App {
         self.quit
     }
 
-    /// While the auto view is open the engine is the only fetcher.
+    /// Hosted services collect usage; the TUI can read their cached results.
     pub fn store_only(&self) -> bool {
-        self.screens.iter().any(|s| s.kind() == ScreenKind::Auto)
+        self.console.active() || self.screens.iter().any(|s| s.kind() == ScreenKind::Auto)
+    }
+
+    pub fn console(&self) -> &ConsoleScreen {
+        &self.console
     }
 
     pub fn dashboard(&self) -> &DashboardScreen {
@@ -642,6 +656,7 @@ impl App {
             Screen::Switch(s) => s.handle_key(key, snapshot.as_ref()),
             Screen::Watch(w) => w.handle_key(key, snapshot.as_ref()),
             Screen::Auto(a) => a.handle_key(key, &stamp),
+            Screen::Console => self.console.handle_key(key),
         };
         self.fold(effects, now)
     }
@@ -657,6 +672,18 @@ impl App {
             Screen::Switch(s) => s.list.scroll_by(delta),
             Screen::Watch(w) => w.list.scroll_by(delta),
             Screen::Auto(_) => {}
+            Screen::Console => self
+                .console
+                .scroll_by(delta.clamp(i16::MIN as i64, i16::MAX as i64) as i16),
+        }
+    }
+
+    pub fn handle_click(&mut self, x: u16, y: u16, now: f64) -> Vec<Command> {
+        if self.modal.is_none() && self.screen_kind() == ScreenKind::Console {
+            let effects = self.console.click(x, y);
+            self.fold(effects, now)
+        } else {
+            Vec::new()
         }
     }
 
@@ -678,6 +705,8 @@ impl App {
                 }
                 Effect::OpenSwitch => self.push_unless_open(Screen::Switch(SwitchScreen::new())),
                 Effect::OpenWatch => self.push_unless_open(Screen::Watch(WatchScreen::new())),
+                Effect::OpenConsole => self.push_unless_open(Screen::Console),
+                Effect::Console(request) => commands.push(Command::Console(request)),
                 Effect::OpenAuto => {
                     if self.screen_kind() != ScreenKind::Auto {
                         commands.push(Command::OpenAuto);
@@ -751,6 +780,19 @@ impl App {
                 );
                 Vec::new()
             }
+            Inbound::Console(event) => {
+                if let console::Event::Stopped(Err(error)) = &event {
+                    self.toast(
+                        error,
+                        Some("Remote Console"),
+                        Severity::Error,
+                        TOAST_DEFAULT_S,
+                        now,
+                    );
+                }
+                self.console.receive(event);
+                Vec::new()
+            }
         }
     }
 
@@ -804,6 +846,17 @@ impl App {
             Screen::Auto(auto) => {
                 chips = auto.footer();
                 draw_auto(auto, snapshot.as_ref(), threshold, body, buf, now, &p);
+            }
+            Screen::Console => {
+                chips = vec![
+                    ("↑↓", "select"),
+                    ("enter", "activate"),
+                    ("o", "open"),
+                    ("n", "new link"),
+                    ("s", "stop"),
+                    ("esc", "back"),
+                ];
+                self.console.draw(body, buf, now, &p);
             }
         }
         Paragraph::new(footer_line(&chips, &p))
@@ -987,6 +1040,42 @@ mod tests {
             ],
             1000.0,
         )
+    }
+
+    #[test]
+    fn console_survives_back_and_owns_collection_until_stopped() {
+        let mut app = app();
+        app.handle_key(key(KeyCode::End), 0.0);
+        app.handle_key(key(KeyCode::Up), 0.0);
+        assert!(app.handle_key(key(KeyCode::Enter), 0.0).is_empty());
+        assert_eq!(app.screen_kind(), ScreenKind::Console);
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter), 0.0),
+            vec![Command::Console(console::Request::Start {
+                options: console::Options::default(),
+                open_browser: true
+            })]
+        );
+        assert!(app.store_only());
+        app.receive(
+            Inbound::Console(console::Event::Link(console::PairingLink {
+                origin: "http://127.0.0.1:1234".into(),
+                code: "a".repeat(64),
+                expires_at: 300.0,
+            })),
+            0.0,
+        );
+        assert!(app.handle_key(key(KeyCode::Esc), 0.0).is_empty());
+        assert_eq!(app.screen_kind(), ScreenKind::Dashboard);
+        assert!(app.store_only());
+        app.handle_key(key(KeyCode::Enter), 0.0);
+        assert_eq!(app.console().status, console::Status::Running);
+        assert_eq!(
+            app.handle_key(key(KeyCode::Char('s')), 0.0),
+            vec![Command::Console(console::Request::Stop)]
+        );
+        app.receive(Inbound::Console(console::Event::Stopped(Ok(()))), 0.0);
+        assert!(!app.store_only());
     }
 
     #[test]
