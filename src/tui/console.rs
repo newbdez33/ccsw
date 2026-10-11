@@ -1,10 +1,11 @@
 //! Remote console controls. The runtime owns the listener; this state survives Back.
 
 use crossterm::event::{KeyCode, KeyEvent};
+use qrcode::{QrCode, render::unicode::Dense1x2};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
 use super::app::Effect;
@@ -47,6 +48,21 @@ impl PairingLink {
     pub fn url(&self) -> String {
         format!("{}/#pair={}", self.origin, self.code)
     }
+
+    fn qr_lines(&self) -> Vec<Line<'static>> {
+        let Ok(code) = QrCode::new(self.url()) else {
+            return Vec::new();
+        };
+        let style = Style::reset()
+            .fg(Color::Rgb(0, 0, 0))
+            .bg(Color::Rgb(255, 255, 255));
+        code.render::<Dense1x2>()
+            .quiet_zone(true)
+            .build()
+            .lines()
+            .map(|row| Line::from(Span::styled(row.to_string(), style)))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +87,7 @@ pub struct ConsoleScreen {
     pub status: Status,
     pub link: Option<PairingLink>,
     pub error: Option<String>,
+    qr_lines: Vec<Line<'static>>,
     cursor: usize,
     link_pending: bool,
     scroll: u16,
@@ -86,6 +103,7 @@ impl ConsoleScreen {
         match event {
             Event::Link(link) if matches!(self.status, Status::Starting | Status::Running) => {
                 self.status = Status::Running;
+                self.qr_lines = link.qr_lines();
                 self.link = Some(link);
                 self.link_pending = false;
                 self.error = None;
@@ -96,6 +114,7 @@ impl ConsoleScreen {
             Event::Stopped(result) => {
                 self.status = Status::Stopped;
                 self.link = None;
+                self.qr_lines.clear();
                 self.link_pending = false;
                 self.cursor = 0;
                 self.scroll = 0;
@@ -165,6 +184,7 @@ impl ConsoleScreen {
             (Status::Running, 2) | (Status::Starting, 0) => {
                 self.status = Status::Stopping;
                 self.link = None;
+                self.qr_lines.clear();
                 Some(Request::Stop)
             }
             _ => return vec![Effect::Pop],
@@ -322,15 +342,52 @@ impl ConsoleScreen {
                 "Choose Tailscale to connect from another device on your tailnet.",
             ));
         }
-        lines.push(Line::default());
-        lines.push(Line::styled(
-            "Back keeps the console running. Quit TUI to stop it.",
-            Style::new().fg(p.muted),
-        ));
-        let lines: Vec<_> = lines
+        let mut lines: Vec<_> = lines
             .into_iter()
             .flat_map(|line| wrap_line(line, details.width as usize))
             .collect();
+        let footer = wrap_line(
+            Line::styled(
+                "Back keeps the console running. Quit TUI to stop it.",
+                Style::new().fg(p.muted),
+            ),
+            details.width as usize,
+        );
+        if self.link.as_ref().is_some_and(|link| link.expires_at > now) {
+            lines.push(Line::default());
+            let hint = match self.options.access {
+                Access::Local => {
+                    "For phone access, stop and select Access: Tailscale, then start again."
+                }
+                Access::Tailscale => {
+                    "Scan to pair a phone on your tailnet. Press n if already used."
+                }
+            };
+            lines.extend(wrap_line(
+                Line::styled(hint, Style::new().fg(p.muted)),
+                details.width as usize,
+            ));
+            let qr_width = self.qr_lines.first().map_or(0, Line::width);
+            let qr_fits = qr_width <= details.width as usize
+                && self.qr_lines.len() + 1 + footer.len() <= details.height as usize;
+            let qr_hint = if self.qr_lines.is_empty() {
+                "QR code unavailable. Use the pairing link."
+            } else if !qr_fits {
+                "Enlarge terminal to show QR code."
+            } else {
+                "QR code (PgDn to view):"
+            };
+            lines.extend(wrap_line(
+                Line::styled(qr_hint, Style::new().fg(p.muted)),
+                details.width as usize,
+            ));
+            if qr_fits {
+                // Wrapping trims the white quiet zone and can split QR rows.
+                lines.extend(self.qr_lines.iter().cloned());
+            }
+        }
+        lines.push(Line::default());
+        lines.extend(footer);
         self.scroll = self
             .scroll
             .min(lines.len().saturating_sub(details.height as usize) as u16);

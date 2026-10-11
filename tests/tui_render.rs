@@ -59,6 +59,123 @@ fn console_actions_click_pairing_expiry_and_small_viewports() {
     assert!(app.handle_click(4, 10, NOW).is_empty());
 }
 
+fn paired_console(theme: ThemeName, origin: &str) -> (App, PairingLink) {
+    let mut app = App::new(TuiStart::Dashboard, theme, 90.0, None);
+    app.apply_snapshot(fixture(), 1, NOW);
+    for code in [KeyCode::End, KeyCode::Up, KeyCode::Enter] {
+        app.handle_key(key(code), NOW);
+    }
+    if !origin.contains("127.0.0.1") {
+        for code in [KeyCode::Down, KeyCode::Down, KeyCode::Enter] {
+            app.handle_key(key(code), NOW);
+        }
+    }
+    app.handle_key(key(KeyCode::Char('o')), NOW);
+    let link = PairingLink {
+        origin: origin.into(),
+        code: "0123456789abcdef".repeat(4),
+        expires_at: NOW + 300.0,
+    };
+    app.receive(Inbound::Console(console::Event::Link(link.clone())), NOW);
+    (app, link)
+}
+
+fn decode_console_qr(buf: &Buffer) -> Vec<Vec<u8>> {
+    // Rasterize terminal half-blocks to verify the displayed code with an independent decoder.
+    let scale = 4;
+    let width = buf.area.width as usize * scale;
+    let height = buf.area.height as usize * 2 * scale;
+    let mut pixels = vec![255; width * height];
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let cell = &buf[(x, y)];
+            let background = match cell.bg {
+                Color::Rgb(r, g, b) => ((r as u16 + g as u16 + b as u16) / 3) as u8,
+                _ => 255,
+            };
+            let halves = if cell.fg == Color::Rgb(0, 0, 0) && cell.bg == Color::Rgb(255, 255, 255) {
+                match cell.symbol() {
+                    "█" => [0, 0],
+                    "▀" => [0, 255],
+                    "▄" => [255, 0],
+                    " " => [255, 255],
+                    other => panic!("unexpected QR cell: {other:?}"),
+                }
+            } else {
+                [background; 2]
+            };
+            for (half, shade) in halves.into_iter().enumerate() {
+                for dy in 0..scale {
+                    let row = (y as usize * 2 + half) * scale + dy;
+                    let start = row * width + x as usize * scale;
+                    pixels[start..start + scale].fill(shade);
+                }
+            }
+        }
+    }
+    quircs::Quirc::default()
+        .identify(width, height, &pixels)
+        .map(|code| code.unwrap().decode().unwrap().payload)
+        .collect()
+}
+
+#[test]
+fn console_qr_pairs_with_current_link_in_both_themes() {
+    for theme in [ThemeName::Dark, ThemeName::Light] {
+        for origin in ["http://127.0.0.1:12345", "http://100.101.102.103:12345"] {
+            let (mut app, mut link) = paired_console(theme, origin);
+            let buf = render(&mut app, 110, 60, NOW);
+            assert_eq!(decode_console_qr(&buf), vec![link.url().into_bytes()]);
+            let rows = screen_rows(&buf);
+            let (code_y, _) = find_row(&rows, "Pairing code:");
+            let qr_y = (0..buf.area.height)
+                .find(|&y| buf[(2, y)].bg == Color::Rgb(255, 255, 255))
+                .expect("QR code background");
+            assert!(qr_y as usize > code_y);
+            if origin.contains("127.0.0.1") {
+                find_row(&rows, "Access: Tailscale");
+            }
+
+            app.handle_key(key(KeyCode::Char('n')), NOW);
+            link.code = "fedcba9876543210".repeat(4);
+            app.receive(Inbound::Console(console::Event::Link(link.clone())), NOW);
+            assert_eq!(
+                decode_console_qr(&render(&mut app, 110, 60, NOW)),
+                vec![link.url().into_bytes()]
+            );
+            assert!(decode_console_qr(&render(&mut app, 110, 60, NOW + 301.0)).is_empty());
+
+            app.handle_key(key(KeyCode::Char('s')), NOW);
+            assert!(decode_console_qr(&render(&mut app, 110, 60, NOW)).is_empty());
+        }
+    }
+}
+
+#[test]
+fn console_qr_survives_scrolling_and_resizing_without_wrapping() {
+    let (mut app, link) = paired_console(ThemeName::Dark, "http://100.101.102.103:12345");
+    for (width, height) in [(40, 60), (110, 24)] {
+        let buf = render(&mut app, width, height, NOW);
+        find_row(&screen_rows(&buf), "Enlarge terminal");
+        assert!(decode_console_qr(&buf).is_empty());
+    }
+
+    for (width, height) in [(80, 35), (53, 36)] {
+        render(&mut app, width, height, NOW);
+        for _ in 0..12 {
+            app.handle_key(key(KeyCode::PageDown), NOW);
+        }
+        let buf = render(&mut app, width, height, NOW);
+        assert_eq!(
+            decode_console_qr(&buf),
+            vec![link.url().into_bytes()],
+            "{width}x{height}:\n{}",
+            screen_rows(&buf).join("\n")
+        );
+    }
+    assert!(app.handle_click(4, 12, NOW).is_empty());
+}
+
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
