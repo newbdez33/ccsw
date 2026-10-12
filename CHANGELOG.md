@@ -3,6 +3,14 @@
 All notable changes to `ccsw` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.9.5 — 2026-10-12
+
+### Fixed
+
+- Codex accounts on a self-serve Business workspace with Pro-lite seats
+  (`self_serve_business_prolite`) show the plan as `Business 5×` instead of
+  the raw wire value in the TUI tag and the Remote Console plan field.
+
 ## v0.9.4 — 2026-10-11
 
 ### Changed
