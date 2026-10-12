@@ -411,6 +411,7 @@ pub fn plan_label(wire: Option<&str>) -> Option<String> {
         "pro" => "Pro 20×",
         "team" => "Team",
         "business" | "self_serve_business_usage_based" => "Business",
+        "self_serve_business_prolite" => "Business 5×",
         "enterprise" | "enterprise_cbp_usage_based" => "Enterprise",
         "edu" | "education" => "Edu",
         other => return Some(other.to_string()),
@@ -584,6 +585,19 @@ mod tests {
         assert_eq!(record.display_tag(), "Acme");
         record.alias = Some("dev".into());
         assert_eq!(record.label(), "dev (a@b.c)");
+    }
+
+    #[test]
+    fn plan_label_maps_business_seat_tiers() {
+        assert_eq!(
+            plan_label(Some("self_serve_business_prolite")).as_deref(),
+            Some("Business 5×")
+        );
+        assert_eq!(
+            plan_label(Some("self_serve_business_usage_based")).as_deref(),
+            Some("Business")
+        );
+        assert_eq!(plan_label(Some("mystery")).as_deref(), Some("mystery"));
     }
 
     #[test]

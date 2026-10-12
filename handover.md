@@ -1,4 +1,4 @@
-# ccsw 交接（2026-10-11）
+# ccsw 交接（2026-10-12）
 
 ## 当前状态
 
@@ -28,6 +28,7 @@
 - README 已压缩为产品介绍、截图与安装入口；详细用法拆到 `docs/installation.md`、`docs/usage.md`、`docs/remote-console.md`、`docs/sessions.md`、`docs/transfers.md`、`docs/development.md`。新增 4 张独立演示账号的控制台截图，位于 `docs/images/`；发布包带上指南与图片，升级版本检查移至 `tests/docs_release.rs`。README 和指南注明控制台从 `v0.9.0` 开始提供。
 - TUI 新增 Remote Console：启动 / 停止、本机 / Tailscale、只读选项、生成一次性链接并打开浏览器。自动分配空闲端口，返回菜单继续运行，退出 TUI 停止；CLI 和 TUI 共用监听与退出逻辑。链接配对码使用 `#pair=`，页面启动时立即清理地址栏，已有有效会话不消耗新码。指南新增 TUI 控制页截图。
 - `v0.9.0` 同时纳入主分支 PR #17 的重置卡列表到期补查修复。发版清单核对：本机 Claude Code 仍为 2.1.296，`FALLBACK_CLI_VERSION` 保持一致；升级示例和版本号同步更新。
+- `v0.9.5`：Codex 套餐 `self_serve_business_prolite`（自助 Business 工作区的 Pro-lite 席位）在 `plan_label` 映射为 `Business 5×`，不再把 wire 值当作组织名显示；Codex 的组织名只在 id_token `organizations[]` 中有 `id` 等于 `chatgpt_account_id` 的条目时才有值，ChatGPT 工作区名不在 token 里。发版清单核对：本机 Claude Code 仍为 2.1.296，`FALLBACK_CLI_VERSION` 未变。
 - 设计与验证记录：`docs/specs/2026-10-11-ccsw-web-design.md`。测试只用临时 home、假 CLI 与本地 HTTP mock；没有切换真实账号，也未执行跨设备 Tailscale 或 Serve 部署验证。原静态预览仍位于 `docs/previews/web/`。
 - 项目文档统一使用 `ccsw`。不推送旧标签，避免重新构建历史版本。
 
