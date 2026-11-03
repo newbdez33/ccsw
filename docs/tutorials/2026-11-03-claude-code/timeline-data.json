@@ -1,0 +1,273 @@
+{
+  "duration": 163.6238,
+  "scenes": [
+    {
+      "id": "intro",
+      "start": 0.0,
+      "end": 13.5812,
+      "first_cue": 0,
+      "last_cue": 2
+    },
+    {
+      "id": "save-first",
+      "start": 13.5812,
+      "end": 28.0264,
+      "first_cue": 3,
+      "last_cue": 5
+    },
+    {
+      "id": "add-second",
+      "start": 28.0264,
+      "end": 74.0264,
+      "first_cue": 6,
+      "last_cue": 12
+    },
+    {
+      "id": "switch-account",
+      "start": 74.0264,
+      "end": 93.0264,
+      "first_cue": 13,
+      "last_cue": 16
+    },
+    {
+      "id": "read-fields",
+      "start": 93.0264,
+      "end": 123.1775,
+      "first_cue": 17,
+      "last_cue": 22
+    },
+    {
+      "id": "extra-fields",
+      "start": 123.1775,
+      "end": 148.449,
+      "first_cue": 23,
+      "last_cue": 27
+    },
+    {
+      "id": "codex-outro",
+      "start": 148.449,
+      "end": 163.6238,
+      "first_cue": 28,
+      "last_cue": 30
+    }
+  ],
+  "cues": [
+    {
+      "start": 0.0,
+      "end": 5.5812,
+      "text": "Claude Code 有多个帐号，\n可以用 ccsw 保存登录、查看额度。",
+      "spoken_text": "有多个 Claude Code 帐号，可以用 C C S W 保存登录，查看额度。",
+      "speech_duration": 4.542416666666667
+    },
+    {
+      "start": 5.5812,
+      "end": 9.5812,
+      "text": "之后选中帐号，回车就能切换。",
+      "spoken_text": "之后选中帐号，回车就能切换。",
+      "speech_duration": 2.331625
+    },
+    {
+      "start": 9.5812,
+      "end": 13.5812,
+      "text": "下面用两个帐号，演示一次完整流程。",
+      "spoken_text": "下面用两个帐号，演示一次完整流程。",
+      "speech_duration": 2.075875
+    },
+    {
+      "start": 13.5812,
+      "end": 18.5812,
+      "text": "准备两个终端。\n一个打开 Claude Code，另一个执行命令。",
+      "spoken_text": "准备两个终端。一个打开 Claude Code，另一个执行命令。",
+      "speech_duration": 3.78
+    },
+    {
+      "start": 18.5812,
+      "end": 24.0264,
+      "text": "第一个帐号已经登录后，\n在另一个终端执行 ccsw add claude。",
+      "spoken_text": "第一个帐号已经登录后，在另一个终端执行画面上的保存命令。",
+      "speech_duration": 3.591083333333333
+    },
+    {
+      "start": 24.0264,
+      "end": 28.0264,
+      "text": "这样就把当前帐号的登录保存下来了。",
+      "spoken_text": "这样就把当前帐号的登录保存下来了。",
+      "speech_duration": 2.3863333333333334
+    },
+    {
+      "start": 28.0264,
+      "end": 33.0264,
+      "text": "接着，在 Claude Code 里输入 /login。",
+      "spoken_text": "接着，在 Claude Code 里面，输入画面上的登录命令。",
+      "speech_duration": 3.369375
+    },
+    {
+      "start": 33.0264,
+      "end": 40.0264,
+      "text": "浏览器打开 Claude 登录页。\n选择常用方式，登录第二个帐号。",
+      "spoken_text": "浏览器会打开这个登录页。选择你平时的登录方式，登录第二个帐号。",
+      "speech_duration": 4.517083333333333
+    },
+    {
+      "start": 40.0264,
+      "end": 50.0264,
+      "text": "填写邮箱，点击 Continue with email。\n完成验证与授权，不用先 /logout。",
+      "spoken_text": "这里用邮箱举例。填入第二个帐号的邮箱，点击继续，按提示完成验证和授权。不用先退出登录。",
+      "speech_duration": 7.562083333333334
+    },
+    {
+      "start": 50.0264,
+      "end": 56.0264,
+      "text": "网页提示已完成，可以关闭窗口。\n接下来回到 Claude Code。",
+      "spoken_text": "网页提示已完成，可以关闭窗口。接下来回到 Claude Code。",
+      "speech_duration": 4.050541666666667
+    },
+    {
+      "start": 56.0264,
+      "end": 64.0264,
+      "text": "看到 Login successful，才算登录完成。\n按 Enter 继续，再保存帐号。",
+      "spoken_text": "看到登录成功提示，才算完成。按回车继续，再到另一个终端保存帐号。",
+      "speech_duration": 5.005708333333334
+    },
+    {
+      "start": 64.0264,
+      "end": 69.0264,
+      "text": "登录完成，\n再执行一次 ccsw add claude。",
+      "spoken_text": "登录完成，再执行一次保存命令。",
+      "speech_duration": 2.0813333333333333
+    },
+    {
+      "start": 69.0264,
+      "end": 74.0264,
+      "text": "第三个、第四个帐号，\n重复登录和保存这两步就行。",
+      "spoken_text": "第三个、第四个帐号，重复登录和保存这两步就行。",
+      "speech_duration": 3.611125
+    },
+    {
+      "start": 74.0264,
+      "end": 78.0264,
+      "text": "现在输入 ccsw，打开帐号面板。",
+      "spoken_text": "现在输入 C C S W，打开帐号面板。",
+      "speech_duration": 2.6192083333333334
+    },
+    {
+      "start": 78.0264,
+      "end": 83.0264,
+      "text": "进入 Switch account，\n用方向键选中目标帐号。",
+      "spoken_text": "进入切换帐号，用方向键选中目标帐号。",
+      "speech_duration": 2.664833333333333
+    },
+    {
+      "start": 83.0264,
+      "end": 88.0264,
+      "text": "按回车确认，\nactive 标记会移到选中的帐号。",
+      "spoken_text": "按回车确认，active 标记会移到选中的帐号。",
+      "speech_duration": 2.944916666666667
+    },
+    {
+      "start": 88.0264,
+      "end": 93.0264,
+      "text": "也可以直接用 ccsw switch，\n后面跟列表里的帐号编号。",
+      "spoken_text": "也可以直接用切换命令，后面跟列表里的帐号编号。",
+      "speech_duration": 3.6057083333333333
+    },
+    {
+      "start": 93.0264,
+      "end": 98.0264,
+      "text": "接下来，把列表里的几个字段看明白。",
+      "spoken_text": "接下来，把列表里的几个字段看明白。",
+      "speech_duration": 2.177208333333333
+    },
+    {
+      "start": 98.0264,
+      "end": 103.0264,
+      "text": "邮箱前面是编号；\n方括号里是组织名称或 personal。",
+      "spoken_text": "邮箱前面是编号；方括号里是组织名称或 personal。",
+      "speech_duration": 3.386125
+    },
+    {
+      "start": 103.0264,
+      "end": 108.0264,
+      "text": "5h 和 7d，\n分别是五小时和七天的用量窗口。",
+      "spoken_text": "五小时和七天，分别对应两个用量窗口。",
+      "speech_duration": 2.6517916666666665
+    },
+    {
+      "start": 108.0264,
+      "end": 113.1775,
+      "text": "百分比表示已经用了多少，\n数字越高，越接近额度上限。",
+      "spoken_text": "百分比表示已经用了多少，数字越高，越接近额度上限。",
+      "speech_duration": 4.087583333333333
+    },
+    {
+      "start": 113.1775,
+      "end": 118.1775,
+      "text": "resets 后面，\n是距离重置还有多久，以及重置时间。",
+      "spoken_text": "resets 后面，是距离重置还有多久，以及重置时间。",
+      "speech_duration": 3.246375
+    },
+    {
+      "start": 118.1775,
+      "end": 123.1775,
+      "text": "模型名称那一行，\n表示对应模型的独立额度。",
+      "spoken_text": "模型名称那一行，表示对应模型的独立额度。",
+      "speech_duration": 2.69825
+    },
+    {
+      "start": 123.1775,
+      "end": 128.449,
+      "text": "ahead of pace，\n表示周额度消耗比均匀使用的进度快。",
+      "spoken_text": "出现 ahead of pace，表示周额度消耗，比均匀使用的进度快。",
+      "speech_duration": 4.045083333333333
+    },
+    {
+      "start": 128.449,
+      "end": 133.449,
+      "text": "如果出现爱心，\n后面的数字是可用的额度重置次数。",
+      "spoken_text": "如果出现爱心，后面的数字是可用的额度重置次数。",
+      "speech_duration": 3.3858333333333333
+    },
+    {
+      "start": 133.449,
+      "end": 138.449,
+      "text": "括号里的时间，\n是其中最早一份的到期倒计时。",
+      "spoken_text": "括号里的时间，是其中最早一份的到期倒计时。",
+      "speech_duration": 2.930458333333333
+    },
+    {
+      "start": 138.449,
+      "end": 143.449,
+      "text": "双美元符号，\n是额外用量的已花费金额和月度上限。",
+      "spoken_text": "双美元符号，是额外用量的已花费金额和月度上限。",
+      "speech_duration": 3.5560416666666668
+    },
+    {
+      "start": 143.449,
+      "end": 148.449,
+      "text": "这些额外字段，\n有对应数据时才会显示。",
+      "spoken_text": "这些额外字段，有对应数据时才会显示。",
+      "speech_duration": 2.877
+    },
+    {
+      "start": 148.449,
+      "end": 153.449,
+      "text": "顺便说一下，ccsw 也支持 Codex。",
+      "spoken_text": "顺便说一下，C C S W 也支持 Codex。",
+      "speech_duration": 2.8807916666666666
+    },
+    {
+      "start": 153.449,
+      "end": 158.6238,
+      "text": "已有登录用 ccsw add codex 保存，\n切换方式一样。",
+      "spoken_text": "已有的 Codex 登录，用画面上的命令保存，切换方式一样。",
+      "speech_duration": 3.6934583333333335
+    },
+    {
+      "start": 158.6238,
+      "end": 163.6238,
+      "text": "命令和字段说明放在正文，\n可以照着操作。",
+      "spoken_text": "命令和字段说明放在正文，可以照着操作。",
+      "speech_duration": 3.0124583333333335
+    }
+  ]
+}
