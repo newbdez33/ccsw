@@ -54,6 +54,14 @@ The repository keeps [specifications](https://github.com/newbdez33/ccsw/tree/mai
 [research notes](https://github.com/newbdez33/ccsw/tree/main/docs/research)
 separate from the user guides.
 
+## Tutorial production
+
+Use the [video production workflow](video-production.md) to prepare UI sources,
+generate narration, render a vertical tutorial, and check the upload. The
+[2026-11-03 production record](https://github.com/newbdez33/ccsw/blob/main/docs/specs/2026-11-03-ccsw-claude-tutorial.md) preserves
+the final layout, scene timing, source versions, and publication result for the
+Claude Code account tutorial.
+
 ## Origins
 
 `ccsw` is a Rust port of [claude-swap (`cswap`)](https://github.com/realiti4/claude-swap)

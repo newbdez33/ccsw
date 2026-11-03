@@ -1,0 +1,46 @@
+标题
+Claude Code多帐号切换教程
+
+封面文字
+Claude Code 多帐号
+添加 · 切换 · 看额度
+ccsw 实操
+
+正文
+用 ccsw 把多个 Claude Code 帐号的登录保存下来，之后直接选帐号切换，也能查看每个帐号的已用额度。
+
+添加帐号：
+① 登录第一个 Claude Code 帐号，在终端执行 ccsw add claude。
+② 在 Claude Code 内输入 /login，登录第二个帐号。
+③ 浏览器授权后，回到 Claude Code，看到 Login successful 提示，按 Enter 继续。
+④ 再到另一个终端执行 ccsw add claude，保存第二个帐号。
+更多帐号重复“登录 → 保存”。无需先执行 /logout。
+
+切换帐号：
+输入 ccsw → Switch account… → 方向键选择 → 回车。
+也可以执行 ccsw switch 1，数字对应列表里的帐号编号。
+
+列表怎么看：
+• active：当前选用帐号。
+• 5h / 7d：五小时 / 七天窗口；百分比是已用额度。
+• resets：额度重置倒计时。
+• 模型名称：该模型的独立额度。
+• ahead of pace：周额度消耗比均匀使用的进度快。
+• ♥：可用的额度重置次数；括号里是最早一份的到期时间。
+• $$：额外用量的已花费金额 / 月度上限。
+• 方括号：Claude 的组织名称或 personal。
+
+用量数据有缓存。macOS 钥匙串场景下，已运行的 Claude Code 可能需要约 30 秒读取切换后的登录。
+
+ccsw 也支持 Codex：已有登录可用 ccsw add codex 保存。
+
+项目：github.com/newbdez33/ccsw
+安装方式见项目 README。
+
+#ClaudeCode #AI编程 #开发工具 #编程效率 #ccsw #AI替我说 #用AI讲知识
+
+置顶评论
+补充两个容易混淆的地方：
+1. /login 在 Claude Code 里面输入，ccsw add claude 在普通终端执行。
+2. 当前 Add new account 是 Codex 登录入口；添加 Claude 帐号按视频里的“登录 → 保存”操作。
+列表里的百分比表示已经用了多少；帐号编号以你自己的列表为准。
